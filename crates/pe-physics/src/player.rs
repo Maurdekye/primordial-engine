@@ -3,9 +3,11 @@
 //! collide, solve the planes, cast).
 //!
 //! * **The body** is kinematic and stands on its feet: the body origin is the feet, and its capsule
-//!   ([`PlayerParams::capsule`]) floats [`PlayerParams::ride`] above them. One downward probe, a sphere cast from inside
-//!   the bottom of the capsule, finds the ground, so steps and bumps lower than the ride pass beneath the capsule. The
-//!   body's shape touches nothing in the solver and no query sees it: players pass through each other (the user's 3a), and everything the body does to the world is done here, in the move.
+//!   ([`PlayerParams::capsule`]) floats [`PlayerParams::ride`] above them. One downward probe, a sphere cast from
+//!   inside the bottom of the capsule, finds the ground (the closest hit not too steep to stand on), so steps and bumps
+//!   lower than the ride pass beneath the capsule. The body's shape touches nothing in the solver and no query sees
+//!   it: players pass through each other (the user's 3a), and everything the body does to the world is
+//!   done here, in the move.
 //! * **Solid and light** (user 5c; @coordinator-opus): static and kinematic bodies, and dynamic bodies of
 //!   at least [`PlayerParams::heavy_mass`] (each body's own mass, read when the move runs), are walls and ground: the
 //!   capsule slides on them and the probe stands on them. Lighter dynamic bodies are neither. They are shoved, each by
@@ -25,7 +27,8 @@
 //!   through it (a known limit).
 //! * **Deterministic:** serial, in the fork's arithmetic and IEEE square roots only, with every choice among the
 //!   world's shapes made by shape id or object id, never by the order a query meets them. Each player's state is in
-//!   the image and both hashes.
+//!   the image, so the check hash covers it through the image's bytes, and [`PhysicsWorld::state_hash`] hashes it
+//!   directly.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -373,12 +376,14 @@ impl Solid<'_> {
 
 /// A mover plane. A static body's is rigid. A moving body's (kinematic, or dynamic and heavy) pushes at most `limit` a
 /// pass, so where the two disagree the static one wins: a crate pinning a player against a wall passes through the
-/// player instead of pushing it into the wall. A plane that faces up but is too steep to stand on is turned into a
-/// wall, its normal made level with the same push along it, so the capsule can't climb it by sliding.
-fn mover_plane(plane: Plane, limit: f32, min_ground_normal: f32) -> CollisionPlane {
+/// player instead of pushing it into the wall. With `level_steep` (the player is on the ground or rising), a plane that
+/// faces up but is too steep to stand on is turned into a wall, its normal made level with the same push along it, so
+/// the capsule can't climb it by sliding. A falling player keeps the real plane, so its fall slides down the face
+/// (@design-reviewer's M1 on cbe1603b).
+fn mover_plane(plane: Plane, limit: f32, min_ground_normal: f32, level_steep: bool) -> CollisionPlane {
     let n = plane.normal;
     let level = (n.x * n.x + n.z * n.z).sqrt();
-    let plane = if n.y > 0.0 && n.y < min_ground_normal && level > 0.0 {
+    let plane = if level_steep && n.y > 0.0 && n.y < min_ground_normal && level > 0.0 {
         Plane { normal: Vec3 { x: n.x / level, y: 0.0, z: n.z / level }, offset: plane.offset / level }
     } else {
         plane
@@ -405,6 +410,9 @@ fn push_out(world: &World, shape: ShapeId, at: Pos, capsule: &Capsule) -> Option
     }
     best.map(|(push, n)| Plane { normal: rotate_vector(xf.q, n), offset: push })
 }
+
+/// A probe's candidate hit: its fraction, its tie key (shape id, child, triangle), normal, point and body.
+type ProbeHit = (f32, (i32, i32, i32), Vec3, Pos, BodyId);
 
 /// What a probe found: the ground, the world point it touched, and the body it belongs to.
 #[derive(Clone, Copy, Debug)]
@@ -458,7 +466,9 @@ impl PhysicsWorld {
         self.players.get(&id).copied().ok_or(PhysicsError::NotAPlayer(id))
     }
 
-    /// Walk player `id` for this frame's step of `dt` seconds, and return the pose its body has after that step.
+    /// Walk player `id` for this frame's step of `dt` seconds, and return the pose its body has after that step, within
+    /// rounding: the step carries the body to it at the target's velocity, over its substeps (about 1e-5 m). Set the
+    /// hand targets from the pose returned, and never compare it with the body's for equality.
     /// Called once a frame for each player, in object-id order, before the step. `ignore` lists the objects the move
     /// treats as absent: what this player holds, and every player's hands.
     ///
@@ -469,8 +479,8 @@ impl PhysicsWorld {
     ///    walk and the ride's move toward the ground (at most [`PlayerParams::rise_speed`] up and
     ///    [`PlayerParams::drop_speed`] down); falling onto ground within this frame's fall, no deeper than the ground.
     /// 4. **The slide:** the capsule over what is solid to this player, Box3D's mover (collide, solve the planes,
-    ///    cast) up to five times, the planes sorted by shape. The player's velocity loses what goes into the planes it
-    ///    ends against.
+    ///    cast) up to five times, the planes sorted by shape, steep ones levelled while it is on the ground or rising.
+    ///    The player's velocity loses what goes into the planes it ends against.
     /// 5. **The body** gets the kinematic target of where the slide ended, which the step carries it to.
     /// 6. **Shoves and weight:** each light body in the push volume where the slide ended gets one capped impulse at
     ///    its deepest point, in object-id order; on solid dynamic ground the player's weight presses at the probe's
@@ -512,7 +522,7 @@ impl PhysicsWorld {
             _ => {}
         }
 
-        let (end, planes) = self.slide(start, delta, params, &solid);
+        let (end, planes) = self.slide(start, delta, params, &solid, want.grounded || v.y > 0.0);
         let velocity = clip_vector(v, &planes);
         let moved = sub_pos(end, start);
         let target = BoxWorldTransform { p: end, q: QUAT_IDENTITY };
@@ -532,10 +542,10 @@ impl PhysicsWorld {
     }
 
     /// The ground under feet at `feet`, at most `below` under them: a sphere of [`PlayerParams::probe_radius`] cast
-    /// straight down from inside the bottom of the capsule, over what is solid to this player. The closest hit is the
-    /// ground if it is not too steep to stand on, and there is none if it is. A shape the probe starts inside is
-    /// passed through. Of two at the same distance the lower shape id wins, so the answer never depends on the order
-    /// the cast meets them.
+    /// straight down from inside the bottom of the capsule, over what is solid to this player. The ground is the
+    /// closest hit not too steep to stand on, so a steep face nearer the feet (the foot of a steep slope) doesn't hide
+    /// the floor below it. A shape the probe starts inside is passed through. Of two hits at the same distance the
+    /// lower (shape id, child, triangle) wins, so the answer never depends on the order the cast meets them.
     fn probe(&self, feet: Pos, params: &PlayerParams, solid: &Solid, below: f32) -> Option<Probe> {
         let world = &self.world;
         // The probe's lowest point starts this far above the feet, inside the capsule's bottom.
@@ -544,18 +554,19 @@ impl PhysicsWorld {
         let reach = top + below;
         let proxy = make_proxy(&[VEC3_ZERO], params.probe_radius);
         let translation = Vec3 { x: 0.0, y: -reach, z: 0.0 };
-        let mut best: Option<(f32, i32, Vec3, Pos, BodyId)> = None;
+        let mut best: Option<ProbeHit> = None;
         world_cast_shape(
             world,
             start,
             &proxy,
             translation,
             &player_query_filter(),
-            |shape, point, normal, t, _, _, _| {
-                if t > 0.0 && solid.shape(world, shape) {
-                    let closer = best.is_none_or(|(bt, bs, ..)| t < bt || (t == bt && shape.index1 < bs));
+            |shape, point, normal, t, _, triangle, child| {
+                if t > 0.0 && normal.y >= params.min_ground_normal && solid.shape(world, shape) {
+                    let key = (shape.index1, child, triangle);
+                    let closer = best.is_none_or(|(bt, bk, ..)| t < bt || (t == bt && key < bk));
                     if closer {
-                        best = Some((t, shape.index1, normal, point, shape_get_body(world, shape)));
+                        best = Some((t, key, normal, point, shape_get_body(world, shape)));
                     }
                 }
                 // Never clip the cast, so every shape on the way is seen and ties are settled by id.
@@ -566,17 +577,14 @@ impl PhysicsWorld {
         // The ground's height is the touched point's, which is on the surface. The cast's own fraction is not: Box3D's
         // shape cast stops with a rounded shape about a linear slop inside what it hits, so a ride on it would sink.
         let rise = clamp_float(sub_pos(point, feet).y, -below, top);
-        (n.y >= params.min_ground_normal).then_some(Probe {
-            ground: Ground { rise, normal: [n.x, n.y, n.z] },
-            point,
-            body,
-        })
+        Some(Probe { ground: Ground { rise, normal: [n.x, n.y, n.z] }, point, body })
     }
 
     /// The solid planes a capsule at `at` touches, at most [`MAX_PLANES`]: Box3D's mover planes, plus [`push_out`]'s
     /// for the hulls the capsule's core is inside. When there are more, static bodies' planes are kept first. Sorted:
     /// moving bodies' first, then static ones, each by shape and then Box3D's order within the shape.
-    fn planes_at(&self, at: Pos, capsule: &Capsule, solid: &Solid, min_ground_normal: f32) -> Vec<CollisionPlane> {
+    fn planes_at(&self, at: Pos, capsule: &Capsule, solid: &Solid, steep: (f32, bool)) -> Vec<CollisionPlane> {
+        let (min_ground_normal, level_steep) = steep;
         let world = &self.world;
         // A moving body pushes at most a capsule radius a pass (15 m/s at 60 Hz); a static one without limit.
         let limit = |shape: ShapeId| match body_get_type(world, shape_get_body(world, shape)) {
@@ -590,7 +598,7 @@ impl PhysicsWorld {
         world_collide_mover(world, at, capsule, &filter, |shape, results| {
             if solid.shape(world, shape) {
                 for (k, r) in results.iter().enumerate() {
-                    let plane = mover_plane(r.plane, limit(shape), min_ground_normal);
+                    let plane = mover_plane(r.plane, limit(shape), min_ground_normal, level_steep);
                     found.push((fixed(shape), shape.index1, k as i32, plane));
                 }
             }
@@ -601,7 +609,8 @@ impl PhysicsWorld {
             if solid.shape(world, shape)
                 && let Some(plane) = push_out(world, shape, at, capsule)
             {
-                found.push((fixed(shape), shape.index1, -1, mover_plane(plane, limit(shape), min_ground_normal)));
+                let plane = mover_plane(plane, limit(shape), min_ground_normal, level_steep);
+                found.push((fixed(shape), shape.index1, -1, plane));
             }
             true
         });
@@ -616,14 +625,23 @@ impl PhysicsWorld {
 
     /// Slide a player's capsule from feet at `feet` by `delta` over what is solid to it (Box3D's mover: collide,
     /// solve the planes, cast), returning where the feet end and the planes the capsule touches there, marked to clip.
-    fn slide(&self, feet: Pos, delta: Vec3, params: &PlayerParams, solid: &Solid) -> (Pos, Vec<CollisionPlane>) {
+    /// `level_steep`: steep upward planes are levelled into walls ([`mover_plane`]).
+    fn slide(
+        &self,
+        feet: Pos,
+        delta: Vec3,
+        params: &PlayerParams,
+        solid: &Solid,
+        level_steep: bool,
+    ) -> (Pos, Vec<CollisionPlane>) {
+        let steep = (params.min_ground_normal, level_steep);
         let world = &self.world;
         let capsule = params.capsule();
         let filter = player_query_filter();
         let target = offset_pos(feet, delta);
         let mut at = feet;
         for _ in 0..SLIDE_PASSES {
-            let mut planes = self.planes_at(at, &capsule, solid, params.min_ground_normal);
+            let mut planes = self.planes_at(at, &capsule, solid, steep);
             let step = solve_planes(sub_pos(target, at), &mut planes).delta;
             if length_squared(step) < SLIDE_TOLERANCE * SLIDE_TOLERANCE {
                 break;
@@ -638,7 +656,7 @@ impl PhysicsWorld {
         }
         // Every plane found touches the capsule where it ended (Box3D's mover lets it rest up to a slop inside, where
         // the solver would push nothing), so each one clips the velocity.
-        let mut planes = self.planes_at(at, &capsule, solid, params.min_ground_normal);
+        let mut planes = self.planes_at(at, &capsule, solid, steep);
         for plane in &mut planes {
             plane.push = 1.0;
         }

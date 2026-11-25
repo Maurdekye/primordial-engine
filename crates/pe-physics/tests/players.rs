@@ -149,13 +149,45 @@ fn a_walkable_slope_is_climbed_and_a_steep_one_is_not() {
     let p = feet(&gentle);
     assert!(p[0] > 2.5 && p[1] > 0.6, "feet at {p:?}");
 
+    // The steep one blocks where the capsule touches its face (the feet stop near x = 1), and there the player stays
+    // on the floor: the face nearer the feet doesn't hide it.
     let mut steep = world_at([0.0, 0.0, 0.0]);
     ramp(&mut steep, 101, RISE_60);
-    for _ in 0..90 {
+    for f in 0..90 {
         frame(&mut steep, walking(2.0, 0.0));
+        let p = feet(&steep);
+        assert!(p[1].abs() < 0.01 && p[0] < 1.1, "frame {f}: feet at {p:?}");
     }
-    let p = feet(&steep);
-    assert!(p[1] < 0.5, "feet at {p:?}");
+    assert!(steep.player(id(ME)).unwrap().grounded);
+}
+
+#[test]
+fn a_player_dropped_on_a_steep_face_slides_down_it() {
+    // @design-reviewer's M1 on cbe1603b: a player that falls onto a face too steep to stand on (the 60° ramp, 3.5 m up
+    // under x = 3) slides down it to the floor. Its velocity is the slide's, so the fall it records is the fall it
+    // makes, and at the foot of the face it lands on the floor, never sinking below it.
+    let mut pw = world_at([3.0, 4.5, 0.0]);
+    ramp(&mut pw, 101, RISE_60);
+    let (mut landed, mut descent, mut recorded) = (None, 0.0f64, 0.0f64);
+    let mut last = feet(&pw);
+    for f in 0..150 {
+        frame(&mut pw, MoverInput::default());
+        let (p, state) = (feet(&pw), pw.player(id(ME)).unwrap());
+        assert!(p[1] > -0.01, "frame {f}: the feet sank below the floor, to {p:?}");
+        if state.grounded && landed.is_none() {
+            landed = Some(f);
+        }
+        // On the face: pushed off x = 3 and not landed yet.
+        if landed.is_none() && p[0] < 3.0 - 1.0e-3 {
+            descent += last[1] - p[1];
+            recorded -= f64::from(state.velocity[1] * DT);
+        }
+        last = p;
+    }
+    let p = feet(&pw);
+    assert!(landed.is_some_and(|f| f < 120), "landed at frame {landed:?}, feet at {p:?}");
+    assert!(p[1].abs() < 0.01 && p[0] < 1.5, "feet at {p:?}");
+    assert!(descent > 2.0 && (recorded / descent - 1.0).abs() < 0.1, "fell {descent} m, recorded {recorded} m");
 }
 
 #[test]

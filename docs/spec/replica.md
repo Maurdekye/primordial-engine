@@ -1062,13 +1062,16 @@ body object, the `Player` row and the Move input) is walked over the world once 
   a jump press. The drive turns the `Player` row's stick and yaw into world axes with `walk_axes`, the fork's
   cosine and sine (yaw 0 faces -z, a positive yaw turns toward -x), never the standard library's.
 - **Order:** once a frame for each player, in object-id order, before the step; the hand targets come from the pose
-  it returns, which is the body's pose after the step.
+  it returns, which is the body's pose after the step within rounding (the step reaches the target at its velocity
+  over the substeps; about 1e-5 m). So the hand targets are set from the pose returned, and nothing compares it
+  with the body's for equality.
 - **Walk** (`walk`, a pure function of the tuning, the player's state, the ground and the input; trinkets wrap it):
   the walk velocity moves toward the one asked for at 40 m/s² on the ground and 10 in the air; gravity is the
   player's own (15 m/s²); a jump starts at 5.2 m/s (0.9 m) when a press is at most 0.1 s old and the ground holds the
   player or did at most 0.1 s ago (coyote time).
-- **Ground:** one downward sphere cast from inside the bottom of the capsule. The closest solid hit is the ground if
-  its slope is at most about 50°; the ride holds the feet on it, rising at most 4 m/s onto steps and dropping at most
+- **Ground:** one downward sphere cast from inside the bottom of the capsule. The ground is the closest solid hit
+  whose slope is at most about 50°, so a steeper face nearer the feet (the foot of a steep slope) doesn't hide the
+  floor below it. The ride holds the feet on it, rising at most 4 m/s onto steps and dropping at most
   6 m/s down to ground at most 0.3 m below. Steps lower than the ride pass beneath the capsule. A fall lands on the
   ground, never in it.
 - **Solid and light:** static and kinematic bodies, and dynamic bodies of at least 40 kg (each body's own mass, read
@@ -1081,10 +1084,11 @@ body object, the `Player` row and the Move input) is walked over the world once 
   `ignore` list).
 - **Out of walls** (6(b)): the capsule never stays inside something solid. Box3D's mover gives no plane for a hull
   the capsule's core is inside (hull/queries.rs), so the move adds the hull face that needs the least push; the body
-  and the view are pushed out. A plane that faces up but is too steep to stand on is levelled into a wall, so a
-  slope can't be climbed by sliding. A moving body's plane (kinematic, or dynamic and heavy) pushes at most a capsule
-  radius a pass and is solved before the static ones, so where they disagree the static one wins: a crate pinning a
-  player against a wall passes through the player, never pushing it into the wall.
+  and the view are pushed out. While the player is on the ground or rising, a plane that faces up but is too steep
+  to stand on is levelled into a wall, so a slope can't be climbed by sliding; a falling player keeps the real
+  plane, so it slides down the face (@design-reviewer's M1 on cbe1603b). A moving body's plane (kinematic, or dynamic
+  and heavy) pushes at most a capsule radius a pass and is solved before the static ones, so where they disagree the
+  static one wins: a crate pinning a player against a wall passes through the player, never pushing it into the wall.
 - **No platform carry:** the ground's motion is not followed sideways; a player slides off anything moving underneath.
 - **Tuning** is data (`PlayerParams`, the constant `PLAYER`), passed into every move.
 - **Determinism and rollback:** serial, fork arithmetic and IEEE square roots only; the planes are sorted (moving
