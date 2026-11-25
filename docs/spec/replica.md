@@ -1233,8 +1233,29 @@ world-model.md 3.2 says what a bullet means; this is the solver's side [V `crate
 - **Deterministic:** serial, in fixed orders (body ids, shape ids, pairs, the earliest time then the pair), with the
   fork's own arithmetic. The same state at 1, 2, 4 and 8 workers and after a snapshot restore [V tests]. The flag is a
   body flag in the snapshot, and nothing else crosses a step.
-- **Not yet (part 2):** meshes, height fields and compounds are neither swept nor swept against, and a hull that isn't
-  a box takes a rounded core scaled toward its centre instead of its faces moved in.
+- **Mesh triangles are partners** (CCD part 2 A,
+  @ticket:primordial-engine/ccd-part-2-box3d-fork-sweeps-meshes-and-hulls-pe), on static and kinematic meshes
+  [V swept tests], and dynamic and sleeping ones by the same path [I, untested until C gives meshes mass]:
+  - A mesh shape a search finds adds one pair per triangle whose box meets the bullet's path in the mesh body's frame,
+    mapped over the mesh body's own motion, translation and turn together (@astra-deliberator's bound). The triangle
+    is the one Box3D's mesh contact takes (`get_mesh_triangle`: the shape's scale, a mirroring scale's winding, the
+    edge flags), on the mesh body's motion, with the triangle's own material.
+  - One-sided, as Box3D's contact solver is: a bullet whose centre starts a piece behind a triangle's plane is left
+    alone for the piece (counted `behind`), so one arriving from behind passes, as through the contact solver [V test].
+  - A triangle has no thickness: the touching rule's thinner core is the bullet's, and the deep floor stops short of
+    the bullet core's centre, so the contact solver's one-sided push-out always sees the bullet in front.
+  - At a smooth feature (the face, or an edge or a vertex the mesh's flags mark concave or flat from the front), the
+    impulse takes the face's normal, as the mesh contact drops an inner edge's contact. Without that, a 2 cm box
+    bullet sliding at 50 m/s across a flat floor of 1000 triangles caught their edges three times in a step and left
+    it [V red]; with it, the worst vertical speed is 0.0009 m/s.
+  - Cost: a triangle's own sphere feeds the zero-query cull, and a bullet that stays in front of a triangle's plane,
+    farther than the shapes' target, over the rest of a piece (while the mesh body doesn't turn) is proven apart
+    without a query. A 1 cm bullet skimming a 5000-triangle floor at 200 m/s, touching it or 2 mm above, costs 0
+    queries for its 847 triangle pairs over three steps; without the plane test, 611 in one step [V test].
+  - Scenes without meshes are unchanged: the pit's final states and counters equal main's in all five runs, and so
+    do the self-test digest and the stack-hit RESULT lines [V scratch/mesh/a-digest.log, a-selftest.lines].
+- **Not yet (part 2):** height fields and compounds are neither swept nor swept against (Q5: pe-physics builds
+  neither), and a hull that isn't a box takes a rounded core scaled toward its centre instead of its faces moved in.
 - **Known limit** [V swept tests' trace]: a 12 cm box bullet tumbling into a 1 cm wall at 400 m/s and 200 rad/s
   takes 35 hits in one frame, ends spinning at about 1900 rad/s with its centre still closing, and is held against
   the wall from then on. It never crosses. Up to 150 m/s, capsules and boxes at every spin tested are free again
