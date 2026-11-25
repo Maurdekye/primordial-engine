@@ -10,7 +10,10 @@ together. This kit is the Linux side: Fedora with an NVIDIA GPU and a Quest 3 th
    streams to your headset, this is done.
 2. **WiVRn:** running, with the headset connected and showing WiVRn's lobby.
 3. **The network:** both machines must reach each other, for example both on the same Tailscale network.
-4. **Unpack the kit:** `tar xzf pe-friend-kit-<version>.tar.gz && cd pe-friend-kit-<version>`.
+4. **Sound:** collisions play spatial sound through Valve's Steam Audio (`libphonon.so`, with its licence and
+   notices, is in the kit). It plays on the system's default output (PipeWire or PulseAudio, through ALSA) at
+   48 kHz. Without a working output the program runs silent; `steam-audio.txt` in the logs says why.
+5. **Unpack the kit:** `tar xzf pe-friend-kit-<version>.tar.gz && cd pe-friend-kit-<version>`.
 
 Optional, without the headset: `./run.sh --headless --seconds 20` checks that the program starts on this machine.
 Send the logs back afterwards (below).

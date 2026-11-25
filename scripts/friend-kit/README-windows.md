@@ -14,6 +14,9 @@ The Windows side of the friend test: this PC opens the session in VR, and the fr
    The session must go over a network the launcher lists as "allowed" (on this PC, Ethernet or Tailscale, both
    Private); a "blocked" Public network beside it is fine.
 3. **The network:** both machines on the same Tailscale network (or LAN).
+4. **Sound:** collisions play spatial sound through Valve's Steam Audio (`phonon.dll`, with its licence and
+   notices, is in this folder), on Windows' default output device. Without one the program runs silent;
+   `steam-audio.txt` in the logs says why.
 
 ## Starting
 
@@ -35,4 +38,4 @@ someone else's session). Any other pe-app option passes through.
 ## The logs
 
 Each run writes `%LOCALAPPDATA%\Primordial Engine\friend-test\logs\<time>\`: this machine's VR setup
-(`system.txt`), pe-app's log, the cut log, the tick trace and stderr.
+(`system.txt`), pe-app's log, the cut log, the tick trace, the Steam Audio metrics (`steam-audio.txt`) and stderr.
