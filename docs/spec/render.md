@@ -344,8 +344,10 @@ impl DepthRange { pub fn xr_depth_info(&self) -> XrDepthInfo; }   // min/max dep
   pairs past `SNAP_DV` (8 m/s), or a speed past `RIG_SPEED_CAP` (40 m/s, past a fall), is a correction and snaps (the
   user's 1a: no glide setting); it is never carried on. Another domain, a frame below the newest kept
   and a gap between batches start the track over. While the newest view has the local player's own body, the rig is
-  then turned about the head by the local move feed's heading lead over the view's (`rig::pivot`, at most 45°), so a
-  turn shows at once and pivots on the head, and the lead is zero once the simulation has stepped that heading.
+  then turned about the head by the local move feed's heading lead over the view's (`rig::pivot`, the shorter way
+  round, up to half a turn: a VR recentre's, xr.md 3.2), so a turn shows at once and pivots on the head, and the
+  lead is zero once the simulation has stepped that heading. Between two views the point under the head is
+  interpolated as well and the rig rebuilt from it, so a large turn in one view keeps the head still.
   Walking keeps the simulation's lag (about a tick plus the display delay, the plan's stick-to-photon budget [I],
   measured in L6). Without bodies the views' rig is the identity and nothing turns it. The VR sink takes the rig
   this way; the desktop window does once @ballpit-viz's L4b (the window's walking) calls `drawn_rig` with its move
