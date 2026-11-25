@@ -16,11 +16,16 @@
 //!   never carried on. A long fall is (@design-reviewer's L1).
 //! - **A new history starts over:** a view of another domain, or of a frame below the newest kept (a rejoin, a line
 //!   switch), and a gap in the batches, clear what the track kept (@design-reviewer's L2).
+//! - **Between two views the point under the head is interpolated too,** and the rig rebuilt from it with the
+//!   interpolated rotation: the views' rigs turn about the head, so lerping their origins would move the head along
+//!   the chord (0.3 m at a quarter turn with the head 1 m from the playspace's centre, a VR recentre's turn in one view;
+//!   @chunks-reviewer on L4a.1).
 //! - **A turn shows at once** ([`pivot`]): the heading is the player's own input, so the drawn rig takes the local
 //!   feed's newest heading instead of waiting a tick and the display delay for the simulation to step it. The rig
-//!   turns about the head by the heading's lead over the view's, as the simulation will turn it, so when the
-//!   simulation catches up the lead is zero and nothing moves. Only while the view has the local player's own body:
-//!   without one the simulation never turns the rig, so neither does the display.
+//!   turns about the head by the heading's lead over the view's, however large (a recentre's can be half a turn), as
+//!   the simulation will turn it, so when the simulation catches up the lead is zero and nothing moves. Only while the
+//!   view has the local player's own body: without one the simulation never turns the rig, so neither does the
+//!   display.
 
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -34,9 +39,6 @@ pub const RIG_SPEED_CAP: f64 = 40.0;
 /// a jump's take-off (about 5 m/s) or a stop from a walk (5 m/s) stays below it; a correction's jump between two
 /// views (0.3 m in 1/60 s is 18 m/s) is above it, and snaps.
 pub const SNAP_DV: f64 = 8.0;
-/// The most the drawn rig turns ahead of the view's heading, radians [I]: a smooth turn's lead over a few frames is
-/// far less, so more means the simulation has stopped taking this player's moves, and the display shouldn't drift.
-pub const TURN_LEAD_CAP: f64 = std::f64::consts::FRAC_PI_4;
 /// How many views the track keeps: enough to span a Shown delay.
 const KEPT: usize = 16;
 
@@ -112,21 +114,24 @@ impl RigTrack {
             return Some(RigTransform { pos, ..newest.rig });
         }
         let (mut before, mut after) = (None, None);
-        for &Kept { time: tv, rig: r, .. } in &self.views {
-            if tv <= t {
-                before = Some((tv, r));
+        for v in &self.views {
+            if v.time <= t {
+                before = Some(*v);
             } else {
-                after = Some((tv, r));
+                after = Some(*v);
                 break;
             }
         }
         match (before, after) {
-            (Some((ta, a)), Some((tb, b))) => {
-                let k = (t.secs_since(ta) / tb.secs_since(ta)).clamp(0.0, 1.0);
-                Some(lerp(&a, &b, k))
+            (Some(a), Some(b)) => {
+                let k = (t.secs_since(a.time) / b.time.secs_since(a.time)).clamp(0.0, 1.0);
+                match (a.head, b.head) {
+                    (Some(ha), Some(hb)) => Some(about_heads(&a.rig, ha, &b.rig, hb, k)),
+                    _ => Some(lerp(&a.rig, &b.rig, k)),
+                }
             }
-            (None, Some((_, b))) => Some(b),
-            (Some((_, a)), None) => Some(a),
+            (None, Some(b)) => Some(b.rig),
+            (Some(a), None) => Some(a.rig),
             (None, None) => None,
         }
     }
@@ -158,6 +163,23 @@ fn lerp(a: &RigTransform, b: &RigTransform, k: f64) -> RigTransform {
     RigTransform { pos, rotation, scale: a.scale + (b.scale - a.scale) * kf }
 }
 
+/// `a` to `b` by `k`, each with the own head's world point (`ha`, `hb`): the rotation and the height as [`lerp`] gives
+/// them, and the origin rebuilt from the interpolated head point and head offset over the floor (each view's in its
+/// own rig's frame), so a turn between the views keeps the head where it is.
+fn about_heads(a: &RigTransform, ha: Pos, b: &RigTransform, hb: Pos, k: f64) -> RigTransform {
+    let r = lerp(a, b, k);
+    let off = |rig: &RigTransform, h: Pos| {
+        let d = (h - rig.pos).0;
+        rotate_y(-yaw_of(rig.rotation), [d[0], 0.0, d[2]])
+    };
+    let (oa, ob) = (off(a, ha), off(b, hb));
+    let o = [oa[0] + (ob[0] - oa[0]) * k, 0.0, oa[2] + (ob[2] - oa[2]) * k];
+    let Ok(h) = ha.checked_add(Offset((hb - ha).0.map(|c| c * k))) else { return r };
+    let w = rotate_y(yaw_of(r.rotation), o);
+    let pos = h.checked_add(Offset([-w[0], (r.pos - h).0[1], -w[2]])).unwrap_or(r.pos);
+    RigTransform { pos, ..r }
+}
+
 /// The yaw of a rig's rotation about +Y, radians (positive turning left).
 fn yaw_of(q: [f32; 4]) -> f64 {
     2.0 * f64::from(q[1]).atan2(f64::from(q[3]))
@@ -169,12 +191,12 @@ fn heading_radians(heading: u32) -> f64 {
 }
 
 /// `rig` turned about the local player's head to the heading `local` carries: the lead of that heading over the rig's
-/// own yaw, at most [`TURN_LEAD_CAP`] either way, about the vertical through the head, where `local.head` puts it
-/// under `rig`. So the head stays where it is, and only what is around it turns, as the simulation's own turn will.
+/// own yaw, the shorter way round (up to half a turn: a VR recentre's, xr.md 3.2), about the vertical through the
+/// head, where `local.head` puts it under `rig`. So the head stays where it is, and only what is around it turns, as
+/// the simulation's own turn will.
 pub fn pivot(rig: &RigTransform, local: &MoveInput) -> RigTransform {
     let mut lead = heading_radians(local.heading) - yaw_of(rig.rotation);
     lead = (lead + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI;
-    let lead = lead.clamp(-TURN_LEAD_CAP, TURN_LEAD_CAP);
     if lead == 0.0 || !lead.is_finite() {
         return *rig;
     }
@@ -262,6 +284,35 @@ mod tests {
         t.push(&view(11, 1017, 0.3, 0.0));
         let r = t.resolve(HostTime::from_millis(1040), Duration::from_millis(33)).unwrap();
         assert!((x(&r) - 0.3).abs() < 1e-9, "held at the corrected rig: {}", x(&r));
+    }
+
+    /// A quarter turn between two views (a VR recentre's in one view, @chunks-reviewer on L4a.1), the feet still and
+    /// the head 1 m off the rig's origin: drawn midway between them, the head is where it was, not on the chord.
+    #[test]
+    fn a_turn_between_two_views_keeps_the_head_still() {
+        let feet = Pos::ORIGIN;
+        let head = |v: &mut FrameView| {
+            v.heads = vec![pe_seams::HeadView {
+                member: pe_seams::MemberKey([1; 32]),
+                body: pe_seams::ObjectId::from_u128(9),
+                pos: feet.checked_add(Offset([0.0, 1.6, 0.0])).unwrap(),
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                own: true,
+            }];
+        };
+        let mut t = RigTrack::default();
+        for (f, yaw) in [(0u64, 0.0f64), (1, std::f64::consts::FRAC_PI_2)] {
+            let mut v = view(f, f as i64 * 16, 0.0, yaw);
+            let o = rotate_y(yaw, [1.0, 0.0, 0.0]);
+            v.local_rig.pos = feet.checked_add(Offset([-o[0], 0.0, -o[2]])).unwrap();
+            head(&mut v);
+            t.push(&v);
+        }
+        let r = t.resolve(HostTime::from_millis(8), Duration::ZERO).unwrap();
+        assert!((yaw_of(r.rotation) - std::f64::consts::FRAC_PI_4).abs() < 1e-5, "{}", yaw_of(r.rotation));
+        let h = rotate_y(yaw_of(r.rotation), [1.0, 0.0, 0.0]);
+        let w = (r.pos.checked_add(Offset(h)).unwrap() - feet).0;
+        assert!(w[0].abs() < 1e-5 && w[2].abs() < 1e-5, "the head moved {w:?}");
     }
 
     /// @design-reviewer's L1: a steady fall at 20 m/s is carried on past the newest view, not held as a snap.
@@ -359,7 +410,10 @@ mod tests {
         assert!((0..3).all(|i| (a[i] - b[i]).abs() < 1e-5), "the head stays: {a:?} {b:?}");
         let same = pivot(&rig, &local(to(0.3)));
         assert!((x(&same) - 2.0).abs() < 1e-5 && (yaw_of(same.rotation) - 0.3).abs() < 1e-5);
-        let far = pivot(&rig, &local(to(0.3 + 2.0)));
-        assert!((yaw_of(far.rotation) - (0.3 + TURN_LEAD_CAP)).abs() < 1e-5, "capped");
+        // A recentre's lead, close to half a turn, turns all the way at once, the head still put.
+        let far = pivot(&rig, &local(to(0.3 + 2.9)));
+        assert!((yaw_of(far.rotation) - (0.3 + 2.9)).abs() < 1e-5, "{}", yaw_of(far.rotation));
+        let c = head_world(&far);
+        assert!((0..3).all(|i| (a[i] - c[i]).abs() < 1e-5), "the head stays: {a:?} {c:?}");
     }
 }
