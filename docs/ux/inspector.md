@@ -180,10 +180,11 @@ Marks: **[R]** a user ruling, cited; **[P]** my proposal; **[A]** to agree with 
   one. The hover glosses each mode in the user's words: "synchronized; field is the same for
   every player. decoupled: field is unique per player, but the value of any particular player can still be known
   by all players. desynchronized; field is unique per player and totally private from every other player, for
-  performance / secrecy".
-- **A decoupled field being published carries the "fed by" label,** naming the player who feeds it and whether
-  that source is live. [I] For a field several players may write, the label says who wrote last; only a feed has a
-  current source and a live mark.
+  performance / secrecy" [P: the hover's use of them, @liaison-opus].
+- **A decoupled field being published carries the "fed by" label,** naming the player whose value the plain read
+  returns (who set the latest value, or the selector's named player) and whether they are still present. [I] Under
+  a gather it names no single player. For a synchronized field several players may write, the label says who wrote
+  last.
 - **One mark for every outside source** (a websocket, HTTP, engine-managed secret code): a value fed by a source the
   player manages says only that it comes from outside, never which kind. The feeder's label stays beside it.
 - **A write from the inspector is a published write:** the player's signed input, subject to the field's writer

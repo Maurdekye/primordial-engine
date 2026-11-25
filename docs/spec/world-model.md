@@ -776,9 +776,9 @@ The user's rulings of 2026-11-24, from @fable-reviewer's file 21 (`fable-reviewe
 v14, sections 2.1, 2.3, 2.7 and 2.8; the rulings verbatim on
 @item:primordial-engine/draw-systems-define-the-exact-restrictions-of-pe and in `<notes>`
 under the 2026-11-07 QR (b) entry). They extend the 2026-11-07 localization rulings (`user-design-decisions.md`
-362-374). Nothing here is built; building needs its own
-go after the friend test. The local rule that decides which code is local, and draw systems themselves, are
-logic.md's (section 7); how a drawn picture is made is render.md's.
+362-374). Nothing here is built; building needs its own go after the friend test. The local rule that decides
+which code is local, and draw systems themselves, are logic.md's (section 7); how a drawn picture is made is
+render.md's.
 
 **Kinds of value** (file 21, 2.1). Every value a world holds is one of three; the third is new:
 
@@ -814,8 +814,10 @@ enforce performance or privacy constraints"
 A private script is a local one under logic.md 7.1's local rule.
 - **They are the three of before**, verbatim: "so really there are three types of fields; shared,
   private unlocked (published) and private locked (private). so we have the same three from before". The names
-  replace the field labels shared, published and private of; that ruling's positioning statement
-  stands.
+  replace the field labels shared, published and private of. That ruling's positioning statement
+  stands: Resonite has two states, published and private, and the engine's "main advancement is adding the third
+  "shared" state: simulated locally, synchronized via signed contrqts on world state and corrected via rollback
+  when invalidated" (file 21 v14, 2.3).
 - **The mechanism underneath** (accepted by the user): a field is stored one of
   two ways, one value for everyone or one local value per player. A per-player field can have a
   **published feed**: its player's changes, sent as that player's input. The feed switches on automatically when a
@@ -909,7 +911,8 @@ local value.
   rule. A reveal is sent only once its step is final, and a retry may resend the same signed reveal, whose effect
   happens once. Across a leave the owner keeps their private saved data and the keys of outstanding reveals.
 - [I] **Nothing of a source enters the world:** no module, private rows or debug output in commits, joins, saves,
-  the inspector, captures or telemetry. A private field is only as secret as its storage, which is open (12).
+  the inspector, captures or telemetry. A desynchronized field is only as secret as its storage, which is open
+  (12).
 
 ## 4. Coordinates: `Pos`, `Offset` and the wall
 

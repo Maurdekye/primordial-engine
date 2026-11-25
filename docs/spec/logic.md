@@ -1086,8 +1086,8 @@ numbers [I].
 
 ## 7. Local scripts and draw systems (QR (b), M2; the user's rulings of 2026-11-24)
 
-Sections 7.1 to 7.3 fold in @fable-reviewer's file 21 (`fable-reviewer/review/21-draw-systems.md` v13: 2.2,
-2.4, 3, 4, 5, 6 and 8), with the user's rulings, verbatim on
+Sections 7.1 to 7.3 fold in @fable-reviewer's file 21 (`fable-reviewer/review/21-draw-systems.md` v13, and v14
+for 7.1 point 2: 2.2, 2.4, 3, 4, 5, 6 and 8), with the user's rulings, verbatim on
 @item:primordial-engine/draw-systems-define-the-exact-restrictions-of-pe. They are design only: nothing is built,
 and building needs its own go after the friend test. Which mode a field has (synchronized, decoupled or
 desynchronized) is world-model.md 3.7; how a picture is drawn is render.md's.
@@ -1137,9 +1137,9 @@ desynchronized) is world-model.md 3.7; how a picture is drawn is render.md's.
        UserOverrideGather components; [I] not checked in decompiled source.
      - **The same reads can be written in a script:** a named player's value, a gather, each player in turn.
        [I] "Each player in turn" is an explicit loop over the agreed list of players in a fixed order.
-     - **A shared script runs once:** every machine runs it on the fixed step and under rollback, and its plain
-       read gives the latest value or the selector's result. It doesn't run once for each player, and there is
-       no player-local instance. [I, file 21 v14, 2.2] The 2026-11-07 record of QR (b) (`user-design-decisions.md`
+     - **A shared script runs once** [I, file 21 v14, 2.2]**:** every machine runs it on the fixed step and under
+       rollback, and its plain read gives the latest value or the selector's result. It doesn't run once for each
+       player, and there is no player-local instance. The 2026-11-07 record of QR (b) (`user-design-decisions.md`
        398) describes a player-local instance whose effects are sent; under these rulings that is what a local
        script does (points 3 and 4).
      - **One field can be read both ways,** verbatim: "one script ought to be able to read a private field and
