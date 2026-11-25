@@ -187,6 +187,8 @@ fn node() -> Node {
         changes: Vec::new(),
         activations: Vec::new(),
         activations_retracted: Vec::new(),
+        hits: Vec::new(),
+        hits_from: None,
     });
     Node {
         agree: Agree { log: log.clone(), final_cut: None, wants: Vec::new(), none: Vec::new() },

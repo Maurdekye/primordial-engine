@@ -768,7 +768,7 @@ the floor's cut-exact snapshot at once, with the cut-exact outcomes below the fl
 
 ## 7. The frame view: what the replica puts in S5
 
-pe-seams fixes the view's shape (`crates/pe-seams/src/view.rs`, S5 through v1.10). The replica fills it after an advance
+pe-seams fixes the view's shape (`crates/pe-seams/src/view.rs`, S5 through v1.11). The replica fills it after an advance
 that stepped and stands at the newest frame its live history has completed (`reached`), with no replay under way. That
 need not be the present (S2 v1.10; F3's S5, "the fastest machine sets the pace"): a replica that trails wall time still
 shows its world, a view per call. A re-simulation publishes nothing until it is back at `reached`, so no view goes
@@ -815,6 +815,28 @@ back in time, and the first view there marks what it corrected (below). The repl
   retracted in the view that passes the commit's frame, and no preview outcome is told as final. When the prediction
   ends, the replay gives the rule's records from there on. pe-api's change log reads these records to tell an author
   what became of their change.
+- **Collision hits** (S5 v1.11, for the friend test's impact sounds; @coordinator-opus's ruling on
+  @item:primordial-engine/collision-hit-events-from-pe-physics-through-pe-r): after each physics step, live or off the
+  live history, the replica reads pe-physics's `hits()`: two bodies that approached along their normal at the world's
+  hit threshold (1 m/s) or faster. It keeps each frame's from its latest step, and the next view at a later frame
+  carries every frame's below it, re-simulations included, in frame order. So a frame stepped twice before a view
+  carries only the later step's hits: no view showed the first, and the world no longer has it. A frame re-stepped
+  after a view showed it carries its hits again in a later view, with `resimulated`, which is set as for effects
+  (the step re-simulated its frame). Readers match those with the hits they had, by pair and time, and play only
+  what is new (pe-app; fable's rule 1). A view also names the lowest frame stepped since the last one
+  (`hits_from`): every frame from it to the view's was stepped since, and the view lists exactly their latest steps'
+  hits. A reader that keeps hits by frame matches the list against its record for that range, plays only what it
+  lacks, then replaces the record for the range, so a re-step that no longer has a hit drops it. It also drops a new
+  hit whose `sim_time` is more than a short horizon (about 100-200 ms) behind the view's, so a correction never
+  sounds late: a deep re-simulation, such as an outage's, carries hits from seconds back (@design-reviewer's L1).
+  Each hit has its frame and that frame's host time, the two bodies, each side's
+  part, the object whose `Shape` touched (the body's own, or a compound child's, by the physics' place for the shape
+  in the body's row, `ShapePart::object`; a hand is its own part), the world point, the normal from `a` to `b` and the
+  approach speed. The part's appearance in the same view is that side's material. A history off the live steps that
+  becomes the live one (a rung-1 replay, a rebase on the floor) brings its frames' hits, re-simulated. A rung-2
+  import drops the unpublished hits below its cut, since the importer never steps those frames again. Equal frames
+  give equal hits on every replica, since the physics is deterministic and reports them in contact order. Hits are
+  for sounds only: nothing reads them back into the simulation, and no root includes them.
 - **Counters,** cumulative over the replica's life: `corrections` (advances that re-simulated), the deepest rollback,
   the frames re-simulated, and the floating-point guard's resets from both callers (3, step 1).
 - **`sim_time`** is the shared clock's host time of the view's frame (`ReplicaConfig::clock`), so every reader shares

@@ -418,8 +418,8 @@ fn lap(mark: &mut Instant) -> u64 {
 }
 
 /// `view` published again with only its health changed: a publication with nothing new since the last (S5): no
-/// changes, effects, retractions, activations or counters, and no object marked `CORRECTED`, since those were the
-/// last publication's (@engine-architect's and @design-reviewer's Lows on 785ab327).
+/// changes, effects, retractions, activations, hits or counters, and no object marked `CORRECTED`, since those were
+/// the last publication's (@engine-architect's and @design-reviewer's Lows on 785ab327).
 fn health_only(view: &FrameView, health: Health) -> FrameView {
     let mut v = FrameView {
         health,
@@ -428,6 +428,8 @@ fn health_only(view: &FrameView, health: Health) -> FrameView {
         retracted: Vec::new(),
         activations: Vec::new(),
         activations_retracted: Vec::new(),
+        hits: Vec::new(),
+        hits_from: None,
         counters: pe_seams::ViewCounters::default(),
         ..view.clone()
     };

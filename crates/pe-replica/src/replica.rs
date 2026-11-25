@@ -86,7 +86,7 @@ use pe_physics::{BodyDigest, CheckHash, PhysicsConfig, PhysicsError, PhysicsWorl
 use pe_seams::{
     Activation, ActivationKey, Advance, ChainId, Class, Cut, CutImport, CutRef, DomainId, Effect, EffectCause,
     EffectKey, EffectKind, EntryRef, EntrySource, FinalCut, Finalized, Frame, FrameClock, FrameView, GroupSel, Hash,
-    Hasher, Health, HostTime, ImportError, MemberKey, ObjectId, Offset, Outcome, PhysicsImage, Pos, Replica,
+    Hasher, Health, Hit, HostTime, ImportError, MemberKey, ObjectId, Offset, Outcome, PhysicsImage, Pos, Replica,
     RigTransform, RootError, RunnerIdentity, SignedEntry, SimRate, Stage, StepRecord, Tree, ViewCounters, ViewFlags,
     VoidReason, frames_ceil,
 };
@@ -369,6 +369,13 @@ pub struct ReplicaImpl<W: WorldModel> {
     acts_retract: Vec<ActivationKey>,
     /// The activation records of the frames `root_at_cut`'s scratch re-stepped, for a rebase on that history.
     scratch_acts: BTreeMap<Frame, Vec<Activation>>,
+    /// Each frame's collision hits from its latest live step, until a view at a later frame publishes them (S5 v1.11):
+    /// a re-step of the frame replaces them, and a frame whose latest step had none has no entry.
+    hits: BTreeMap<Frame, Vec<Hit>>,
+    /// The lowest frame live-stepped since the last publication: the next view's `hits_from` (S5 v1.11).
+    hits_low: Option<Frame>,
+    /// The collision hits of the frames `root_at_cut`'s scratch re-stepped, for a rebase on that history.
+    scratch_hits: BTreeMap<Frame, Vec<Hit>>,
     script_counts: ScriptCounts,
 }
 
@@ -512,6 +519,9 @@ impl<W: WorldModel> ReplicaImpl<W> {
             acts_stepped: BTreeSet::new(),
             acts_retract: Vec::new(),
             scratch_acts: BTreeMap::new(),
+            hits: BTreeMap::new(),
+            hits_low: None,
+            scratch_hits: BTreeMap::new(),
             script_counts: ScriptCounts::default(),
         };
         let root = r.is_cut_frame(Frame(0)).then(|| r.take_root());
@@ -715,6 +725,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
         self.faults += faults;
         let awake_before = self.awake(&hands);
         self.faults += u64::from(self.physics.step_holding(self.dt, &reaches).is_err());
+        let hits = self.step_hits(f, resimulated, &hands);
         self.write_back(awake_before, &hands);
         self.logic(f, Stage::LogicPostPhysics, live, &mut events);
         self.faults += u64::from(self.world.maintain_transforms());
@@ -730,9 +741,13 @@ impl<W: WorldModel> ReplicaImpl<W> {
         if !live {
             self.scratch_events.insert(f, events);
             self.scratch_acts.insert(f, acts);
+            if !hits.is_empty() {
+                self.scratch_hits.insert(f, hits);
+            }
         } else {
             self.note_events(f, events, resimulated);
             self.note_acts(f, acts);
+            self.note_hits(f, hits);
             self.stepped.insert(f, ids);
             if self.config.policy.takes(next) || self.is_cut_frame(next) {
                 self.keyframe(next);
@@ -845,6 +860,58 @@ impl<W: WorldModel> ReplicaImpl<W> {
         self.acts_played = self.acts_played.split_off(&keep);
         self.acts_played.retain(|_, keys| !keys.is_empty());
         (records, retracted.into_iter().collect())
+    }
+
+    /// Keeps frame `f`'s collision hits from its live step for the next view, in place of an earlier step's (S5
+    /// v1.11): a view carries each frame's hits as its latest step had them.
+    fn note_hits(&mut self, f: Frame, hits: Vec<Hit>) {
+        self.hits_low = Some(self.hits_low.map_or(f, |low| low.min(f)));
+        if hits.is_empty() {
+            self.hits.remove(&f);
+        } else {
+            self.hits.insert(f, hits);
+        }
+    }
+
+    /// Frame `f`'s collision hits from the physics step just taken (S5 v1.11), as the view carries them: at world
+    /// positions, with each side's part, the object whose `Shape` touched (the body's own, or a compound child's, by
+    /// the physics' place for the shape in the body's row). A hand's part is the hand. A hit too far out to be a
+    /// position is left out, though no world reaches that far.
+    fn step_hits(&self, f: Frame, resimulated: bool, hands: &[HandRow]) -> Vec<Hit> {
+        let raw = self.physics.hits();
+        if raw.is_empty() {
+            return Vec::new();
+        }
+        let sim_time = self.config.clock.host_time_of(f);
+        let mut parts: BTreeMap<ObjectId, Vec<ObjectId>> = BTreeMap::new();
+        let mut part = |body: ObjectId, shape: u32| -> ObjectId {
+            if hands::is_hand(hands, body) {
+                return body;
+            }
+            let list = parts.entry(body).or_insert_with(|| match self.world.body(body) {
+                Ok(Some(row)) => row.shapes.iter().map(|s| s.object).collect(),
+                _ => Vec::new(),
+            });
+            list.get(shape as usize).copied().unwrap_or(body)
+        };
+        raw.into_iter()
+            .filter_map(|h| {
+                let at = self.origin.checked_add(Offset(h.point)).ok()?;
+                let (part_a, part_b) = (part(h.a, h.shape_a), part(h.b, h.shape_b));
+                Some(Hit {
+                    frame: f,
+                    sim_time,
+                    resimulated,
+                    a: h.a,
+                    b: h.b,
+                    part_a,
+                    part_b,
+                    at,
+                    normal: h.normal,
+                    speed: h.speed,
+                })
+            })
+            .collect()
     }
 
     /// The awake bodies of world objects: hand bodies are the replica's own (3.3).
@@ -1306,6 +1373,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
         self.scratch_checks.clear();
         self.scratch_events.clear();
         self.scratch_acts.clear();
+        self.scratch_hits.clear();
         // Off the live history, the model keeps its machine state as it is: no prediction starts or runs in a re-step,
         // so a root given out never includes one (@engine-architect's Medium on 29b02af0).
         self.world.set_scratch(true);
@@ -1478,9 +1546,11 @@ impl<W: WorldModel> ReplicaImpl<W> {
         self.checks_from_scratch(g, at);
         let mut events = std::mem::take(&mut self.scratch_events);
         let mut acts = std::mem::take(&mut self.scratch_acts);
+        let mut hits = std::mem::take(&mut self.scratch_hits);
         for f in (g.0..at.0).map(Frame) {
             self.note_events(f, events.remove(&f).unwrap_or_default(), true);
             self.note_acts(f, acts.remove(&f).unwrap_or_default());
+            self.note_hits(f, as_resimulated(hits.remove(&f).unwrap_or_default()));
         }
     }
 
@@ -1520,9 +1590,11 @@ impl<W: WorldModel> ReplicaImpl<W> {
         // Their effects too: the next view compares them with what it carried there, as a replay's (Low 3).
         let mut events = std::mem::take(&mut self.scratch_events);
         let mut acts = std::mem::take(&mut self.scratch_acts);
+        let mut hits = std::mem::take(&mut self.scratch_hits);
         for f in (g.0..at.0).map(Frame) {
             self.note_events(f, events.remove(&f).unwrap_or_default(), true);
             self.note_acts(f, acts.remove(&f).unwrap_or_default());
+            self.note_hits(f, as_resimulated(hits.remove(&f).unwrap_or_default()));
         }
         self.excused.push((g, at));
     }
@@ -1639,9 +1711,24 @@ impl<W: WorldModel> ReplicaImpl<W> {
         view.objects = objects;
         (view.effects, view.retracted) = self.frame_effects();
         (view.activations, view.activations_retracted) = self.frame_activations();
+        // The frames below the view's. One at or above it was stepped before a rollback and not yet stepped again:
+        // its re-step replaces its hits, which wait for that.
+        let later = self.hits.split_off(&self.frame);
+        view.hits = std::mem::replace(&mut self.hits, later).into_values().flatten().collect();
+        // The range those cover. A frame left waiting is the next view's to cover again, from its re-step.
+        view.hits_from = self.hits_low.filter(|&low| low < self.frame);
+        self.hits_low = self.hits.keys().next().copied();
         view.counters = self.counters;
         self.view = Arc::new(view);
     }
+}
+
+/// `hits` as a re-simulation gave them: a history off the live steps that became the live one re-stepped its frames.
+fn as_resimulated(mut hits: Vec<Hit>) -> Vec<Hit> {
+    for h in &mut hits {
+        h.resimulated = true;
+    }
+    hits
 }
 
 fn empty_view(domain: DomainId) -> FrameView {
@@ -1659,6 +1746,8 @@ fn empty_view(domain: DomainId) -> FrameView {
         changes: Vec::new(),
         activations: Vec::new(),
         activations_retracted: Vec::new(),
+        hits: Vec::new(),
+        hits_from: None,
     }
 }
 
@@ -2132,6 +2221,10 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         self.acts_retract.extend(replaced.into_values().flatten());
         self.acts = self.acts.split_off(&c);
         self.acts_stepped = self.acts_stepped.split_off(&c);
+        // The unpublished hits there were the replaced history's: the importer never steps those frames again.
+        // Nor does a later view cover them: only the frames it steps from here on, which set the mark again.
+        self.hits = self.hits.split_off(&c);
+        self.hits_low = self.hits.keys().next().copied();
         // Below the cut no history of mine is left to judge my checks by (3.4).
         let kept = self.checks.split_off(&c);
         let gone = std::mem::replace(&mut self.checks, kept);

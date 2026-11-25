@@ -64,6 +64,6 @@ pub use trace::{DivergeEvent, Rung, TraceEvent};
 pub use transport::{FrameClock, Lane, LinkState, LinkStats, NetEvent, PeerId, Received, Transport};
 pub use view::{
     Activation, ActivationKey, ActivationOutcome, Appearance, BREAK_AWAY, BREAK_BACK, BlobRef, BuildFailure, Effect,
-    EffectCause, EffectKey, EffectKind, FrameView, Hand, HandFeed, HandInput, HandSource, Health, Holder, Light,
+    EffectCause, EffectKey, EffectKind, FrameView, Hand, HandFeed, HandInput, HandSource, Health, Hit, Holder, Light,
     LightKind, ObjectClass, RigPose, RigTransform, Shape, StepRecord, ViewCounters, ViewFlags, ViewObject, VoidedWhy,
 };

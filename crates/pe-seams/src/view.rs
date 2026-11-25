@@ -281,6 +281,33 @@ pub struct Effect {
     pub data: Bytes,
 }
 
+/// A collision hit in this machine's physics (S5 v1.11; the friend test's impact sounds): two bodies approached
+/// along their contact normal at the world's hit threshold (1 m/s) or faster and pushed apart (pe-physics `Hit`). It
+/// is for sounds only. Nothing reads it back into the simulation, and it is not part of any root.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Hit {
+    /// The frame whose physics step produced it.
+    pub frame: Frame,
+    /// That frame's host time on the shared time base, as [`FrameView::sim_time`] is the view's.
+    pub sim_time: HostTime,
+    /// It arose in a re-simulation of its frame, not the frame's first step on this machine (as
+    /// [`Effect::resimulated`]).
+    pub resimulated: bool,
+    /// The two bodies' objects, in the physics' order for the contact.
+    pub a: ObjectId,
+    pub b: ObjectId,
+    /// The objects whose shapes touched: the body itself, or the compound child whose `Shape` it was. Its appearance
+    /// in the same view is the hit's material on that side.
+    pub part_a: ObjectId,
+    pub part_b: ObjectId,
+    /// Where they met, in world coordinates.
+    pub at: Pos,
+    /// The contact normal, a unit vector from `a` to `b`.
+    pub normal: [f32; 3],
+    /// How fast they approached along the normal, in m/s.
+    pub speed: f32,
+}
+
 /// The view's counters for this publication.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ViewCounters {
@@ -510,6 +537,23 @@ pub struct FrameView {
     /// each key; a later record with the same key may follow (S5 v1.8; @vdw-physics, as
     /// [`FrameView::retracted`] does for effects).
     pub activations_retracted: Vec<ActivationKey>,
+    /// The collision hits of the frames stepped since the last publication, re-simulations included, in frame order
+    /// and each frame's in the physics' order (S5 v1.11; @coordinator-opus's ruling on the friend test's impact
+    /// sounds). Each frame's come from its latest step: a frame stepped twice before a view carries only the later
+    /// step's, since no view showed the first and the world no longer has it. A frame re-stepped after a view showed
+    /// it carries its hits again, `resimulated`, in a later view. The reader matches those with the ones it had (the
+    /// same pair at about the same time) and plays only what is new. It also drops a new hit whose `sim_time` is more
+    /// than a short horizon (about 100-200 ms) behind this view's, so a correction never sounds late: a deep
+    /// re-simulation, such as an outage's, carries hits from seconds back (@design-reviewer's L1). A rung-2 import
+    /// drops the unpublished hits of the frames below its cut, which the importer never steps again. Equal frames
+    /// give equal hits on every replica.
+    pub hits: Vec<Hit>,
+    /// The lowest frame stepped since the last publication (S5 v1.11), or `None` if none was. Every frame from it up
+    /// to `frame` was stepped since then, and `hits` lists exactly the hits of their latest steps, so a frame in
+    /// that range that `hits` doesn't name had none. After a rollback it is below the last view's frame. A reader
+    /// that keeps hits by frame matches `hits` against its record for this range, plays only those it lacks, then
+    /// replaces the record for the range with `hits`, so a hit the re-step no longer has is gone from it too.
+    pub hits_from: Option<Frame>,
 }
 
 impl FrameView {

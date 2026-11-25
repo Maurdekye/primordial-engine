@@ -13,7 +13,7 @@ use pe_replica::{CorrectedInteraction, PeWorld, ReplicaConfig, ReplicaImpl};
 use pe_seams::test_util::{EntryBuilder, TestKeys};
 use pe_seams::{
     ChainHead, Class, Cut, CutImport, CutRef, DomainId, EntrySource, FinalCut, Finalized, Frame, FrameClock, GroupSel,
-    Hash, HostTime, ImportError, LeafKey, LineId, MemberKey, ObjectId, Offset, Outcome, Pos, Reason, Replica,
+    Hash, Hit, HostTime, ImportError, LeafKey, LineId, MemberKey, ObjectId, Offset, Outcome, Pos, Reason, Replica,
     SignedEntry,
 };
 use pe_sim::Transform;
@@ -556,6 +556,44 @@ fn replica_of(world: World) -> ReplicaImpl<PeWorld> {
     let mut config = ReplicaConfig::new(pe_seams::SimRate::DEFAULT, Duration::from_millis(133), Arc::new(CLOCK));
     config.cut_every = K;
     ReplicaImpl::new(PeWorld::new(world, DomainId(0)), config).expect("a replica")
+}
+
+/// S5 v1.11: a collision hit names each side's part, the object whose `Shape` touched: the body's own shape or a
+/// compound child's, by the physics' place for the shape in the body's row (its own shape first, then its children's
+/// in id order). Body 2 is a plank whose child sphere (3) hangs 0.5 m under it, so the child lands first; body 4 is a
+/// sphere with a child box (5) on top, so its own shape lands first.
+#[test]
+fn a_hit_names_the_compound_part_that_touched() {
+    let mut w = genesis();
+    let k = MemberKey([1; 32]);
+    w.create(oid(2), None, k, GENESIS).expect("plank");
+    w.insert(oid(2), Transform::at(pos(0.0, 1.0, 0.0))).expect("t");
+    w.insert(oid(2), dynamic()).expect("b");
+    w.insert(oid(2), cuboid([0.3, 0.05, 0.3])).expect("s");
+    w.create(oid(3), Some(oid(2)), k, GENESIS).expect("child");
+    w.insert(oid(3), Transform::local([0.0, -0.5, 0.0])).expect("t");
+    w.insert(oid(3), sphere(0.1)).expect("s");
+    w.create(oid(4), None, k, GENESIS).expect("4");
+    w.insert(oid(4), Transform::at(pos(3.0, 1.0, 0.0))).expect("t");
+    w.insert(oid(4), dynamic()).expect("b");
+    w.insert(oid(4), sphere(0.2)).expect("s");
+    w.create(oid(5), Some(oid(4)), k, GENESIS).expect("child");
+    w.insert(oid(5), Transform::local([0.0, 0.5, 0.0])).expect("t");
+    w.insert(oid(5), cuboid([0.2, 0.1, 0.2])).expect("s");
+    let mut r = replica_of(w);
+    let mut s = Source::default();
+    let mut hits: Vec<Hit> = Vec::new();
+    for n in 1..=60 {
+        r.advance(Frame(n), &mut s);
+        hits.extend(r.view().hits.iter().copied());
+    }
+    // Each body's first hit, from its side: (its part, the other body, the other's part).
+    let first = |body: ObjectId| {
+        let h = hits.iter().find(|h| h.a == body || h.b == body).copied().expect("a hit");
+        if h.a == body { (h.part_a, h.b, h.part_b) } else { (h.part_b, h.a, h.part_a) }
+    };
+    assert_eq!(first(oid(2)), (oid(3), oid(1), oid(1)), "the plank's child sphere on the floor: {hits:?}");
+    assert_eq!(first(oid(4)), (oid(4), oid(1), oid(1)), "body 4's own sphere on the floor: {hits:?}");
 }
 
 fn input(b: &mut EntryBuilder, at: u64, i: &Input) -> SignedEntry {

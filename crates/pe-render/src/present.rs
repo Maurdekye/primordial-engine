@@ -333,6 +333,8 @@ mod tests {
             changes: vec![],
             activations: Vec::new(),
             activations_retracted: Vec::new(),
+            hits: Vec::new(),
+            hits_from: None,
         })
     }
 
