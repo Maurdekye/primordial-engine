@@ -418,9 +418,9 @@ fn hostile_transfers() {
     ));
 
     // Tables: the image part ends with the bodies (16 bytes each: object id, Box3D id), the
-    // joints (17 bytes each) and the anchor (1 + 8 bytes). Give the second object the first's
-    // Box3D id.
-    let joints = 4 + 3 * 17 + 9;
+    // joints (17 bytes each), the anchor (1 + 8 bytes) and the players (a 4-byte count; none here).
+    // Give the second object the first's Box3D id.
+    let joints = 4 + 3 * 17 + 9 + 4;
     let bodies_end = bytes.len() - joints;
     let body = |n: usize| bodies_end - 16 * (5 - n);
     let mut dup = bytes.clone();
@@ -573,8 +573,9 @@ fn forged_confirmations_still_refused() {
     assert!(matches!(forged(&tail), Err(PhysicsError::BadImage(_))), "unread world byte");
 
     // The grab (key 30, the third joint) recorded as a weld: set_grab_velocity on it would
-    // panic in Box3D, so the tables are refused. And the spherical joint recorded as a grab.
-    let kind_at = bytes.len() - 9 - 17 + 16;
+    // panic in Box3D, so the tables are refused. And the spherical joint recorded as a grab. The
+    // tables end with the joints, the anchor (1 + 8 bytes) and the players (a 4-byte count; none).
+    let kind_at = bytes.len() - 4 - 9 - 17 + 16;
     assert_eq!(bytes[kind_at], JointKind::Grab as u8);
     let mut weld = bytes.clone();
     weld[kind_at] = JointKind::Weld as u8;
@@ -587,7 +588,7 @@ fn forged_confirmations_still_refused() {
     let mut pw = jointed();
     let good = pw.save_image().unwrap();
     let mut image = good.to_bytes();
-    let at = image.len() - 9 - 17 + 16;
+    let at = image.len() - 4 - 9 - 17 + 16;
     image[at] = JointKind::Weld as u8;
     assert!(matches!(pw.restore_image(&WorldImage::from_bytes(&image).unwrap()), Err(PhysicsError::BadImage(_))));
     pw.restore_image(&good).unwrap();

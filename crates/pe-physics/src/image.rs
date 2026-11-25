@@ -16,21 +16,23 @@
 //!   BLAKE3 over all of the bytes, so a donor cannot find other bytes with the confirmed hash;
 //!   the restored world must also save back to exactly the transfer's bytes.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use box3d_rust::body::body_is_valid;
+use box3d_rust::body::{body_get_type, body_is_valid};
 use box3d_rust::id::{BodyId, JointId};
 use box3d_rust::joint::{joint_get_type, joint_is_valid};
 use box3d_rust::recording::{
     GeometryKind, GeometryRegistry, RecBuffer, RegistrySlot, SNAP_FLAG_VALIDATION, deserialize_into_shell,
     image_world_settings, serialize_world, world_settings,
 };
+use box3d_rust::types::BodyType;
 use box3d_rust::world::World;
 use pe_core::ids::ObjectId;
 
 use crate::config::PhysicsConfig;
 use crate::error::PhysicsError;
+use crate::player::PlayerState;
 use crate::world::{JointEntry, JointKey, JointKind, PhysicsWorld};
 
 /// Per-world geometry registry and the reader slots built from it.
@@ -72,6 +74,9 @@ pub struct WorldImage {
     bodies: Vec<(ObjectId, BodyId)>,
     joints: Vec<(JointKey, JointId, JointKind)>,
     anchor: Option<BodyId>,
+    /// The players' states ([`PhysicsWorld::move_player`]), by object, as their canonical bytes (so images compare
+    /// by bits).
+    players: Vec<(ObjectId, [u8; PlayerState::BYTES])>,
     /// The registry its geometry indices refer to (`None`: read from bytes under feature `raw`,
     /// or part of a transfer, which carries its own geometry). Not part of the bytes.
     registry: Option<u64>,
@@ -116,7 +121,10 @@ pub struct Transfer {
 }
 
 const IMAGE_MAGIC: u32 = 0x5045_5049; // "PEPI"
-const IMAGE_VERSION: u32 = 3; // 3: 16-byte object ids (world-model.md 2.1)
+// 3: 16-byte object ids (world-model.md 2.1). 4: the players' states (`PhysicsWorld::move_player`). Images never
+// outlive a build: the hit-event flag every shape carries since the hit events is a rule of the physics version,
+// not of this format, so an image from before it would restore with its shapes' flags off (@design-reviewer's L2).
+const IMAGE_VERSION: u32 = 4;
 const TRANSFER_MAGIC: u32 = 0x5045_5054; // "PEPT"
 const TRANSFER_VERSION: u32 = 2; // 2: 16-byte object ids
 /// Offset of the flags word in Box3D's world bytes (after magic, version, layout hash).
@@ -214,6 +222,11 @@ impl WorldImage {
             }
             None => out.push(0),
         }
+        put_u32(&mut out, self.players.len() as u32);
+        for (id, state) in &self.players {
+            out.extend_from_slice(&id.to_u128().to_le_bytes());
+            out.extend_from_slice(state);
+        }
         out
     }
 
@@ -254,7 +267,15 @@ impl WorldImage {
             1 => Some(r.body()?),
             _ => return Err(PhysicsError::BadImage("bad anchor flag")),
         };
-        let image = WorldImage { world, bodies, joints, anchor, registry: None };
+        let count = r.count(16 + PlayerState::BYTES)?;
+        let mut players = Vec::with_capacity(count);
+        for _ in 0..count {
+            let id = ObjectId::from_u128(u128::from_le_bytes(r.take(16)?.try_into().unwrap()));
+            let bytes = r.take(PlayerState::BYTES)?;
+            PlayerState::take(bytes).ok_or(PhysicsError::BadImage("a player's state no move can leave"))?;
+            players.push((id, bytes.try_into().unwrap()));
+        }
+        let image = WorldImage { world, bodies, joints, anchor, players, registry: None };
         image.check_tables()?;
         Ok(image)
     }
@@ -284,6 +305,12 @@ impl WorldImage {
             if j.world0 != 0 || !joint_ids.insert(j.index1) {
                 return bad("joint ids repeated or not in world 0");
             }
+        }
+        if !self.players.windows(2).all(|w| w[0].0 < w[1].0) {
+            return bad("player ids not sorted and unique");
+        }
+        if !self.players.iter().all(|(id, _)| self.bodies.binary_search_by_key(id, |&(b, _)| b).is_ok()) {
+            return bad("a player has no body");
         }
         Ok(())
     }
@@ -367,6 +394,7 @@ impl PhysicsWorld {
             bodies: self.bodies.iter().map(|(&id, &b)| (id, b)).collect(),
             joints: self.joints.iter().map(|(&k, j)| (k, j.id, j.kind)).collect(),
             anchor: self.anchor,
+            players: self.players.iter().map(|(&id, state)| (id, state.bytes())).collect(),
             registry,
         }
     }
@@ -524,12 +552,23 @@ impl PhysicsWorld {
         if !image.joints.iter().all(|&(_, j, kind)| joint_get_type(world, j) == kind.box3d_type()) {
             return Err(PhysicsError::BadImage("a joint's kind differs from its Box3D type"));
         }
+        // A player is a kinematic body (`PhysicsWorld::add_player`).
+        let mut players = BTreeMap::new();
+        for (id, bytes) in &image.players {
+            let state = PlayerState::take(bytes).ok_or(PhysicsError::BadImage("a player's state no move can leave"))?;
+            let body = image.bodies.binary_search_by_key(id, |&(o, _)| o).map(|k| image.bodies[k].1);
+            if !body.is_ok_and(|b| body_get_type(world, b) == BodyType::Kinematic) {
+                return Err(PhysicsError::BadImage("a player's body is not kinematic"));
+            }
+            players.insert(*id, state);
+        }
         self.bodies = image.bodies.iter().copied().collect();
         self.objects = self.bodies.iter().map(|(&id, &body)| (body.index1, id)).collect();
         // The latest step's hits were of the replaced state.
         self.world.contact_hit_events.clear();
         self.joints = image.joints.iter().map(|&(k, id, kind)| (k, JointEntry { id, kind })).collect();
         self.anchor = image.anchor;
+        self.players = players;
         Ok(())
     }
 }

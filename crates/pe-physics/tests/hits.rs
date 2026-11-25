@@ -103,3 +103,55 @@ fn a_restored_image_hears_nothing_until_it_steps_then_the_same_hits() {
     assert!(pw.hits().is_empty(), "a restore keeps no hits from the replaced state");
     assert_eq!(run(&mut pw, 80), ahead, "a rollback hears the same hits");
 }
+
+/// Hit events only report: the same scene with every shape's flag on (as pe-physics builds it) and with the flags
+/// cleared through the raw world steps to the same poses and velocities, bit for bit (@design-reviewer's L1 on
+/// ef7f9b7c: the physics-version rule rests on this).
+#[test]
+fn the_hit_flag_leaves_every_pose_and_velocity_as_it_was() {
+    use box3d_rust::body::body_get_shapes;
+    use box3d_rust::shape::shape_enable_hit_events;
+
+    let bits = |cleared: bool| {
+        let mut pw = scene();
+        for k in 0..12u32 {
+            let at = [0.4 * f64::from(k % 4) - 0.6, 0.6 + 0.35 * f64::from(k / 4), 0.1 * f64::from(k % 3)];
+            let shape = if k % 2 == 0 {
+                Geometry::Box { half_extents: [0.12, 0.12, 0.12] }
+            } else {
+                Geometry::Sphere { center: [0.0; 3], radius: 0.13 }
+            };
+            pw.add_body(id(10 + k), &BodyDesc::new(BodyKind::Dynamic, at).with_shape(ShapeDesc::new(shape))).unwrap();
+        }
+        if cleared {
+            let objects: Vec<ObjectId> = pw.objects().collect();
+            for object in objects {
+                let body = pw.body_id(object).unwrap();
+                for shape in body_get_shapes(pw.raw(), body, 64) {
+                    shape_enable_hit_events(pw.raw_mut(), shape, false);
+                }
+            }
+        }
+        let mut heard = 0;
+        let mut out = Vec::new();
+        for _ in 0..300 {
+            pw.step(DT).unwrap();
+            heard += pw.hits().len();
+            for object in pw.objects().collect::<Vec<_>>() {
+                let pose = pw.pose(object).unwrap();
+                let (v, w) = pw.velocity(object).unwrap();
+                out.push((
+                    pose.position.map(f64::to_bits),
+                    pose.rotation.map(f32::to_bits),
+                    v.map(f32::to_bits),
+                    w.map(f32::to_bits),
+                ));
+            }
+        }
+        (out, heard)
+    };
+    let (on, heard_on) = bits(false);
+    let (off, heard_off) = bits(true);
+    assert!(heard_on > 0 && heard_off == 0, "heard {heard_on} with the flags and {heard_off} without");
+    assert!(on == off, "the flags changed a pose or velocity");
+}

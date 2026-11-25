@@ -31,6 +31,7 @@ mod desc;
 mod digest;
 mod error;
 mod image;
+mod player;
 mod selftest;
 mod world;
 
@@ -42,6 +43,7 @@ pub use digest::BodyDigest;
 pub use error::PhysicsError;
 pub use image::{CheckHash, Transfer, WorldImage};
 pub use pe_core::ids::ObjectId;
+pub use player::{Ground, MoverInput, PLAYER, PLAYER_CATEGORY, PlayerParams, PlayerState, Walk, walk, walk_axes};
 pub use selftest::{SELF_TEST_DT, SELF_TEST_FRAMES, SelfTestDigest, self_test_digest};
 pub use world::{GrabSpring, Hit, HoldReach, JointDesc, JointKey, JointKind, PhysicsWorld, Pose, Push, WriteBack};
 

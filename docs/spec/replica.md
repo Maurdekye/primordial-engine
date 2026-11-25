@@ -1032,6 +1032,9 @@ are logic.md 6.2 and 6.2a. As built [V `crates/pe-replica/src/logic.rs`, `logic/
   - continuous collision against static geometry, Box3D's default, pinned by `tests/ccd.rs` and held to M1's ball pit
     at the push caps' speeds (@coordinator-opus's push-tunnelling ruling, part (c));
   - the fork is never formatted (`crates/box3d-fork/rustfmt.toml`), and tier 1's clippy skips it (C10).
+  - hit events for impact sounds on every shape, a rule of the physics version (`PhysicsWorld::hits`;
+    @item:primordial-engine/collision-hit-events-from-pe-physics-through-pe-r);
+  - players, the first mover (9.1).
 
 **Not done:** a read-out of contact impulses, for the measurement in 10.
 
@@ -1044,6 +1047,60 @@ are logic.md 6.2 and 6.2a. As built [V `crates/pe-replica/src/logic.rs`, `logic/
 **Later:** history-free physics state.
 
 **Gates:** pe-physics's and the fork's tests stay green, and the fork stays outside the format and lint gates (C10).
+
+### 9.1 Players: the mover (locomotion L1)
+
+A member's body ([@item:primordial-engine/locomotion-l1-pe-physics-the-first-player-mover-m]; world-model.md 8 has the
+body object, the `Player` row and the Move input) is walked over the world once a frame by
+`PhysicsWorld::move_player`, with the fork's mover kit: Box3D's character mover, collide, solve the planes, cast
+[V `crates/pe-physics/src/player.rs`, `tests/players.rs`; rulings: the user's card answers, @coordinator-opus, @fable-reviewer].
+- **The body** is kinematic, its origin at the feet, so a spawn point is on the floor and the rig's y is the body's.
+  Its one shape is the mover's capsule, from the ride (0.3 m) to the top of the body (1.7 m), in the player category
+  with an empty mask: it touches nothing in the solver and no query sees it. Players pass through each other (3a).
+  The capsule never turns; the heading and the head pose stay in pe-world.
+- **The input** (`MoverInput`): a walk velocity in world x and z, this frame's room-scale step (at most 0.25 m), and
+  a jump press. The drive turns the `Player` row's stick and yaw into world axes with `walk_axes`, the fork's
+  cosine and sine (yaw 0 faces -z, a positive yaw turns toward -x), never the standard library's.
+- **Order:** once a frame for each player, in object-id order, before the step; the hand targets come from the pose
+  it returns, which is the body's pose after the step within rounding (the step reaches the target at its velocity
+  over the substeps; about 1e-5 m). So the hand targets are set from the pose returned, and nothing compares it
+  with the body's for equality.
+- **Walk** (`walk`, a pure function of the tuning, the player's state, the ground and the input; trinkets wrap it):
+  the walk velocity moves toward the one asked for at 40 m/s² on the ground and 10 in the air; gravity is the
+  player's own (15 m/s²); a jump starts at 5.2 m/s (0.9 m) when a press is at most 0.1 s old and the ground holds the
+  player or did at most 0.1 s ago (coyote time).
+- **Ground:** one downward sphere cast from inside the bottom of the capsule. The ground is the closest solid hit
+  whose slope is at most about 50°, so a steeper face nearer the feet (the foot of a steep slope) doesn't hide the
+  floor below it. The ride holds the feet on it, rising at most 4 m/s onto steps and dropping at most
+  6 m/s down to ground at most 0.3 m below. Steps lower than the ride pass beneath the capsule. A fall lands on the
+  ground, never in it.
+- **Solid and light:** static and kinematic bodies, and dynamic bodies of at least 40 kg (each body's own mass, read
+  when the move runs; world data), are walls and ground. Lighter dynamic bodies are neither, so a player wades
+  through them and sinks through a light plank or stack (a known limit). Each light body inside the push volume (the
+  capsule, and a push-only capsule from 2 cm above the feet up into it) gets one impulse a move at its deepest point,
+  enough to stop closing on it and to clear the overlap, capped at 10 m/s and 200 N s, in object-id order. On a
+  solid dynamic body the player's weight (75 kg at its own gravity) presses at the probe's point for the step.
+- **Ignored:** what the player holds, and every player's hands, are neither solid nor shoved (`move_player`'s
+  `ignore` list).
+- **Out of walls** (6(b)): the capsule never stays inside something solid. Box3D's mover gives no plane for a hull
+  the capsule's core is inside (hull/queries.rs), so the move adds the hull face that needs the least push; the body
+  and the view are pushed out. While the player is on the ground or rising, a plane that faces up but is too steep
+  to stand on is levelled into a wall, so a slope can't be climbed by sliding; a falling player keeps the real
+  plane, so it slides down the face (@design-reviewer's M1 on cbe1603b). A moving body's plane (kinematic, or dynamic
+  and heavy) pushes at most a capsule radius a pass and is solved before the static ones, so where they disagree the
+  static one wins: a crate pinning a player against a wall passes through the player, never pushing it into the wall.
+- **No platform carry:** the ground's motion is not followed sideways; a player slides off anything moving underneath.
+- **Tuning** is data (`PlayerParams`, the constant `PLAYER`), passed into every move.
+- **Determinism and rollback:** serial, fork arithmetic and IEEE square roots only; the planes are sorted (moving
+  bodies' first, static last, each by shape) before they are solved, at most 16 with the static ones kept first, and
+  every choice among shapes is by shape or object id. Each player's state (velocity,
+  ground, coyote and press timers) is in the image (version 4) and both hashes [V tests: image replay, 1/2/4/8
+  workers]. The golden walk-and-jump prints RESULT lines, which tier 2 compares across its four platforms.
+- **Cost** [V `examples/player_cost.rs`, release, on a shared machine at idle priority: three measurements of five
+  interleaved runs, 600 frames each]: a move takes 5 to 7 µs per player per frame on open floor and 18 to 23 µs
+  wading through M1's 850-ball pit (the medians). Four players wading add 0.7 to 1.4 ms to the pit's step of 2.1 to
+  2.6 ms, through the balls they shove. With players standing or walking beside the pit, the balls step bit for bit
+  as without them (the same digest in every run), so their step times differ only by the machine's noise.
 
 ## 10. A measurement owed: replayed contact impulses (file 16, 6.6)
 

@@ -7,6 +7,8 @@ pub enum PhysicsError {
     AlreadyBound(ObjectId),
     /// The object has no body.
     NotBound(ObjectId),
+    /// The object's body is not a player ([`crate::PhysicsWorld::move_player`]).
+    NotAPlayer(ObjectId),
     /// `ObjectId::NONE` cannot have a body.
     NoneObject,
     /// The joint key is unknown.
@@ -37,6 +39,7 @@ impl std::fmt::Display for PhysicsError {
         match self {
             PhysicsError::AlreadyBound(id) => write!(f, "object {id:?} already has a body"),
             PhysicsError::NotBound(id) => write!(f, "object {id:?} has no body"),
+            PhysicsError::NotAPlayer(id) => write!(f, "object {id:?}'s body is not a player"),
             PhysicsError::NoneObject => write!(f, "ObjectId::NONE cannot have a body"),
             PhysicsError::UnknownJoint(k) => write!(f, "unknown joint {k}"),
             PhysicsError::JointExists(k) => write!(f, "joint {k} already exists"),
