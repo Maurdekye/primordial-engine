@@ -355,9 +355,10 @@ open points R1 to R12 (section 15).
   - the correction offsets feed only local picking and nothing else, as DR2 bans step-side reads of draw state;
   - DR3's test holds the correction state fixed (below).
 
-  Shared hits and grabs are then judged on the fixed step, as today. So during a correction's blend, a grab is
-  still judged at the simulated pose: it can be refused, or land up to E_cue (8) from where the picture showed the
-  object. The desktop hand's ray (9, "Hit testing") reads the last drawn poses today, which are this scene while no
+  Shared hits and grabs are then judged on the fixed step, as today. So during a correction's blend, the picture
+  and the simulated pose differ by the current offset, which `visible_error_max` bounds (8). Below `E_cue` nothing
+  marks it; above it the object carries the cue, so the player can see a correction is running. A grab in that time
+  is still judged at the simulated pose, and can be refused or land off by that offset. The desktop hand's ray (9, "Hit testing") reads the last drawn poses today, which are this scene while no
   script draws; it must move to the interaction scene before any script can change a drawn pose. A click on
   personal UI is tested against the same scene, which for an attached panel is where it is drawn.
 - **DR4, the held-object rule is protected.** No draw rule can override the rule that a blocked held object is

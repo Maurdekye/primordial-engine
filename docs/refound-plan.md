@@ -1500,10 +1500,12 @@ From @fable-reviewer's analysis of draft 1 [I, not yet measured], with the user'
 
    Owners: WS-agree, WS-state, WS-xr.
 8. **The default avatar and its controller:**
-   - a capsule body with head and hands, under the member's avatar root (world-model.md 3.5). The limbs come from
-     deterministic IK, run on the fixed step under rollback from the agreed body, head and hand poses (the user: "objedts attached to elswehre on your body can also be solid, the ik systm can be
-     deterministic"; file 23 v4, 3.1). A second evaluation per display frame, from the newest tracking, draws the
-     wearer's own limbs without lag; others see the agreed one;
+   - a capsule body with head and hands, under the member's avatar root (world-model.md 3.5). Once the solver
+     exists (piece 14), the limbs are to come from deterministic IK, run on the fixed step under rollback from the
+     agreed body, head and hand poses (the user: "objedts attached to elswehre on your body can also
+     be solid, the ik systm can be deterministic"); the solver's milestone is not placed. A second evaluation per
+     display frame, from the newest tracking, would draw the wearer's own limbs without lag, while others see the
+     agreed one [I, file 23 v4, 3.1];
    - stock locomotion methods: walking, running, jumping and turning (piece 13). 6DOF flight is not one of them:
      it is a stock flight trinket, equipped over the controller (the user's answers 1a and 5a;
      file 23, 8);
@@ -1576,9 +1578,10 @@ From @fable-reviewer's analysis of draft 1 [I, not yet measured], with the user'
       queries see them and bodies don't touch them. Solid hitboxes are the author's choice, as colliders moved by
       logic (piece 5). S5 reports what each costs;
     - **VR:** the stock VR body stays the capsule, head and hands, with deterministic IK filling in the limbs (piece
-      8). A custom controller may author hitboxes in VR. **Ruled**: solid trinkets and limbs follow
-      the agreed skeleton, so a solid on a limb is a collider moved each step to its anchor's agreed pose. M5's
-      avatar work grows by the solver: a pure, fixed-iteration solver on pe-core's deterministic math, with a golden
+      8). A custom controller may author hitboxes in VR. **Ruled**: solid objects attached to a limb
+      follow the agreed skeleton, so each is a collider moved each step to its anchor's agreed pose. Whether a limb
+      itself is solid in the stock VR body is not ruled, though the agreed skeleton now makes it possible. The
+      avatar work grows by the solver (its milestone not placed): a pure, fixed-iteration solver on pe-core's deterministic math, with a golden
       test on all four platforms (file 23 v4, 3.1). Unsized [I];
     - **clips** come from glTF animations; VRM carries none. A clip plays on the skeleton it was made for: an
       avatar's or item's own clips on its own skeleton, and the stock clips on the stock skeleton. Stock clips don't
