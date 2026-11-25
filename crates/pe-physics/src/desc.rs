@@ -30,6 +30,8 @@ pub mod limits {
     pub const MAX_GRAVITY: f32 = 1.0e4;
     /// Most Box3D sub-steps per tick: the rule gives 8 at the slowest supported rate, 30 Hz.
     pub const MAX_SUB_STEPS: i32 = 16;
+    /// Most distance queries a sub-step may spend sweeping bullets ([`crate::PhysicsConfig::swept_budget`]).
+    pub const MAX_SWEPT_BUDGET: i32 = 65_536;
     /// Most points a hull is built from (Box3D keeps at most 64 hull vertices), and most
     /// shapes on one body: building costs every peer CPU time (review P22R-6).
     pub const MAX_HULL_POINTS: usize = 1024;
@@ -200,7 +202,9 @@ pub struct BodyDesc {
     pub linear_damping: f32,
     pub angular_damping: f32,
     pub gravity_scale: f32,
-    /// Fast, small bodies get continuous collision against dynamic bodies too.
+    /// Swept in every sub-step against everything it collides with, moving or not, so no contact is skipped however
+    /// fast either moves (world-model.md 3.2, box3d-fork D3). It takes effect when every shape is a sphere, capsule or
+    /// box. Off by default.
     pub bullet: bool,
     pub enable_sleep: bool,
     pub shapes: Vec<ShapeDesc>,

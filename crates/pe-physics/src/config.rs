@@ -39,7 +39,15 @@ pub struct PhysicsConfig {
     /// Box3D sub-steps per tick, 1 to [`crate::limits::MAX_SUB_STEPS`]: [`SUBSTEPS`] by default, and
     /// [`sub_steps_for_rate`] of the world's tick rate through [`PhysicsConfig::with_tick_rate`].
     pub sub_steps: i32,
+    /// The most distance queries a sub-step spends sweeping bullets (world-model.md 3.2, "The budget is a count"), 1
+    /// to [`crate::limits::MAX_SWEPT_BUDGET`]: [`SWEPT_BUDGET`], a constant of the build, which the build id's source
+    /// hash covers. Passed into every step; a later world setting defaults old worlds to this value
+    /// (@coordinator-opus).
+    pub swept_budget: i32,
 }
+
+/// The bullet sweep's budget per sub-step: [`PhysicsConfig::swept_budget`]'s default.
+pub const SWEPT_BUDGET: i32 = box3d_rust::solver::SWEPT_ITERATION_BUDGET;
 
 impl Default for PhysicsConfig {
     fn default() -> Self {
@@ -57,6 +65,7 @@ impl PhysicsConfig {
             gravity: [0.0, -10.0, 0.0],
             enable_sleep: true,
             sub_steps: SUBSTEPS,
+            swept_budget: SWEPT_BUDGET,
         }
     }
 
@@ -86,6 +95,9 @@ impl PhysicsConfig {
     pub fn validate(&self) -> Result<(), crate::PhysicsError> {
         if !(1..=crate::limits::MAX_SUB_STEPS).contains(&self.sub_steps) {
             return Err(crate::PhysicsError::InvalidValue("sub-steps"));
+        }
+        if !(1..=crate::limits::MAX_SWEPT_BUDGET).contains(&self.swept_budget) {
+            return Err(crate::PhysicsError::InvalidValue("swept budget"));
         }
         crate::desc::bounded(&self.gravity, crate::limits::MAX_GRAVITY, "gravity")
     }
