@@ -469,8 +469,9 @@ which fixes the origin's role deliberately.
     - **its mass** is its density times the volume it encloses, with that solid's centre of mass and inertia, found
       by the divergence theorem: one signed tetrahedron per triangle, in the blob's triangle order, from the centre of
       the mesh's bounding box, summed in `f64` and rounded to `f32` once (a sum from the shape's origin in `f32` loses
-      precision for a mesh far from it), with the body's world scale applied first, computed by pe-physics in one
-      fixed order like every mass. Only a **closed** mesh encloses a volume:
+      precision for a mesh far from it), with the body's world scale applied first. It is computed in the fork's
+      `compute_shape_mass`, in Box3D's own composition and shape order (a FORK.md deviation), once per mesh, and
+      scaled at build, never in the step; a body without a mesh keeps a bit-identical mass (@coordinator-opus, Q4). Only a **closed** mesh encloses a volume:
       - closed means every edge is in exactly two triangles, once each way, edges compared by their vertices'
         **positions**, bit for bit with −0 read as +0, not by index: exporters split vertices at seams and hard
         edges, and a closed mesh would otherwise read as open. A triangle with two equal vertex positions encloses
@@ -492,6 +493,21 @@ which fixes the origin's role deliberately.
       be loosened later without changing any built world (an open mesh would go from unbuildable to buildable), where
       starting from the hull's mass and switching later would change masses in existing worlds (@fable-reviewer);
   - a hull is a convex `SimBlobRef`, on any body, its mass Box3D's.
+  - **The blob formats** (@coordinator-opus, Q2, after @vdw-physics's proposal and @fable-reviewer's
+    points). `Shape.mesh` names a mesh or a hull blob by `Shape.kind`; both travel inside their entry (3.4, carried
+    blobs). Common to both: little-endian; coordinates are `f32` metres in the shape's local frame, before the
+    body's scale; the blob is exactly as long as its counts say, with nothing after; an unknown magic or version is
+    a fault, the same on every machine, never a guess. pe-physics checks every blob when it builds the body: every
+    value finite, every index in range, the fork's limits, the 960 KiB cap. A blob that fails is a deterministic
+    fault, `Unbuildable::Shape`, never a panic. The fork's own built forms (a mesh's BVH, its version and hash) never
+    travel: each machine builds them from these bytes.
+    - **mesh v1:** the magic `PEM1` (4 bytes), a `u32` vertex count, the vertices as `f32 x3`, a `u32` triangle
+      count, then the triangles as `u32 x3` vertex indices. A triangle's front is the side its vertices run
+      counter-clockwise when seen from the front. The triangle order is kept as written: the mass sum and the build
+      read it in that order.
+    - **hull v1:** the magic `PEH1` (4 bytes), a `u32` point count of 4 to 64, then the points as `f32 x3`. Each
+      machine builds the hull with the fork's hull builder. Tier 2 checks that builder's output digest across
+      platforms on degenerate inputs too: coplanar points, duplicates, slivers.
 - **The bullet flag, `Body.bullet`** (the user's rulings answers 2 and
   4; the method @fable-reviewer's with @astra-deliberator; [I, draft for
   @fable-reviewer, built after M1 as @item:primordial-engine/pe-physics-and-box3d-fork-continuous-collision-a's parts
@@ -506,9 +522,10 @@ which fixes the origin's role deliberately.
     a sensor excludes, two bodies whose joint disables their collision, a kinematic or static body against a static
     or kinematic one, and a mesh against a mesh. A pair with no bullet is as today: Box3D's continuous collision
     against static shapes (8.1). replica.md will hold the solver's side.
-  - **Which bodies.** It takes effect on a dynamic or kinematic body whose shapes are all spheres, capsules and boxes
-    (a compound of them is swept shape by shape, with the body's motion). On any other body (one with a hull or a
-    mesh, or a static body) the flag is kept, hashed and shown, has no effect, and the inspector says why. It isn't
+  - **Which bodies.** It takes effect on a dynamic or kinematic body whose shapes are all spheres, capsules, boxes
+    and hulls (a compound of them is swept shape by shape, with the body's motion). Hulls are beyond the user's list
+    of spheres, capsules and boxes: the fork sweeps a hull bullet with no extra code, so the coordinator kept it swept (Q6), to be told to the user in the CCD parts 1+2 report. On any other body (one with a mesh, or
+    a static body) the flag is kept, hashed and shown, has no effect, and the inspector says why. It isn't
     refused: whether it takes effect depends on the body's shapes, other rows a later edit may change, and an edit's
     validity never depends on rows it doesn't write. Triangle bullets are out for now (answer 2).
   - **Off unless someone turns it on.** The flag is 0 on every body until an edit sets it: no shape, preset,
@@ -529,9 +546,8 @@ which fixes the origin's role deliberately.
     through.
   - **Deterministic.** The flag is a `Body` field, in the object's leaf; the sweeps run inside the deterministic
     step in one fixed order, so rollback and replay give the same roots on every machine.
-  - **Until part 1 lands,** pe-physics passes the flag to Box3D's own `is_bullet` [V `pe-physics/src/world.rs`],
-    whose meaning is narrower (continuous collision against non-bullet dynamic bodies too, primitives only, no moving
-    meshes). From part 1 on the meaning is this one, and pe-physics no longer sets Box3D's.
+  - **Since CCD part 1** (main b476a3d2), pe-physics maps the flag to the fork's swept flag and no longer sets Box3D's
+    own `is_bullet` [V by @vdw-physics, `pe-physics/src/world.rs`]. replica.md 9.2 holds the solver's side.
 - **`BodyState` is derived and hash-only** (@design-reviewer's r5 Low 2). The step never reads it and no edit writes
   it; pe-replica writes it at cut frames and on export, so between cuts it is stale, and a keyframe whose
   `BodyState` is a few frames old restores correctly. No reader treats it as physics truth: WorldApi's `query`, the
@@ -618,8 +634,8 @@ which fixes the origin's role deliberately.
   any kept root, world record or open edit refers to it. Nothing is deleted while the world record keeps an entry
   that names it (the user, 19:09Z).
 - **How they travel:** an edit that introduces a blob names its hash and length. An inline-class blob's bytes travel
-  inside the edit (below); a larger one's travel alongside on the bulk lane (S4), or are fetched by hash from any
-  member that has them.
+  inside the edit (below), and so do a carried simulation blob's (below, up to 960 KiB). A larger one's travel
+  alongside on the bulk lane (S4), or are fetched by hash from any member that has them.
 - **Inline blobs** (@coordinator-opus's ruling, on @fable-reviewer's advice; @engine-architect's S1/S2
   shapes). The inline class is defined by size alone: a blob of 1 to 256 bytes (`MAX_INLINE_BLOB`),
   display and simulation alike, which covers every name (pe-api caps a name below 256 bytes). "None" and the empty
@@ -665,8 +681,43 @@ which fixes the origin's role deliberately.
   - **Kept:** the store deletes nothing today [V, `BlobStore`]. When pruning comes, an inline-class blob is kept
     while any live or tombstoned row references it, even after its entry has left the log's retention, since a joiner's
     import is then the only way it travels.
-  - **Known gap (M1):** blobs over 256 bytes (hulls, meshes, textures) still travel by reference only, and nothing
-    fetches them yet.
+  - **Known gap (M1):** display blobs over 256 bytes (meshes to draw, textures) and simulation blobs over 960 KiB
+    still travel by reference only, and nothing fetches them yet
+    (@item:primordial-engine/blob-transport-the-bytes-of-names-and-meshes-ano).
+- **Carried simulation blobs** (@coordinator-opus Q1; the CCD part 2 dependency,
+  @item:primordial-engine/simulation-blobs-travel-in-their-entry-mesh-and-h). A blob a `SimBlobRef` field references,
+  of 257 bytes to 960 KiB (`MAX_CARRIED_BLOB`), travels inside the entry that introduces it, like the inline class.
+  So a mesh or a hull collider reaches every member and every joiner, and no machine builds a body that another
+  can't. `inline::is_carried(r, sim)` is the rule: an inline-class reference from any blob field, or a carried one
+  from a `SimBlobRef` field.
+  - **In the entry:** in `Transaction.inline`, the same list as the inline class and in the same order (ascending
+    hash, none twice). Its class is its length: over 256 bytes is carried. An entry whose blobs are all 256 bytes or
+    less encodes exactly as before, so no entry id or pinned root moves. An op introduces a carried blob as it
+    does an inline one (a `Create` row, a `SetRow`, or a `SetField` of a `SimBlobRef` field); a `Copy` introduces
+    none.
+  - **At apply:** inline-class bytes over 2 KiB, or carried bytes over 960 KiB in all (`MAX_CARRIED_BYTES`), are
+    `TooLarge` with that cap as the limit. A carried blob no op introduces is `Invalid`, and so is a carried reference
+    an op introduces without its bytes. A display blob over 256 bytes in the list is one no op introduces, so it is
+    `Invalid` too. Each verdict is the same on every machine, and the dry run gives the same one. An applied edit
+    puts the bytes into the machine's store; a refused one stores nothing
+    [V `tests/carried.rs`].
+  - **Why 960 KiB, not 1 MiB** [V]: an entry's payload is at most `MAX_PAYLOAD`, 1 MiB + 4 KiB, and an edit at most
+    that, less the room for 8 re-issues (`MAX_EDIT_BYTES`). A 1 MiB blob and its `Create` don't fit. 960 KiB leaves
+    64 KiB for the rest of the edit, with no change to the payload cap or the transport (option (a)). That is about
+    40,000 mesh triangles [I]; a 64-point hull is 776 bytes.
+  - **Two limits:** pe-api refuses a forward edit whose carried bytes, or its predicted inverse's, exceed 768 KiB
+    (@api-eng), so an undo whose old meshes grew through a race still fits under pe-world's 960 KiB. An undo still
+    over it is refused ("undo this in parts").
+  - **Undo:** an outcome's inverse carries the carried blobs it restores, from the store, as it does inline ones.
+  - **In an import:** `Tree::export_blobs` gives the carried blobs the imported rows reference too, live rows and
+    tombstones alike. A joiner that lacks one refuses the import with `MissingBlob`, since without it it could step
+    differently; the repair then asks the next donor. pe-diverge sends one record's blobs across as many replies as
+    they need (@diverge-eng): neither an object's carried blobs nor the tombstones table is bounded by the
+    per-entry cap.
+  - **Head-of-line cost** (the decision of 2026-11-17 09:10Z): a carried blob makes its entry long, and the entry
+    lane is ordered, so every later entry waits behind it. A 960 KiB entry on a 1 Mbit/s link holds the lane about
+    8 s [I]; on a 10 Mbit/s link, under 1 s. That is the price of agreement without a fetch. pe-api's lower limit
+    bounds an agent's single edit, and a larger mesh waits for the blob transport item above.
 - **Blobs are of two uses, with two rules** [I, after @chunks-reviewer's F1]. A component field declares which, by
   its kind: `BlobRef` for display, `SimBlobRef` for simulation. The enforcement point is the reader: pe-physics and
   pe-sdk read bytes only through `SimBlobRef` fields, and pe-sdk gives logic no way to read a display blob's bytes
@@ -675,14 +726,12 @@ which fixes the origin's role deliberately.
     is stored as given, and the hash stays exact. Only drawing waits: a mesh is drawn as its bounding box. Shared
     simulation never reads a display blob, so no two machines can compute differently because of one.
   - **Simulation blobs** (a collision hull, a script's source archive, anything shared logic or physics reads) are
-    part of the entry for agreement. Small ones (up to 1 MiB, which covers hulls) travel *inside* the edit entry, so
+    part of the entry for agreement. Small ones (up to 960 KiB, which covers hulls and most meshes) travel *inside* the edit entry, so
     any machine that has the entry has the bytes. A script's source always does: `CommitScript` carries the archive
     itself, at most `MAX_SOURCE_BYTES` (7.9), and applying the commit puts it into the machine's blob store, on every
     machine, so each can build the version; a refused commit stores nothing, and what a rollback leaves behind is
-    store garbage, pruned with the store (@coordinator-opus). Other blobs travel as references only so
-    far: a transaction's `blobs` list names them, and their bytes reach other machines by fetch (display blobs may be
-    missing, above) [I, the general in-entry carriage of hulls is not built]. Larger ones follow the rule of a late
-    entry: a machine that lacks the bytes at the entry's frame simulates as if that change had not arrived yet, which
+    store garbage, pruned with the store (@coordinator-opus). Meshes and hulls up to 960 KiB travel in
+    their entry as carried blobs (above). Larger ones follow the rule of a late entry: a machine that lacks the bytes at the entry's frame simulates as if that change had not arrived yet, which
     is a prediction, and rewinds and replays from that frame when the bytes arrive. It does not vote for a cut that
     includes the entry until it holds the bytes. Nobody waits; only that machine's view lags.
   - **A compiled module is never a blob** (@iter-bench, under Q3c [U]: no machine runs another's
@@ -1530,7 +1579,8 @@ pub enum Precondition {
   encodes as it did before they existed (3.4). A section that is present but empty (a count of 0) is malformed: one
   encoding per transaction.
 - **Limits** per transaction [I, to tune]: 4,096 ops, 1 MiB of payload apart from blobs, 2 KiB of inline blob bytes
-  (pe-api: 1 KiB; 3.4), and 65,536 created
+  (pe-api: 1 KiB; 3.4), 960 KiB of carried simulation blob bytes (pe-api: 768 KiB; 3.4), the whole edit within
+  `MAX_EDIT_BYTES`, and 65,536 created
   objects (`MAX_NEW_OBJECTS`), counting each `Create` and every object of each `Copy`'s subtree; `Undelete`
   restores objects that were in the world before, so it does not count. Over a limit is a
   refusal, not a truncation; the object cap's is `TooLarge { limit }`. pe-world's constants are the one

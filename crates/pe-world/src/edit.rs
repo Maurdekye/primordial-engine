@@ -52,9 +52,11 @@ pub struct Transaction {
     pub preconditions: Vec<Precondition>,
     pub ops: Vec<Op>,
     pub blobs: Vec<BlobRef>,
-    /// The bytes of the inline-class blobs the ops introduce (3.4, [`crate::inline`]), inside the signed entry: each
-    /// 1 to 256 bytes, in ascending order of hash. Apply refuses a blob no op introduces, and over 2 KiB in all
-    /// ([`crate::inline::MAX_INLINE_BYTES`]); pe-api refuses any edit over its own 1 KiB first.
+    /// The bytes of the blobs the ops introduce that travel in the entry (3.4, [`crate::inline::is_carried`]),
+    /// inside the signed entry: inline-class ones (1 to 256 bytes) and carried simulation ones (to 960 KiB), in one
+    /// list in ascending order of hash. Apply refuses a blob no op introduces, inline-class bytes over 2 KiB in all
+    /// ([`crate::inline::MAX_INLINE_BYTES`]; pe-api's 1 KiB first) and carried bytes over 960 KiB
+    /// ([`crate::inline::MAX_CARRIED_BYTES`]; pe-api's 768 KiB first).
     pub inline: Vec<Vec<u8>>,
 }
 
@@ -743,14 +745,14 @@ impl<'a> R<'a> {
         // The inline blobs (3.4): absent when there are none, and otherwise one encoding per value, so at least one,
         // each 1 to 256 bytes, in ascending order of hash. The section is the payload's last.
         let present = !self.b.is_empty();
-        let n = if present { self.count(5, crate::inline::MAX_INLINE_BYTES)? } else { 0 };
+        let n = if present { self.count(5, crate::inline::MAX_INLINE_COUNT)? } else { 0 };
         if present && n == 0 {
             return None;
         }
         let mut inline = Vec::with_capacity(n);
         for _ in 0..n {
             let len = self.u32()? as usize;
-            if len > crate::inline::MAX_INLINE_BLOB {
+            if len > crate::inline::MAX_CARRIED_BLOB {
                 return None;
             }
             inline.push(self.take(len)?.to_vec());
