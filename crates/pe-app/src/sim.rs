@@ -254,10 +254,15 @@ pub struct SimStats {
     /// [`Agreement::backlogged`]): thinned to [`HAND_FLOOR_HZ`], never below; a grip's change always goes (F3 S1).
     pub hands_floor_thinned: u64,
     /// A member that can't keep real time (divergence.md 4.6, [`crate::slow`]): resyncs started, the time spent
-    /// slow, and the largest lag behind the clock, in ms.
+    /// slow, and the largest lag behind the clock, in ms. The lag is the shown world's age.
     pub resyncs_started: u64,
     pub slow_ms: u64,
     pub lag_max_ms: u64,
+    /// The same two for where the replica is stepping, the present less its frame, as the slow watch measured before
+    /// divergence.md 4.6 took the shown world's age: a rollback's re-simulation counts here. A diagnostic: the outage
+    /// tests' lead allowances are fitted to it (K4's A/B of 20 blackouts; @coordinator-opus).
+    pub stepping_slow_ms: u64,
+    pub stepping_lag_max_ms: u64,
     /// `HandMode` entries step 2 sent for the console's `hand-mode` ([`crate::handfeel`]), and those agreement
     /// refused.
     pub hand_modes: u64,
@@ -549,6 +554,8 @@ pub struct Sim {
     /// shown on the status line, ms a frame (0 for none).
     slow_frame: Option<Arc<crate::slowframe::SlowFrame>>,
     slow_frame_shown: u32,
+    /// The status line's message last logged, its numbers blanked ([`status_kind`]); `None` while it is down.
+    status_logged: Option<String>,
     /// The local player's locomotion ([`Sim::with_moves`]), and its newest sample with the stamp it was read for.
     moves: Option<Arc<dyn MoveFeed>>,
     last_move: Option<(Frame, MoveInput)>,
@@ -558,6 +565,8 @@ pub struct Sim {
     trace: Option<crate::trace::TickTrace>,
     /// How far behind the clock this member is, and when it must freeze and resync (divergence.md 4.6).
     slow: crate::slow::SlowWatch,
+    /// The same watch over where the replica is stepping, for [`SimStats::stepping_slow_ms`] only: it tells nobody.
+    stepping: crate::slow::SlowWatch,
     /// A resync's import is under way ([`Sim::resyncing`]): frozen, nothing steps, nothing is appended.
     resyncing: bool,
     /// Slow past the freeze at `n = 2`, where no resync is possible: told once per slow stint.
@@ -663,6 +672,25 @@ pub trait NetHook: Send {
 /// The most messages step 1 takes from the network in one tick, so a flood cannot stall the tick: the rest wait
 /// in the transport's bounded queue for the next one.
 pub const MAX_IN_PER_TICK: usize = 1024;
+
+/// A status line's message with each number blanked to `#`, so "Behind by 3.2 s" and "Behind by 12.0 s" are one
+/// message: the log gets a line only when the message changes ([`Sim::show_status`]).
+fn status_kind(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_number = false;
+    for c in text.chars() {
+        if c.is_ascii_digit() || (in_number && c == '.') {
+            if !in_number {
+                out.push('#');
+                in_number = true;
+            }
+        } else {
+            in_number = false;
+            out.push(c);
+        }
+    }
+    out
+}
 
 /// The floor of a hand's canonical pose rate while agreement reports this member backlogged (F3 S1, S5 Part 1;
 /// @coordinator-opus): thinned to this and no further, so the other players never see this player's
@@ -825,11 +853,13 @@ impl Sim {
             hand_feel_shown: 0,
             slow_frame: None,
             slow_frame_shown: 0,
+            status_logged: None,
             moves: None,
             last_move: None,
             catching_up: false,
             trace: None,
             slow: crate::slow::SlowWatch::default(),
+            stepping: crate::slow::SlowWatch::default(),
             resyncing: false,
             cant_resync: false,
             cut_log: None,
@@ -1165,18 +1195,25 @@ impl Sim {
     }
 
     fn show_status(&mut self) {
-        if let Some(s) = &self.status {
-            self.hand_feel_shown = self.hand_feel.as_ref().map_or(0, |f| f.version());
-            let line = self.status_own.clone().or_else(|| self.hand_feel.as_ref().and_then(|f| f.status()));
-            // A deliberate slowdown is always on the line while it is on (crate::slowframe), so a recorded run is
-            // never taken for a really slow machine.
-            self.slow_frame_shown = self.slow_frame.as_ref().map_or(0, |s| s.ms());
-            let slowed = crate::slowframe::status(self.slow_frame_shown);
-            s.set(match (slowed, line) {
-                (Some(slowed), Some(line)) => Some(format!("{slowed} · {line}")),
-                (slowed, line) => slowed.or(line),
-            });
+        let Some(status) = self.status.clone() else { return };
+        self.hand_feel_shown = self.hand_feel.as_ref().map_or(0, |f| f.version());
+        let line = self.status_own.clone().or_else(|| self.hand_feel.as_ref().and_then(|f| f.status()));
+        // A deliberate slowdown is always on the line while it is on (crate::slowframe), so a recorded run is never
+        // taken for a really slow machine.
+        self.slow_frame_shown = self.slow_frame.as_ref().map_or(0, |f| f.ms());
+        let line = match (crate::slowframe::status(self.slow_frame_shown), line) {
+            (Some(slowed), Some(line)) => Some(format!("{slowed} · {line}")),
+            (slowed, line) => slowed.or(line),
+        };
+        // The log gets the line as it shows, turns to another message and comes down, so a headless run carries what
+        // the window shows. A number changing in it, such as how far behind, is the same message (@coordinator-opus, after K4's R3').
+        let kind = line.as_deref().map(status_kind);
+        if kind != self.status_logged {
+            self.notices
+                .push(line.as_ref().map_or_else(|| "status: hidden".to_string(), |t| format!("status: shown: {t}")));
+            self.status_logged = kind;
         }
+        status.set(line);
     }
 
     /// Tests only: freeze and resync after `secs` slow instead of a minute ([`crate::slow::FREEZE_AFTER_S`]).
@@ -1228,10 +1265,20 @@ impl Sim {
     fn watch_lag(&mut self, p: Frame, now: HostTime) {
         use crate::slow::Verdict;
         let rate = f64::from(self.clock.rate_hz().max(1));
-        let lag_s = (p.0 + 1).saturating_sub(self.replica.frame().0) as f64 / rate;
+        // The lag is the age of the world this member shows: the present less the newest frame its live history has
+        // completed, the published view's (S5). A rollback's re-simulation doesn't count, since the shown world stays
+        // at its newest frame meanwhile, and a replica that really trails real time publishes its newest frame, which
+        // ages with it (divergence.md 4.6; @coordinator-opus, after K4's R3': a 124-frame rollback
+        // re-stepped within 4 ticks read as 2 s behind). The same lag drives the indicator and the 2 s slow test.
+        let lag_s = (p.0 + 1).saturating_sub(self.replica.view().frame.0) as f64 / rate;
         let verdict = self.slow.observe(now, lag_s);
         self.stats.lag_max_ms = (self.slow.lag_max_s * 1000.0) as u64;
         self.stats.slow_ms = self.slow.slow_ns / 1_000_000;
+        // Where the replica is stepping, the earlier measure, kept as a diagnostic ([`SimStats::stepping_slow_ms`]).
+        let stepping_s = (p.0 + 1).saturating_sub(self.replica.frame().0) as f64 / rate;
+        let _ = self.stepping.observe(now, stepping_s);
+        self.stats.stepping_lag_max_ms = (self.stepping.lag_max_s * 1000.0) as u64;
+        self.stats.stepping_slow_ms = self.stepping.slow_ns / 1_000_000;
         if let Some(s) = &self.slow_frame {
             self.stats.slow_frame_ms = s.ms();
             self.stats.slowed_frames = s.frames();
@@ -2979,6 +3026,91 @@ pub(crate) mod tests {
         );
         let st = s.stats();
         assert_eq!((st.slow_frame_ms, st.slowed_frames, slow.frames()), (0, waited, waited), "stopped: no frame waits");
+        // And the log has the line each time it turned to another message.
+        let logged: Vec<String> = s.take_notices().into_iter().filter(|n| n.starts_with("status: ")).collect();
+        assert_eq!(
+            logged,
+            [
+                format!("status: shown: {on}"),
+                format!("status: shown: {on} · Hands: always within reach · drawn at the tracked pose"),
+                "status: shown: Hands: always within reach · drawn at the tracked pose".to_string(),
+            ]
+        );
+    }
+
+    /// The status line in the log (@coordinator-opus, after K4's R3'): a line when it shows, none while only a number in it
+    /// changes, one when it turns to another message, and `status: hidden` when it comes down.
+    #[test]
+    fn the_status_line_is_logged_as_it_shows_changes_message_and_comes_down() {
+        assert_eq!(status_kind("Behind by 12.5 s — confirming 12 s late"), "Behind by # s — confirming # s late");
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let me = crate::world::DEV_MEMBER;
+        let replica = crate::world::open_ball_pit(7, me, RATE, clock.clone(), runner()).expect("pit");
+        let slow = crate::slowframe::SlowFrame::new(0).expect("0 ms");
+        let status = Arc::new(pe_render::notices::StatusLine::default());
+        let agree = Box::new(SoloAgreement::new(LineId::origin()));
+        let mut s = Sim::new(agree, replica, clock.clone(), Arc::new(FrameSlot::new()), Budget::new(RATE))
+            .with_local(me, [7; 32], Arc::new(StillHands([0.0, 1.0, -0.4])))
+            .with_status(status.clone())
+            .with_slow_frame(Some(slow.clone()));
+        let mut f = 0;
+        let mut run = |s: &mut Sim| {
+            for _ in 0..3 {
+                f += 1;
+                s.tick(clock.host_time_of(Frame(f))).expect("ticked");
+            }
+            s.take_notices().into_iter().filter(|n| n.starts_with("status: ")).collect::<Vec<_>>()
+        };
+        assert_eq!(run(&mut s), Vec::<String>::new(), "nothing while the line is down");
+        slow.set(1).expect("1 ms");
+        assert_eq!(run(&mut s), ["status: shown: Slowed on purpose: 1 ms a simulated frame (--slow-frame)"]);
+        slow.set(2).expect("2 ms");
+        assert_eq!(run(&mut s), Vec::<String>::new(), "only a number changed");
+        assert_eq!(status.get().as_deref(), Some("Slowed on purpose: 2 ms a simulated frame (--slow-frame)"));
+        slow.set(0).expect("stopped");
+        assert_eq!(run(&mut s), ["status: hidden"]);
+        assert_eq!(status.get(), None);
+    }
+
+    /// The slow watch's lag is the age of the world this member shows, not where its replica is stepping
+    /// (@coordinator-opus, after K4's R3': a 124-frame rollback re-stepped within 4 ticks read as 2 s behind). A rollback 200
+    /// frames deep, re-stepped 60 frames a call, leaves the replica more than 2 s behind the present at a tick's end,
+    /// but the shown world is never more than a few frames old: the member is never slow, and its status line never
+    /// says "Behind by". Members that really trail real time still are (the half-speed tests).
+    #[test]
+    fn a_rollback_re_stepped_over_a_few_ticks_is_not_behind_real_time() {
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let me = crate::world::DEV_MEMBER;
+        let world = pe_world::preset::ball_pit_with(5, pe_world::BlobStore::default(), pe_seams::Pos::ORIGIN, 8);
+        let inner = crate::world::ball_pit_replica(world, &[me], me, RATE, clock.clone(), runner()).expect("pit");
+        let replica = Box::new(Damaged {
+            inner,
+            at: None,
+            damaged: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            half_from: None,
+            half_base: None,
+            rewind: Some((Frame(300), 200)),
+            budget_frames: Some(60),
+            hold_final_below: Some(Frame(360)),
+        });
+        let status = Arc::new(pe_render::notices::StatusLine::default());
+        let agree = Box::new(SoloAgreement::new(LineId::origin()));
+        let mut s = Sim::new(agree, replica, clock.clone(), Arc::new(FrameSlot::new()), Budget::new(RATE))
+            .with_local(me, [7; 32], Arc::new(StillHands([0.0, 1.0, -0.4])))
+            .with_status(status.clone());
+        let (mut stepping_behind, mut shown_behind) = (0u64, 0u64);
+        for f in 1..=420u64 {
+            s.tick(clock.host_time_of(Frame(f))).expect("ticked");
+            stepping_behind = stepping_behind.max((f + 1).saturating_sub(s.replica.frame().0));
+            shown_behind += u64::from(status.get().is_some_and(|t| t.starts_with("Behind by")));
+        }
+        let st = s.stats();
+        println!("stepping {stepping_behind} frames behind at most; {st:?}");
+        assert!(st.deepest_rollback >= 190, "the rollback went deep: {}", st.deepest_rollback);
+        assert!(stepping_behind > 120, "the replica stepped only {stepping_behind} frames behind the present");
+        assert!(st.lag_max_ms < 500, "the shown world was {} ms old", st.lag_max_ms);
+        assert_eq!((st.slow_ms, shown_behind), (0, 0), "never slow, never 'Behind by'");
+        assert!(st.stepping_lag_max_ms > 2000 && st.stepping_slow_ms > 0, "the stepping measure counted it: {st:?}");
     }
 
     /// Hands that are never tracked: step 2 sends no pose for them, so a test sees only the other entries.
@@ -4129,6 +4261,51 @@ pub(crate) mod tests {
         /// 4.6). `half_base` is (its frame, the present) when the half rate started, moved up after an import jumps it.
         half_from: Option<Frame>,
         half_base: Option<(Frame, Frame)>,
+        /// At this frame, once, agreement reports the entries `.1` frames back changed, as a late entry would
+        /// (`EntrySource::take_changed_from`): the replica rolls back that deep and re-steps the same entries.
+        rewind: Option<(Frame, u64)>,
+        /// The most simulated time one call may step, in frames, whatever the Sim's budget: a deep rollback then
+        /// takes a few ticks.
+        budget_frames: Option<u64>,
+        /// Below this frame the replica finalizes nothing (`NotReady`), so its floor stays at frame 0 and a rollback
+        /// can go deep.
+        hold_final_below: Option<Frame>,
+    }
+
+    /// The Sim's entry source, with a change reported at `from` once ([`Damaged::rewind`]).
+    struct Rewound<'a> {
+        inner: &'a mut dyn pe_seams::EntrySource,
+        from: Option<Frame>,
+    }
+
+    impl pe_seams::EntrySource for Rewound<'_> {
+        fn final_cut(&self) -> Option<&pe_seams::FinalCut> {
+            self.inner.final_cut()
+        }
+        fn entries_at(&self, frame: Frame) -> Option<&[pe_seams::SignedEntry]> {
+            self.inner.entries_at(frame)
+        }
+        fn entries_for_cut(&self, cut: &Cut, frame: Frame) -> Option<Vec<pe_seams::SignedEntry>> {
+            self.inner.entries_for_cut(cut, frame)
+        }
+        fn kept_from(&self) -> Frame {
+            self.inner.kept_from()
+        }
+        fn keep_final_from(&mut self, cv: Frame, floor: Frame) {
+            self.inner.keep_final_from(cv, floor)
+        }
+        fn take_changed_from(&mut self) -> Option<Frame> {
+            match (self.inner.take_changed_from(), self.from.take()) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            }
+        }
+        fn void_reason(&self, entry: &EntryRef) -> Option<pe_seams::VoidReason> {
+            self.inner.void_reason(entry)
+        }
+        fn arrived_at(&self, entry: &EntryRef) -> Option<HostTime> {
+            self.inner.arrived_at(entry)
+        }
     }
 
     impl Replica for Damaged {
@@ -4139,7 +4316,8 @@ pub(crate) mod tests {
             self.inner.frame()
         }
         fn set_budget(&mut self, simulated: Duration) {
-            self.inner.set_budget(simulated)
+            let cap = self.budget_frames.map(|n| Duration::from_secs_f64(n as f64 / f64::from(RATE.hz())));
+            self.inner.set_budget(cap.map_or(simulated, |c| simulated.min(c)))
         }
         fn advance(&mut self, present: Frame, source: &mut dyn pe_seams::EntrySource) -> pe_seams::Advance {
             let mut present = present;
@@ -4153,7 +4331,14 @@ pub(crate) mod tests {
                 }
                 present = present.min(allowed.max(mine));
             }
-            let a = self.inner.advance(present, source);
+            let a = match self.rewind.filter(|(at, _)| present >= *at) {
+                Some((_, depth)) => {
+                    self.rewind = None;
+                    let from = Some(Frame(present.0.saturating_sub(depth)));
+                    self.inner.advance(present, &mut Rewound { inner: source, from })
+                }
+                None => self.inner.advance(present, source),
+            };
             if self.at.is_some_and(|at| self.inner.frame() >= at) {
                 self.at = None;
                 let ids: Vec<_> =
@@ -4178,6 +4363,9 @@ pub(crate) mod tests {
             cut: &pe_seams::FinalCut,
             source: &mut dyn pe_seams::EntrySource,
         ) -> pe_seams::Finalized {
+            if self.hold_final_below.is_some_and(|f| self.inner.frame() < f) {
+                return pe_seams::Finalized::NotReady;
+            }
             self.inner.finalize(cut, source)
         }
         fn replay_to(
@@ -4250,7 +4438,16 @@ pub(crate) mod tests {
                 crate::world::ball_pit_replica(world, &members, me, RATE, clock.clone(), runner()).expect("a replica");
             let damaged = Arc::new(std::sync::atomic::AtomicU64::new(0));
             let half_from = (i == n - 1).then_some(Frame(60));
-            let replica = Box::new(Damaged { inner, at: None, damaged, half_from, half_base: None });
+            let replica = Box::new(Damaged {
+                inner,
+                at: None,
+                damaged,
+                half_from,
+                half_base: None,
+                rewind: None,
+                budget_frames: None,
+                hold_final_below: None,
+            });
             let slot = Arc::new(FrameSlot::new());
             let mut sim = Sim::new(Box::new(node), replica, clock.clone(), slot.clone(), Budget::new(RATE))
                 .with_local(me, keys.nonce(i, 0), Arc::new(StillHands(*feed)))
@@ -4301,6 +4498,11 @@ pub(crate) mod tests {
         assert_eq!(slow.0.stats().resyncs_started, 0, "no resync at n = 2");
         assert!(slow.0.stats().lag_max_ms >= 2000, "it fell behind: {:?}", slow.0.stats());
         assert_eq!(slow.2.iter().filter(|n| n.starts_with("slow:")).count(), 1, "told once: {:?}", slow.2);
+        assert!(
+            slow.2.iter().any(|n| n.starts_with("status: shown: Behind by")),
+            "the log carries the indicator: {:?}",
+            slow.2
+        );
         assert!(shown_behind > 0 && shown_late > 0, "behind first, then confirming late: {shown_behind} {shown_late}");
         // Never held (@engine-architect's nit on fe61d5f1: `hands_paced` is 0 since S1, so count what went in): both
         // hands at the floor at least, every frame from the first.
@@ -4426,6 +4628,9 @@ pub(crate) mod tests {
                 damaged,
                 half_from: None,
                 half_base: None,
+                rewind: None,
+                budget_frames: None,
+                hold_final_below: None,
             });
             let slot = Arc::new(FrameSlot::new());
             let mut sim = Sim::new(Box::new(node), replica, clock.clone(), slot.clone(), Budget::new(RATE))

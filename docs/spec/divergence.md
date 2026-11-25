@@ -469,7 +469,10 @@ a `Damaged` cut takes (4.2): every leaf and the physics image, nothing named abs
 
 @item:primordial-engine/a-member-that-can-t-simulate-in-real-time-freeze; the user's rulings; the design and its rulings are in the item (v2, @coordinator-opus).
 
-- **Lag and slow.** A member's lag is the session clock's present frame less the frame it has stepped. It is slow
+- **Lag and slow.** A member's lag is the age of the world it shows: the session clock's present frame less the
+  newest frame its live history has completed (S5's published view). A rollback's re-simulation doesn't count, since
+  the shown world stays at that frame meanwhile (@coordinator-opus, after K4's R3': a 124-frame rollback re-stepped within 4
+  ticks read as 2 s behind under the earlier measure, the frame the replica had stepped). It is slow
   while the lag is over 2 s, a local hint, never a vote. Its slow timer runs while it is slow, and resets once the
   lag has stayed under 1 s for 5 s. The slow member's status line shows how far behind it is, the whole time it is
   behind by 0.5 s or more (pe-app).
