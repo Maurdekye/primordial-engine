@@ -1211,8 +1211,17 @@ world-model.md 3.2 says what a bullet means; this is the solver's side [V `crate
 - **The budget** is 1024 distance queries per sub-step (pe-physics `SWEPT_BUDGET`, a constant of the build, passed
   into every step). When it runs out, every body connected through candidate pairs to a pair not yet proven safe is
   held at the set's last proven-safe time, kinematic bodies included, their velocities kept. Each hold is counted.
-  Pairs are swept one after another, so an overload that lasts holds the same set again each sub-step: at 256, 100
-  bullets in M1's pit ran out in every sub-step and the step slowed to 137 ms [V scratch/ccd/cost3.log].
+  Each sub-step's sweep starts just after the pair whose sweep ran out of budget in the last one, and a step's first
+  sub-step at the step index (taken modulo the pairs' count; CCD part 2 B, @coordinator-opus; after,
+  not at, @design-reviewer: a pair whose sweep alone needs more than the budget never takes it from
+  the others). So an overload that
+  lasts holds independent sets in turn, not the same ones every sub-step [V test: twelve bullets, each sliding on
+  its own strip at a budget of 8, all move; with a fixed start, eight never did]. A set connected through
+  candidate pairs is held whole whichever pair ran out: M1's pit with a hundred bullets ends bit-identical with and
+  without the rotation, also at 1024, where three sub-steps run out [V scratch/mesh/b-digest.log]. At 256 the
+  hundred ran out in every sub-step and the step slowed to 137 ms [V scratch/ccd/cost3.log].
+  - Known limit: the start isn't carried from one step to the next, as that would add a field to the snapshot; each
+    step's first sub-step starts at its step index instead. Within a step the rotation is exact.
 - **Cost** [V `examples/bullet_cost.rs`, release, a shared machine, three interleaved runs, 600 frames]: bullets of
   1 cm and 50 g fired across M1's 850-ball pit at 20 to 200 m/s. The step is 2.2 ms with none, 1.1 ms with one (it
   scatters the pile, which then sleeps: 424 bodies awake on average against 850), 3.3 ms with ten (at most 209
@@ -1242,6 +1251,11 @@ world-model.md 3.2 says what a bullet means; this is the solver's side [V `crate
     edge flags), on the mesh body's motion, with the triangle's own material.
   - One-sided, as Box3D's contact solver is: a bullet whose centre starts a piece behind a triangle's plane is left
     alone for the piece (counted `behind`), so one arriving from behind passes, as through the contact solver [V test].
+    Known limit: the test is made when a piece starts. A turning mesh can sweep its front over a bullet sitting behind
+    an open surface one triangle thick, near an edge, by up to one piece of the mesh's motion there (about 2 cm a
+    piece for a paddle turning at 40 rad/s, 0.5 m out) before the contact solver, which then sees the bullet in front,
+    pushes it out. A closed mesh has no such case: a bullet behind one triangle near its edge is in front of the
+    neighbour across that edge [I, @design-reviewer].
   - A triangle has no thickness: the touching rule's thinner core is the bullet's, and the deep floor stops short of
     the bullet core's centre, so the contact solver's one-sided push-out always sees the bullet in front.
   - At a smooth feature (the face, or an edge or a vertex the mesh's flags mark concave or flat from the front), the
