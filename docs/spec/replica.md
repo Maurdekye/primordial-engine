@@ -1160,8 +1160,12 @@ world-model.md 3.2 says what a bullet means; this is the solver's side [V `crate
   times its farthest point. When the bounds disagree too much to advance, both bodies are held at that time.
 - **The earliest impact is answered first.** Both bodies move to it and take a two-body impulse at the contact point
   (spin included), with the pair's mixed restitution (above the world's restitution threshold) and Coulomb friction.
-  Their pairs are swept again from there. A swept body deflected out of the box its search covered is searched again,
-  and every search is, when a body's reach grows past what the searches allowed.
+  Their pairs are swept again from there. A swept body is searched again after a deflection unless one box it
+  searched holds its whole new path: a box around two of them would claim corners no query read [V test: two mirrors
+  turn a bullet twice in a sub-step, toward a ball beside its first path]. When a body's reach grows past what the
+  searches allowed, every swept body is searched again and the earlier boxes stop counting [V test: a heavy bullet
+  knocks a light ball into another bullet's path back from a wall]. In M1's pit with a hundred bullets this searches
+  5 more times in 600 frames than a box around them all did, and changes no state [V scratch/covered/digest-*.log].
 - **The touching rule.** A pair that starts a piece within Box3D's time-of-impact distance (resting, sliding, or just
   answered) is swept on its cores: each shape moved inward by a share of its inner size, min(half, max(a quarter,
   0.7 slop)). A sphere's or capsule's radius shrinks. A box's core is rounded: an inner box half the rest further in,
@@ -1178,11 +1182,15 @@ world-model.md 3.2 says what a bullet means; this is the solver's side [V `crate
   - A pair that began the piece inside each other (the cores' clouds overlap, or the cores overlap deeper than the
     floor and a band) is the contact solver's: a spawn, a teleport or an edit put it there, which no sweep made and
     none can undo [V test: bullets started 3 cm and 20 cm inside a static and a sleeping box are pushed out with no
-    hold; @design-reviewer's M1 on d78fdfc0].
+    hold; @design-reviewer's M1 on d78fdfc0]. Nor is it swept on its way out, so a fast one may leave through the far
+    side: the crossing had begun.
   - Each step of the advancement is the longer of two safe ones: over the pair's closing speed in any direction, and
     over its closing speed along the contact normal, which a slide along the contact doesn't shorten.
   - Resting and sliding contact stays the contact solver's: a resting or sliding bullet raises no sweep event and
     moves exactly as an unflagged body does [V swept tests].
+  - No test pins the rounded cores yet: without them every swept test still passes [V part 1's red controls]. The
+    scene that would is a hull pair driven into the deep level, where two sharp cores' overlap reads as 0 at any depth
+    [I; before the floor was in, a box bullet crossed a box wall that way, scratch/ccd/trace4.log].
   - Known limit [V swept tests' trace, 5cf3b36a]: a thin rod (radius 1 cm) tumbling at 50 m/s and 40 rad/s into a
     1 cm wall takes about 25 hits in one frame. Each hit sets the depth two bands deeper, so it ends about 1 cm in
     before the release pushes it out over the next frames. It never crosses.
