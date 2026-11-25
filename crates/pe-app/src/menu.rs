@@ -15,8 +15,8 @@
 //!   pointer. It is the only menu toggle a tracked hand has.
 
 use pe_render::menu::{
-    Button, MenuPanel, PanelSpec, Ui, UiInput, UiOutput, button_at, cursor_overlay, place_in_front, ray_overlay,
-    wrist_place,
+    Button, MenuPanel, PanelSpec, Ui, UiInput, UiOutput, button_at, cursor_overlay, place_beside, place_in_front,
+    ray_overlay, wrist_place,
 };
 
 /// What this machine's session is, for the menu.
@@ -64,6 +64,16 @@ pub trait MenuHost: Send {
     fn quit(&mut self);
     /// The wall clock, Unix seconds (an invite's time left).
     fn unix_now(&self) -> u64;
+    /// Whether this world takes spawns (the plane's `/Spawned`; S4). No spawn panel without.
+    fn can_spawn(&self) -> bool {
+        false
+    }
+    /// Queue a spawn or a clear (crate::spawn): it is applied off the render thread.
+    fn spawn(&mut self, _job: crate::spawn::Job) {}
+    /// The last spawn's or clear's result, for the panel.
+    fn spawn_status(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Button ids.
@@ -76,6 +86,9 @@ pub mod id {
     pub const COPY_REPLY: u32 = 6;
     pub const QUIT: u32 = 7;
     pub const CLOSE: u32 = 8;
+    /// The spawn panel's (S4): one per template, in `spawn::Kind::ALL`'s order, then Clear.
+    pub const SPAWN: u32 = 20;
+    pub const CLEAR: u32 = 24;
     pub const WRIST: u32 = 100;
 }
 
@@ -94,6 +107,12 @@ pub struct Menu {
     leaving: bool,
     /// Where the head was when the main panel was placed.
     placed_at: Option<pe_seams::Pos>,
+    /// The spawn panel, beside the main one while it is open and the world takes spawns (S4).
+    side: Option<MenuPanel>,
+    /// The head this frame, for where a spawn appears.
+    head: Option<pe_render::pose::WorldPose>,
+    /// The hands' pointer origins this frame, as offsets from the origin: a spawn keeps clear of them.
+    hands: Vec<[f64; 3]>,
     /// Per pointer, while its select is held: whether the press began on a panel (@ballpit-viz's M1 on S3). A press
     /// belongs to the menu, or not, from its start to its release, so a held grab sweeping across a panel isn't
     /// dropped, and a press dragged off a panel doesn't start one.
@@ -107,6 +126,9 @@ const DOWN: f64 = 0.15;
 const WRIST_SCALE: f64 = 0.35;
 /// A ray that meets nothing is drawn this long (metres at a rig scale of 1).
 const RAY_LEN: f64 = 2.0;
+/// The spawn panel's gap from the main one, in metres at scale 1, and its turn toward the head.
+const SIDE_GAP: f64 = 0.04;
+const SIDE_TURN_DEG: f64 = 20.0;
 /// How far the head may move from where it was when the main panel was placed before the panel follows (review L3).
 const REPLACE_M: f64 = 1.0;
 /// An invite's and a reply code's prefixes (pe-net-crypto's encodings).
@@ -124,6 +146,9 @@ impl Menu {
             message: None,
             leaving: false,
             placed_at: None,
+            side: None,
+            head: None,
+            hands: Vec::new(),
             latch: [None; 3],
         }
     }
@@ -234,6 +259,20 @@ impl Menu {
                 self.open = false;
                 None
             }
+            b if (id::SPAWN..id::SPAWN + 4).contains(&b) => {
+                let k = crate::spawn::Kind::ALL[(b - id::SPAWN) as usize];
+                if let Some(h) = self.head {
+                    // The head's level forward, from the same helper that places the panel.
+                    let f = place_in_front(&h, 1.0, 0.0, 1.0).pos - h.pos;
+                    let at = crate::spawn::in_front((h.pos - pe_seams::Pos::ORIGIN).0, f.0, k, &self.hands);
+                    self.host.spawn(crate::spawn::Job::Spawn(k, at));
+                }
+                None
+            }
+            id::CLEAR => {
+                self.host.spawn(crate::spawn::Job::Clear);
+                None
+            }
             id::WRIST => {
                 self.toggle();
                 None
@@ -250,6 +289,20 @@ impl Menu {
         if self.open {
             self.main = None; // placed again in front of the head
         }
+    }
+
+    /// The spawn panel: a button per template, Clear, and the last result.
+    fn side_spec(&self) -> PanelSpec {
+        let mut buttons: Vec<Button> = crate::spawn::Kind::ALL
+            .iter()
+            .enumerate()
+            .map(|(i, k)| Button::new(id::SPAWN + i as u32, k.template()))
+            .collect();
+        buttons.push(Button::new(id::CLEAR, "Clear"));
+        if self.leaving {
+            buttons.iter_mut().for_each(|b| b.enabled = false);
+        }
+        PanelSpec { title: Some("Spawn".into()), buttons, lines: self.host.spawn_status().into_iter().collect() }
     }
 
     /// The main panel is placed again when the head is more than [`REPLACE_M`] from where it was at the placing (review
@@ -277,29 +330,49 @@ impl Ui for Menu {
             if self.main.is_none() {
                 self.placed_at = Some(head.pos);
             }
+            let placed = self.main.is_none();
             let p = self
                 .main
                 .get_or_insert_with(|| MenuPanel::new(spec.clone(), place_in_front(&head, AHEAD, DOWN, scale), scale));
             p.spec = spec;
+            let main_pose = p.pose;
+            // The spawn panel sits to the main one's right, turned toward the head, placed with it.
+            if self.host.can_spawn() {
+                let spec = self.side_spec();
+                match self.side.as_mut() {
+                    Some(s) if !placed => s.spec = spec,
+                    _ => {
+                        let across =
+                            (pe_render::menu::PANEL_PX as f64 * pe_render::menu::METRES_PER_PX + SIDE_GAP) * scale;
+                        self.side = Some(MenuPanel::new(spec, place_beside(&main_pose, across, SIDE_TURN_DEG), scale));
+                    }
+                }
+            } else {
+                self.side = None;
+            }
         }
+        self.head = Some(input.head);
+        self.hands =
+            input.rays.iter().filter(|r| r.pointer < 2).map(|r| (r.origin - pe_seams::Pos::ORIGIN).0).collect();
         // The wrist button follows the left hand; it is gone while that hand isn't tracked.
         self.wrist = input.wrist.map(|w| {
             let spec = PanelSpec { title: None, buttons: vec![Button::new(id::WRIST, "Menu")], lines: Vec::new() };
             MenuPanel::new(spec, wrist_place(&w, input.scale), WRIST_SCALE * input.scale)
         });
         // Each ray: the nearest panel it meets, its button, and its presses.
-        let mut hover: [Option<u32>; 2] = [None, None];
+        let mut hover: [Option<u32>; 3] = [None; 3];
         // A panel's button shows pressed only while a ray on that panel holds its select.
-        let mut held = [false; 2];
+        let mut held = [false; 3];
         let mut presses = Vec::new();
         let mut hits = Vec::new();
         let mut seen = [false; 3];
         for r in &input.rays {
             let mut best: Option<(usize, f64, Option<u32>, pe_seams::Pos)> = None;
             let main = self.main.as_ref().filter(|_| self.open);
+            let side = self.side.as_ref().filter(|_| self.open);
             // The left hand can't click its own wrist.
             let wrist = self.wrist.as_ref().filter(|_| r.pointer != 0);
-            for (k, p) in [(0usize, main), (1, wrist)] {
+            for (k, p) in [(0usize, main), (1, wrist), (2, side)] {
                 if let Some(p) = p
                     && let Some(h) = p.hit(r.origin, r.dir)
                     && best.is_none_or(|b| h.distance < b.1)
@@ -352,6 +425,11 @@ impl Ui for Menu {
             && let Some(p) = self.main.as_mut()
         {
             out.overlays.push(p.overlay(hover[0], hover[0].filter(|_| held[0])));
+        }
+        if self.open
+            && let Some(s) = self.side.as_mut()
+        {
+            out.overlays.push(s.overlay(hover[2], hover[2].filter(|_| held[2])));
         }
         if let Some(w) = self.wrist.as_mut() {
             out.overlays.push(w.overlay(hover[1], hover[1].filter(|_| held[1])));
@@ -468,6 +546,20 @@ impl MenuHost for AppHost {
 
     fn unix_now(&self) -> u64 {
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+    }
+
+    fn can_spawn(&self) -> bool {
+        crate::spawn::installed().is_some_and(|s| s.available())
+    }
+
+    fn spawn(&mut self, job: crate::spawn::Job) {
+        if let Some(s) = crate::spawn::installed() {
+            s.ask(job);
+        }
+    }
+
+    fn spawn_status(&self) -> Option<String> {
+        crate::spawn::installed().and_then(|s| s.status())
     }
 }
 
@@ -600,6 +692,8 @@ mod tests {
         clipboard: bool,
         paste: Result<String, String>,
         now: u64,
+        /// The world takes spawns (S4's panel shows).
+        spawns: bool,
     }
 
     impl MenuHost for FakeHost {
@@ -627,11 +721,20 @@ mod tests {
         fn unix_now(&self) -> u64 {
             self.now
         }
+        fn can_spawn(&self) -> bool {
+            self.spawns
+        }
+        fn spawn(&mut self, job: crate::spawn::Job) {
+            self.log.0.lock().unwrap().push(format!("{job:?}"));
+        }
+        fn spawn_status(&self) -> Option<String> {
+            self.spawns.then(|| "Box: spawned".into())
+        }
     }
 
     fn opener(paste: Result<String, String>, clipboard: bool) -> (Menu, Log) {
         let log = Log::default();
-        let host = FakeHost { log: log.clone(), clipboard, paste, now: 1_000 };
+        let host = FakeHost { log: log.clone(), clipboard, paste, now: 1_000, spawns: false };
         (Menu::new(Role::Opener { invite: "pe1:abc".into(), expires_unix_s: 1_000 + 52 * 60 }, Box::new(host)), log)
     }
 
@@ -745,7 +848,7 @@ mod tests {
     #[test]
     fn a_joiner_copies_its_reply_and_leaves_into_a_new_session() {
         let log = Log::default();
-        let host = FakeHost { log: log.clone(), clipboard: true, paste: Err("x".into()), now: 0 };
+        let host = FakeHost { log: log.clone(), clipboard: true, paste: Err("x".into()), now: 0, spawns: false };
         let mut m = Menu::new(Role::Joiner { reply: "pe1r:me".into() }, Box::new(host));
         let ids: Vec<u32> = m.spec(0).buttons.iter().map(|b| b.id).collect();
         assert_eq!(ids, [id::COPY_REPLY, id::LEAVE, id::QUIT, id::CLOSE]);
@@ -845,6 +948,41 @@ mod tests {
         assert!(!m.frame(&up).took[1]);
         assert!(m.frame(&held(&m, true, 1)).took[1]);
         assert!(m.frame(&held(&m, false, 0)).took[1], "dragged off, it still starts no grab");
+    }
+
+    #[test]
+    fn the_spawn_panel_sits_beside_the_menu_and_spawns_in_front_of_the_head() {
+        let log = Log::default();
+        let host = FakeHost { log: log.clone(), clipboard: true, paste: Err("x".into()), now: 1_000, spawns: true };
+        let mut m = Menu::new(Role::Opener { invite: "pe1:abc".into(), expires_unix_s: 9_000 }, Box::new(host));
+        let out = m.frame(&input(&m, None, 0, false, false));
+        assert_eq!(out.overlays.len(), 2, "the main panel and the spawn panel");
+        let side = m.side.as_ref().expect("the spawn panel");
+        let labels: Vec<&str> = side.spec.buttons.iter().map(|b| b.label.as_str()).collect();
+        assert_eq!(labels, ["Box", "Sphere", "Capsule", "Box stack", "Clear"]);
+        assert_eq!(side.spec.lines, ["Box: spawned"], "the last result shows");
+        let main = m.main.as_ref().unwrap().pose.pos;
+        assert!((side.pose.pos - main).0[0] > 0.3, "to the right of the main panel");
+        // The head is at (0, 1.6, 0) facing -Z: a box 0.5 m ahead and 0.2 m down, a stack 0.8 m ahead on the floor.
+        m.press(id::SPAWN);
+        m.press(id::SPAWN + 3);
+        m.press(id::CLEAR);
+        let c = calls(&log);
+        assert_eq!(c.len(), 3);
+        assert!(c[0].starts_with("Spawn(Box, [-0.25, 1.4") && c[0].contains(", -0.5"), "{}", c[0]);
+        assert!(c[1].starts_with("Spawn(Stack, [-0.25, 0.01, -0.8"), "{}", c[1]);
+        assert_eq!(c[2], "Clear");
+        // Closed: no spawn panel.
+        let out = m.frame(&input(&m, None, 0, true, false));
+        assert!(out.overlays.is_empty());
+    }
+
+    #[test]
+    fn no_spawn_panel_where_the_world_takes_no_spawns() {
+        let (mut m, _) = opener(Err("x".into()), true);
+        let out = m.frame(&input(&m, None, 0, false, false));
+        assert_eq!(out.overlays.len(), 1);
+        assert!(m.side.is_none());
     }
 
     #[test]

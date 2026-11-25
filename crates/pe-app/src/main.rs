@@ -291,6 +291,16 @@ fn read_console(replies: Option<std::sync::mpsc::Sender<Reply>>, replay: bool, q
                 }
                 continue;
             }
+            if line == "spawn" || line.starts_with("spawn ") {
+                match pe_app::spawn::installed() {
+                    Some(s) => match s.on_command(&line["spawn".len()..]) {
+                        Ok(said) => pe_app::out!("{said}"),
+                        Err(e) => pe_app::err!("pe-app: {e}"),
+                    },
+                    None => pe_app::err!("pe-app: `spawn` needs a session with a member on the plane (--preset plane)"),
+                }
+                continue;
+            }
             if line == "fault" {
                 match pe_app::fault::on_command(pe_app::fault::armed().as_deref()) {
                     Ok(said) => pe_app::out!("{said}"),
@@ -308,8 +318,9 @@ fn read_console(replies: Option<std::sync::mpsc::Sender<Reply>>, replay: bool, q
             }
             let Some(replies) = &replies else {
                 pe_app::err!(
-                    "pe-app: `{line}` isn't a command here: `quit`, `hands <routine|file|stop>`, `fault` (with \
-                     --arm-fault), `replay` (--check-replay), `hand-mode closed|reach` or `draw latched|simulated`"
+                    "pe-app: `{line}` isn't a command here: `quit`, `hands <routine|file|stop>`, `spawn \
+                     box|sphere|capsule|stack|clear`, `fault` (with --arm-fault), `replay` (--check-replay), \
+                     `hand-mode closed|reach` or `draw latched|simulated`"
                 );
                 continue;
             };
@@ -676,6 +687,11 @@ fn main() {
         (Some(p), Some(q)) => Some(p.with_captures(Arc::new(pe_app::capture::RenderCaptures(q.clone())))),
         (p, _) => p,
     };
+    // The menu's spawn panel and the console's `spawn` (S4): pe-api edits as this machine's member. Built only on
+    // a world with `/Spawned` (the plane); the worker looks once at start.
+    if let (Some(p), Some(me)) = (&ports, me) {
+        pe_app::spawn::install(p.api(), me);
+    }
     let mcp = ports.filter(|_| mcp_wanted).map(|p| {
         let member = me.unwrap_or_else(|| fail("an agent acts for this machine's member, and there is none"));
         match api::spawn_mcp(p.api(), mcp_opts(&options, member)) {

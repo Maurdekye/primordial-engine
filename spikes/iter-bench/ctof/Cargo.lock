@@ -2324,6 +2324,7 @@ dependencies = [
  "pe-seams",
  "pe-world",
  "pe-xr",
+ "serde_json",
  "tokio",
 ]
 

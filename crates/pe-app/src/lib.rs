@@ -44,6 +44,7 @@ pub mod sim;
 pub mod slow;
 #[cfg(test)]
 mod sources;
+pub mod spawn;
 pub mod stamp;
 pub mod standin;
 pub mod trace;
