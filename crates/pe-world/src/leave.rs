@@ -20,7 +20,8 @@ pub struct LeaveReport {
     /// Children of a hand, moved to the hand's parent (a root, for M1's root hands), keeping their world pose and
     /// the hand's child order; and children of the leaver's player body, moved to the roots.
     pub moved: Vec<ObjectId>,
-    /// The leaver's player bodies (8.2), removed outright after its hands, with their Move packs.
+    /// The leaver's player bodies (8.2), removed outright after its hands, with their Move packs: each body and then
+    /// the rest of its subtree (its drawn shape), as `SimStore::subtree` lists them.
     pub bodies: Vec<ObjectId>,
 }
 
@@ -57,7 +58,8 @@ impl World {
             .filter(|&id| w.store.get::<Hand>(id).is_some_and(|h| h.owner == member))
             .collect();
         for &h in &hands {
-            let parent = w.store.parent(h);
+            // A body's hand's children go past the body, which goes below: they become roots (8.2).
+            let parent = w.store.parent(h).filter(|&p| w.store.get_raw(ids::PLAYER, p).is_none());
             let at = parent.and_then(|p| w.store.children(p).position(|c| c == h));
             let kids: Vec<ObjectId> = w.store.children(h).collect();
             for (k, &c) in kids.iter().enumerate() {
@@ -82,26 +84,20 @@ impl World {
             t.packs.remove(&h);
             t.body_packs.remove(&h);
         }
-        // Then its player body (8.2): anything still under it (a hand's child moved up, or an object an edit put
-        // there) becomes a root keeping its world pose, and the body goes with its Move pack.
+        // Then its player body (8.2), with its whole subtree: what is left under it is logic's (its drawn shape),
+        // since no edit puts anything directly under a body, and its hands' children became roots above. It goes
+        // with its Move pack.
         let bodies: Vec<ObjectId> = if w.store.registry().get(ids::PLAYER).is_some() {
             w.store.iter::<Player>().filter(|(_, p)| p.owner == member).map(|(b, _)| b).collect()
         } else {
             Vec::new()
         };
         for &b in &bodies {
-            let kids: Vec<ObjectId> = w.store.children(b).collect();
-            for c in kids {
-                let moved = w.store.set_parent_keep_world(c, None, None).or_else(|_| w.store.set_parent(c, None, None));
-                debug_assert!(moved.is_ok(), "a body's child always becomes a root: {moved:?}");
-                w.touch(c, v, true);
-                report.moved.push(c);
-            }
+            report.bodies.extend(w.store.subtree(b));
             let gone = w.store.destroy(b);
             debug_assert!(gone.is_ok(), "the body is live: {gone:?}");
             Arc::make_mut(&mut w.inputs).moves.remove(&b);
         }
-        report.bodies = bodies;
         // A hand of the member's that an edit deleted lies in a tombstone: drop it, so no `Undelete` brings back a
         // hand owned by a non-member (@chunks-reviewer's L2).
         let ghost = |t: &Tombstone| {

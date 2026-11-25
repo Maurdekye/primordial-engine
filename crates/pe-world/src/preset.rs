@@ -197,6 +197,12 @@ pub mod plane_names {
 pub const PLANE_SIDE: f64 = 20.0;
 /// How far below the floor's top the template folder is parked, in metres: out of sight, though it is inert anyway.
 pub const TEMPLATES_DEPTH: f64 = 50.0;
+/// A player body's drawn capsule (8.2): its radius and half-height in metres, its centre's height above the feet,
+/// and its colour (linear RGBA). Drawn only; the physical capsule comes from pe-physics's `PLAYER` tuning.
+pub const BODY_SHAPE_R: f32 = 0.25;
+pub const BODY_SHAPE_HALF: f32 = 0.6;
+pub const BODY_SHAPE_UP: f64 = 0.85;
+pub const BODY_SHAPE_COLOR: [f32; 4] = [0.35, 0.55, 0.85, 1.0];
 /// The templates' density, kg/m³: a 0.2 m box is 2.4 kg, light enough to throw and heavy enough to stack.
 pub const TEMPLATE_DENSITY: f32 = 300.0;
 /// The template box's half extent, in metres.
@@ -555,6 +561,17 @@ impl World {
             w.insert(b, Transform::at(spawn))?;
             w.insert(b, Player { owner: member, prev_feet: (spawn - Pos::ORIGIN).0, ..Player::default() })?;
             w.insert(b, SimSize { metres: 1.0 })?;
+            // Its drawn shape (8.2): a capsule child with no `Body`, so never physical; pe-physics builds the player's
+            // own capsule from its tuning. It is what the view draws of another player.
+            let shape = ObjectId::body(line, member, 1, frame);
+            if w.store.exists(shape) {
+                return Err(crate::WorldError::Duplicate(shape));
+            }
+            w.create(shape, Some(b), MemberKey::LOGIC, crate::GENESIS)?;
+            w.insert(shape, Transform { pos: [0.0, BODY_SHAPE_UP, 0.0], ..Transform::IDENTITY })?;
+            let size = [BODY_SHAPE_R, BODY_SHAPE_HALF, 0.0];
+            w.insert(shape, Shape { kind: shape_kind::CAPSULE, size, ..Shape::default() })?;
+            w.insert(shape, Appearance { base: BODY_SHAPE_COLOR, roughness: 0.8, ..Appearance::default() })?;
         }
         for (side, (id, at)) in ids.into_iter().zip(places).enumerate() {
             if had[side].is_some() {

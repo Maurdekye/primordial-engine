@@ -2565,12 +2565,18 @@ its input; pe-physics moves it (L1's `move_player`, @vdw-physics); pe-replica's 
   root whose `Transform` is at the feet (the spawn slot's feet, on the floor), with a `Player` row and a `SimSize`.
   It is 3.5's avatar root: the hands are its children, at the same offsets from the feet as M1's root hands. It has
   no `Shape` or `Body` row: pe-physics builds the player's capsule from its own tuning when it sees a `Player` row
-  (`add_player`), and players pass through each other there. The body never turns, so its frame is the world's axes
+  (`add_player`), and players pass through each other there.
+- **Its drawn shape** (@engine-architect) is the body's one other child,
+  `ObjectId::body(line, member, 1, frame)`: a `Transform` 0.85 m above the feet, a capsule `Shape` (r 0.25 m,
+  half-height 0.6 m) and an `Appearance`, with no `Body`, so it is never physical. It is what the view draws of
+  another player. `add_player` takes the physical capsule from `PLAYER` tuning, never from this child. The body never turns, so its frame is the world's axes
   at its feet. A returning member keeps its body.
 - **A body is placed like a hand** (7.5, 7.6; @chunks-reviewer's I1 and M1): no edit writes or removes a `Player`
   row, and none writes a body's `Transform`, `Body` or `Shape`, reparents, deletes, copies or tags it, the owner's
   own edits included. Each is refused `Invalid` naming `Player`. No script writes a body's rows. Only world logic
-  and the mover place a body; a respawn or a teleport is a later logic action.
+  and the mover place a body; a respawn or a teleport is a later logic action. The same holds for the drawn shape,
+  whose look (`Appearance`) stays editable, as a hand's is. No edit creates, copies or reparents anything directly
+  under a body, so every child of a body is logic's: its hands and its drawn shape. Under a hand is allowed.
 - **`Player`** holds the owner and the newest Move sample: the stick (i8 steps of 1/127 after the dead zone), the
   stick's yaw, the cumulative heading (a wrapping u32, 2^32 one turn, positive turning left, 0 facing -Z), the press
   count `jumps`, the head's rig-frame pose and whether it is tracked. Three fields are derived by pe-world, from rows
@@ -2608,8 +2614,8 @@ its input; pe-physics moves it (L1's `move_player`, @vdw-physics); pe-replica's 
   (`pick_grab`) measures through `world_transform`, which composes the body. A push names no hand: its `at` is a
   world point checked against the object's bound. A throw's velocity is the sender's world velocity (`Throw`
   carries it), so it already includes the body's; pe-world adds nothing.
-- **Leave** (2.4): after the hands, the leaver's body goes, with its Move pack; anything still under it becomes a
-  root keeping its world pose. `LeaveReport::bodies` names it. A rejoin makes a new body (the id includes the frame).
+- **Leave** (2.4): a body's hand's children become roots keeping their world pose; then the leaver's body goes,
+  with its drawn shape and its Move pack. `LeaveReport::bodies` names each body, then the rest of its subtree. A rejoin makes a new body (the id includes the frame).
 - **In the root** (6.2): pending `BodyHand` and `Move` packs sit in the hand-packs table under 17-byte keys (the id
   and the tag byte 1 or 2), in key order, and in the older state hash only when there are any. A world without
   bodies has exactly the tables, and the root, it had.

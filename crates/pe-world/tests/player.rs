@@ -102,6 +102,17 @@ fn the_plane_gives_each_member_a_body_at_its_feet_with_its_hands_as_children() {
     }
     assert_eq!(w.players().len(), 2);
     assert!(w.players().windows(2).all(|p| p[0].body < p[1].body), "in id order");
+    // Each body's one other child is its drawn capsule: a shape and an appearance, no Body, so never physical.
+    for i in 0..2 {
+        let body = w.body_of(keys.key(i)).unwrap();
+        let shape = body_shape(&w, body);
+        let s = w.store().get::<pe_world::components::Shape>(shape).expect("a shape");
+        assert_eq!((s.kind, s.size), (pe_world::components::shape_kind::CAPSULE, [0.25, 0.6, 0.0]));
+        assert_eq!(offset(&w, shape, body), [0.0, 0.85, 0.0]);
+        assert!(w.store().get::<pe_world::components::Appearance>(shape).is_some());
+        assert!(w.store().get::<pe_world::components::Body>(shape).is_none());
+        assert!(!w.physical().contains(&shape) && !w.physical().contains(&body));
+    }
     // The pit has no bodies: root hands, no Player in its registry, so its roots are M1's.
     let p = pit();
     assert_eq!(p.body_of(keys.key(0)), None);
@@ -261,8 +272,10 @@ fn leaving_removes_the_body_with_its_hands_and_a_rejoin_makes_a_new_one() {
     let mut b = EntryBuilder::new(&keys, 1);
     let m = Input::Move { body, samples: vec![sample([5, 5], 0, [0.0; 3]); 3], hold: 0 };
     assert!(applied(&input(&mut w, 1, &mut b, &m).0));
+    let shape = body_shape(&w, body);
     let report = w.leave(k, EntryRef(Hash([0x1e; 32]))).expect("a member");
-    assert_eq!(report.bodies, [body]);
+    assert_eq!(report.bodies, [body, shape], "the body, then its drawn shape");
+    assert!(!w.store().exists(shape));
     assert_eq!(report.hands.len(), 2);
     assert!(!w.store().exists(body));
     assert_eq!(w.body_of(k), None);
@@ -456,4 +469,77 @@ fn a_body_s_move_counts_at_most_max_moved_for_reach() {
     w.write_poses(&[(body, far, [0.0, 0.0, 0.0, 1.0])]);
     w.end_frame(Frame(1));
     assert_eq!(f64::from(player(&w, body).moved), pe_world::player::MAX_MOVED);
+}
+
+/// `body`'s drawn shape: its one child that isn't a hand (8.2).
+fn body_shape(w: &World, body: ObjectId) -> ObjectId {
+    let kids: Vec<ObjectId> = w.store().children(body).filter(|&c| w.store().get::<Hand>(c).is_none()).collect();
+    assert_eq!(kids.len(), 1, "one drawn shape");
+    kids[0]
+}
+
+/// @engine-architect: the drawn shape is protected like the body, and nothing an edit makes goes
+/// directly under a body, so a body's children are all logic's. Under a hand still works; at a leave, a hand's child
+/// becomes a root and the shape goes with the body.
+#[test]
+fn a_body_s_drawn_shape_is_logic_s_and_no_edit_puts_anything_under_a_body() {
+    let keys = keys();
+    let mut w = plane();
+    let mut b0 = EntryBuilder::new(&keys, 0);
+    let mut b1 = EntryBuilder::new(&keys, 1);
+    let k0 = keys.key(0);
+    let body = w.body_of(k0).unwrap();
+    let shape = body_shape(&w, body);
+    let mut f = 1;
+    let mut refused = |w: &mut World, b: &mut EntryBuilder, op: pe_world::edit::Op, what: &str| {
+        let o = edit(w, f, b, vec![op]);
+        assert!(invalid(&o), "{what}: {o:?}");
+        f += 1;
+    };
+    let mut t = *w.store().get::<pe_sim::Transform>(shape).unwrap();
+    t.scale = [2.0; 3];
+    refused(&mut w, &mut b0, set_row(shape, t), "moving one's own drawn shape");
+    let red = pe_world::components::Appearance { base: [1.0, 0.0, 0.0, 1.0], ..Default::default() };
+    // Its look is editable, as a hand's is (7.5: only the rows that place it are logic's).
+    let o = edit(&mut w, 100, &mut b1, vec![set_row(shape, red)]);
+    assert!(applied(&o), "{o:?}");
+    refused(&mut w, &mut b1, pe_world::edit::Op::Delete { id: pe_world::edit::Target::Existing(shape) }, "deleting it");
+    let away = pe_world::edit::Op::Reparent {
+        id: pe_world::edit::Target::Existing(shape),
+        parent: pe_world::edit::Target::Root,
+        index: None,
+        keep_world: true,
+    };
+    refused(&mut w, &mut b0, away, "reparenting it out");
+    let copy = pe_world::edit::Op::Copy {
+        source: pe_world::edit::Target::Existing(shape),
+        new: 0,
+        parent: pe_world::edit::Target::Root,
+        index: None,
+        size: 1,
+    };
+    refused(&mut w, &mut b0, copy, "copying it");
+    let under = pe_world::edit::Op::Create {
+        new: 0,
+        parent: pe_world::edit::Target::Existing(body),
+        index: None,
+        rows: vec![],
+    };
+    refused(&mut w, &mut b0, under, "creating under a body");
+    let check = w.script_row_checker();
+    assert!(check(pe_sim::ComponentId::TRANSFORM, shape, bytemuck::bytes_of(&t)).is_err(), "no script writes it");
+    // Under a hand is still allowed; at the leave that child becomes a root, and the shape goes with the body.
+    let left = hands_of(&w, k0)[0];
+    let on_hand = pe_world::edit::Op::Create {
+        new: 0,
+        parent: pe_world::edit::Target::Existing(left),
+        index: None,
+        rows: vec![],
+    };
+    let o = edit(&mut w, f, &mut b0, vec![on_hand]);
+    assert!(applied(&o), "{o:?}");
+    let kid = w.store().children(left).next().expect("the hand's child");
+    let report = w.leave(k0, EntryRef(Hash([0x2e; 32]))).expect("a member");
+    assert_eq!(report.bodies, [body, shape]);
+    assert!(w.store().exists(kid) && w.store().parent(kid).is_none(), "the hand's child is a root");
 }

@@ -718,7 +718,10 @@ impl World {
         // Hands and player bodies take no script's writes: only world logic and the mover place them (7.5, 8.2).
         let mut hands: BTreeSet<ObjectId> = self.store.column_raw(ids::HAND).0.iter().copied().collect();
         if self.store.registry().get(ids::PLAYER).is_some() {
-            hands.extend(self.store.column_raw(ids::PLAYER).0.iter().copied());
+            for &b in self.store.column_raw(ids::PLAYER).0 {
+                hands.insert(b);
+                hands.extend(self.store.children(b));
+            }
         }
         move |c, obj, bytes| {
             let e = ENGINE_COMPONENTS.iter().find(|e| e.id == c).ok_or("not an engine component a script names")?;

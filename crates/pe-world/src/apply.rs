@@ -880,6 +880,7 @@ impl World {
                 (None, Some(self.tombstones.get(&p).and_then(|t| t.world)))
             }
         };
+        self.not_into_body(parent)?;
         let v = version(cx.entry, i);
         self.create_at(id, parent, index.map(|x| x as usize), cx.author, v).map_err(|e| match e {
             WorldError::TooDeep { object, limit } => too_deep(object, limit),
@@ -1038,6 +1039,7 @@ impl World {
                 (None, Some(self.tombstones.get(&p).and_then(|t| t.world)))
             }
         };
+        self.not_into_body(parent)?;
         if let Some(p) = parent
             && depth(&self.store, p) + 1 + self.height(src) > self.depth_limit
         {
@@ -1267,10 +1269,24 @@ impl World {
         }
     }
 
-    /// `Hand` or `Player` when `id` is a hand or a player body: objects only world logic makes, places and removes
-    /// (7.5, 8.2), so no edit moves, deletes or copies them.
+    /// `Hand` or `Player` when `id` is a hand, a player body or one of a body's other children (its drawn shape):
+    /// objects only world logic makes, places and removes (7.5, 8.2), so no edit moves, deletes or copies them. A
+    /// body's children are all logic's, because no edit puts anything directly under a body ([`Self::not_into_body`]).
     pub(crate) fn placed_by_logic(&self, id: ObjectId) -> Option<ComponentId> {
-        [ids::HAND, ids::PLAYER].into_iter().find(|&c| self.store.get_raw(c, id).is_some())
+        if let Some(c) = [ids::HAND, ids::PLAYER].into_iter().find(|&c| self.store.get_raw(c, id).is_some()) {
+            return Some(c);
+        }
+        let parent = self.store.parent(id)?;
+        self.store.get_raw(ids::PLAYER, parent).map(|_| ids::PLAYER)
+    }
+
+    /// Refuses an edit that would put an object directly under a player body, as `Invalid` naming `Player` (8.2): a
+    /// body's children are its hands and its drawn shape, all world logic's. Under a hand is allowed, as before.
+    fn not_into_body(&self, parent: Option<ObjectId>) -> Result<(), Reason> {
+        match parent {
+            Some(p) if self.store.get_raw(ids::PLAYER, p).is_some() => Err(invalid_field(ids::PLAYER, u32::MAX)),
+            _ => Ok(()),
+        }
     }
 
     /// The owner of the nearest `Protection` at or above `id`. Iterative and bounded (3.3).
@@ -1429,6 +1445,7 @@ impl World {
                 (None, true)
             }
         };
+        self.not_into_body(parent)?;
         if let Some(p) = parent {
             if self.store.is_ancestor_or_self(id, p) {
                 return Err(Reason::Cycle);
