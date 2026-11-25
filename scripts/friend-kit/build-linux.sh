@@ -41,9 +41,9 @@ uname -srm
 rustc --version
 ldd --version | sed -n 1p
 # The kits' features: scripts/friend-kit/features.txt at this commit (comments and blank lines skipped), unless
-# PE_KIT_FEATURES is set.
-features=${PE_KIT_FEATURES-$(grep -v '^#' scripts/friend-kit/features.txt 2>/dev/null | tr -s ' 
-' ' ' | xargs)}
+# PE_KIT_FEATURES is set. `|| true`: under pipefail, a file of comments only (or none, before the kit) is no features,
+# not an exit (an all-comment file killed both builders silently at d4f1313f).
+features=${PE_KIT_FEATURES-$({ sed -e 's/#.*//' scripts/friend-kit/features.txt 2>/dev/null || true; } | xargs)}
 feat=()
 [ -z "$features" ] || feat=(--features "$features")
 CARGO_TARGET_DIR=$base/target nice -n 19 cargo build --release --locked -p pe-app -j "$jobs" "${feat[@]}"

@@ -18,8 +18,7 @@ left=$(git status --porcelain --ignored -- crates Cargo.lock Cargo.toml)
 [ -z "$left" ] || { echo "build-windows: changed, untracked or ignored files would change the build id:" >&2; echo "$left" >&2; exit 2; }
 unset CARGO
 # The kits' features: scripts/friend-kit/features.txt at this commit (as build-linux.sh), unless PE_KIT_FEATURES is set.
-features=${PE_KIT_FEATURES-$(grep -v '^#' scripts/friend-kit/features.txt 2>/dev/null | tr -s ' 
-' ' ' | xargs)}
+features=${PE_KIT_FEATURES-$({ sed -e 's/#.*//' scripts/friend-kit/features.txt 2>/dev/null || true; } | xargs)}
 feat=()
 [ -z "$features" ] || feat=(--features "$features")
 cargo build --release --locked -p pe-app "${feat[@]}"
