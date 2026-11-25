@@ -13,7 +13,7 @@ use pe_core::{EntryRef, Frame, Hash, MemberKey, ObjectId};
 use pe_seams::{Class, FieldPath, Note, Outcome, Reason, SignedEntry, Version};
 use pe_sim::{ComponentId, Node, RowVersion, Transform};
 
-use crate::components::{Hand, Light, Protection, SimSize, ids};
+use crate::components::{Light, Protection, SimSize, ids};
 use crate::edit::{
     Actor, AssetTarget, MAX_NEW_OBJECTS, MAX_SHAPES, OWN_CHECK, Op, Precondition, Row, Target, Transaction,
     content_hash, row_tag,
