@@ -470,10 +470,11 @@ which fixes the origin's role deliberately.
       by the divergence theorem over the mesh **as the fork builds it**: one signed tetrahedron per built triangle, in
       the fork's triangle order (its BVH order, the same on every machine), from the centre of the built mesh's
       bounding box (of the scaled positions), summed in `f64` and rounded to `f32` once (a sum from the shape's
-      origin in `f32` loses precision for a mesh far from it), with the body's world scale applied first. It is computed in the fork's
-      `compute_shape_mass`, in Box3D's own composition and shape order (a FORK.md deviation), once per mesh, and
-      scaled at build, never in the step; a body without a mesh keeps a bit-identical mass (@coordinator-opus, Q4). The built mesh is judged, not the blob, because it is the surface the physics
-      simulates (@coordinator-opus, after @vdw-physics and @fable-reviewer):
+      origin in `f32` loses precision for a mesh far from it), with the body's world scale applied first. It is
+      computed in the fork's `compute_shape_mass`, in Box3D's own composition and shape order (a FORK.md
+      deviation), once per mesh, and scaled at build, never in the step; a body without a mesh keeps a bit-identical
+      mass (@coordinator-opus, Q4). The built mesh is judged, not the blob, because it is the surface
+      the physics simulates (@coordinator-opus, after @vdw-physics and @fable-reviewer):
       - **the drop:** Box3D's `create_mesh` leaves out every triangle with an area under 0.01·slop² (2.5×10⁻⁷ m²,
         a triangle about 0.7 mm on a side, or a sliver 1 m long and 0.5 µm high) [V `box3d-fork/src/mesh/bvh.rs`,
         `collect_primitives`]. A dropped triangle is a hole in the collision surface too, so it is out of both the
@@ -481,7 +482,8 @@ which fixes the origin's role deliberately.
         the blob's own units, before any scale. So (a) a `Scale` edit never changes which triangles are dropped or
         whether the mesh is closed (a mirroring scale reads its winding back); only the volume floor is judged after
         scale, so shrinking a small mesh below 10⁻⁹ m³, or a zero scale axis, leaves it without mass (@vdw-physics);
-        (b) a mesh authored tiny and scaled up loses triangles that are large in the world, an author-facing limit that the import warning (below) names;
+        (b) a mesh authored tiny and scaled up loses triangles that are large in the world, an author-facing limit
+        that the import warning (below) names;
       - **the weld:** Box3D can weld vertices that lie within a tolerance of each other before the drop
         (`MeshDef::weld_vertices`, `weld_tolerance`) [V `box3d-fork/src/mesh/create.rs`]. pe-physics builds meshes
         with welding off, the `MeshDef` default (@vdw-physics, stated at the call), so the test reads the blob's
