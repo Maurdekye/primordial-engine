@@ -12,7 +12,11 @@
 //!   `unpublished` is a stretch with no new view (the friend test's K8). `holds` is the run's total so far;
 //!   [`crate::sim::SimStats`] has the meaning of each. Its `lag_max`, and a `long` line's `lag`, is where the replica
 //!   is stepping, the present less its frame: it counts a rollback's re-simulation, which the slow watch's lag, the
-//!   shown world's age, doesn't ([`crate::slow`]).
+//!   shown world's age, doesn't ([`crate::slow`]). Last on the line, `others_input`, `others_edit` and
+//!   `others_other` count the other members' entries agreement held, by class, at the frames that became a second old
+//!   in that second: what of theirs this machine's world applies, a second on, so an entry still in flight isn't
+//!   missed. An author whose entries this machine defers (its pending cap, agreement.md 3) drops to 0 there while
+//!   its own `inputs` go on. `pending` is agreement's entries pending finality at the second's end.
 //! - `long`: one per tick longer than `PE_TICK_TRACE_MS` (default 50), with its every phase. `cpu_ms` against
 //!   `tick_ms` says whether the thread ran or waited: descheduled, or blocked on the console, a lock or the disk.
 //!   Windows counts thread time in clock ticks (about 15.6 ms), so `cpu_ms` is coarse below that.
@@ -73,6 +77,11 @@ pub struct Tick {
     /// The run's total of hand poses not sent because the hand was past its body's reach
     /// (`SimStats::hands_out_of_reach`): a second with no entries but some of these is a hand out of reach, not a hold.
     pub out_of_reach: u64,
+    /// The other members' entries agreement held, by class (`Class` as an index: Input, Edit, Governance, Protocol), at
+    /// the frames that became a second old in this tick. Not a running total.
+    pub others: [u64; 4],
+    /// Agreement's entries pending finality at the tick's end (`AgreeStats::pending_entries`).
+    pub pending: usize,
 }
 
 #[derive(Default)]
@@ -91,6 +100,7 @@ struct Second {
     thinned: u64,
     unpublished: u64,
     out_of_reach: u64,
+    others: [u64; 4],
     phases: PhaseTimes,
 }
 
@@ -177,6 +187,9 @@ impl TickTrace {
         let s = &mut self.sums;
         s.inputs += t.inputs.saturating_sub(inputs);
         s.out_of_reach += t.out_of_reach.saturating_sub(out_of_reach);
+        for (sum, n) in s.others.iter_mut().zip(t.others) {
+            *sum += n;
+        }
         s.refused += t.refused.saturating_sub(refused);
         s.thinned += t.thinned.saturating_sub(thinned);
         s.unpublished += u64::from(t.published == published);
@@ -248,8 +261,16 @@ impl TickTrace {
             s.unpublished,
         )?;
         phases_line(&mut self.out, &s.phases)?;
-        // Last on the line, so the fields before it keep their places for the readers that match them in order.
-        writeln!(self.out, " out_of_reach={}", s.out_of_reach)?;
+        // Last on the line, so the fields before them keep their places for the readers that match them in order.
+        writeln!(
+            self.out,
+            " out_of_reach={} others_input={} others_edit={} others_other={} pending={}",
+            s.out_of_reach,
+            s.others[0],
+            s.others[1],
+            s.others[2] + s.others[3],
+            t.pending
+        )?;
         self.out.flush()
     }
 }
@@ -406,6 +427,8 @@ mod tests {
             thinned: 0,
             published: p + 1,
             out_of_reach: 0,
+            others: [0; 4],
+            pending: 0,
         }
     }
 
@@ -437,7 +460,19 @@ mod tests {
                 }
             }
             let refused = u64::from(f >= 150);
-            let at = Tick { inputs, refused, thinned, published, out_of_reach, ..tick(f, 1, f as i64 * 1000 / 60) };
+            // The other member's entries: an input a frame in second 1, an edit at frame 130, nothing else.
+            let others = [u64::from((60..120).contains(&f)), u64::from(f == 130), 0, 0];
+            let pending = f as usize;
+            let at = Tick {
+                inputs,
+                refused,
+                thinned,
+                published,
+                out_of_reach,
+                others,
+                pending,
+                ..tick(f, 1, f as i64 * 1000 / 60)
+            };
             t.record(&Before::take(&phases, 0), &phases, 0, at);
         }
         drop(t);
@@ -449,7 +484,10 @@ mod tests {
         assert!(secs[1].contains("inputs=110 refused=0 thinned=10 unpublished=20"), "{}", secs[1]);
         // One refused entry, at frame 150: the running total goes from 0 to 1 there.
         assert!(secs[2].contains("inputs=0 refused=1 thinned=0 unpublished=0"), "{}", secs[2]);
-        assert!(secs[0].ends_with(" out_of_reach=0") && secs[2].ends_with(" out_of_reach=60"), "{}", secs[2]);
+        assert!(secs[0].contains(" out_of_reach=0 ") && secs[2].contains(" out_of_reach=60 "), "{}", secs[2]);
+        assert!(secs[0].ends_with(" others_input=0 others_edit=0 others_other=0 pending=59"), "{}", secs[0]);
+        assert!(secs[1].ends_with(" others_input=60 others_edit=0 others_other=0 pending=119"), "{}", secs[1]);
+        assert!(secs[2].ends_with(" others_input=0 others_edit=1 others_other=0 pending=179"), "{}", secs[2]);
     }
 
     /// A `sec` line per frame-clock second, and a `long` line for each tick over the threshold with its phases and
