@@ -44,6 +44,9 @@ ldd --version | sed -n 1p
 # PE_KIT_FEATURES is set. `|| true`: under pipefail, a file of comments only (or none, before the kit) is no features,
 # not an exit (an all-comment file killed both builders silently at d4f1313f).
 features=${PE_KIT_FEATURES-$({ sed -e 's/#.*//' scripts/friend-kit/features.txt 2>/dev/null || true; } | xargs)}
+if [[ $features =~ (^|[[:space:],])(pe-app/)?steam-audio-trial($|[[:space:],]) ]]; then
+  python3 -B -I scripts/audit_steam_audio_trial.py
+fi
 feat=()
 [ -z "$features" ] || feat=(--features "$features")
 CARGO_TARGET_DIR=$base/target nice -n 19 cargo build --release --locked -p pe-app -j "$jobs" "${feat[@]}"

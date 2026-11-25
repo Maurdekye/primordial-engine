@@ -39,7 +39,6 @@ class inert-sources -- ships C/C++/asm files but has no build script, so cargo n
 class windows-import-lib -- prebuilt import stubs for Windows system DLLs, an OS boundary D1 accepts (design 20.1: "ships prebuilt .lib stubs, not C source")
 
 # Single packages.
-allow alsa-sys 0.4.0 links-native without=use-bindgen in=. -- Linux x64 friend-test Steam Audio output: pkg-config links the system libasound dynamically; no native source compiled (alsa-sys 0.4.0 build.rs, default bindings)
 allow blake3 1.* compiles-native with=pure -- with `pure` its build.rs takes the Rust-intrinsics paths and compiles no C or asm (blake3 1.8.7 build.rs:343-371; design 16.6, 20.3); on x86_64 it still runs the C compiler once to probe AVX-512 flag support (c_compiler_support, build.rs:161-195) and discards the answer, so nothing it compiles is linked
 allow wayland-sys 0.31.* links-native with=dlopen -- (matches nothing since M0 archived pe-app's video tool; wgpu-hal brings it back) Linux only, through wgpu-hal in the video tool: with `dlopen` its build.rs returns before calling pkg-config ("Do not link to anything", 0.31.11 build.rs:4-7) and libwayland is loaded at run time, a system library (design 20.1)
 allow ash 0.38.* links-native without=linked -- (matches nothing since M0 archived pe-app's video tool; wgpu-hal brings it back) Vulkan bindings, through wgpu-hal in the video tool: its build.rs emits rustc-link-lib=vulkan only with `linked` (0.38.0 build.rs:2-21); without it (`loaded`) the Vulkan loader is loaded at run time (design 20.1)

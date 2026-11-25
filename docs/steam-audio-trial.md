@@ -12,7 +12,8 @@
 
 - [V] `PE_STEAM_AUDIO_LIB` enables the trial and points to the matching library. `PE_STEAM_AUDIO_LOG` gives the metrics file path. A menu relaunch gives that path a new `-r<stamp>` suffix. `PE_STEAM_AUDIO_DEVICE` selects an exact CPAL device name when the default is unsuitable. The app runs silently when the library fails verification or the endpoint cannot open.
 - [V] The stream writes silence until explicitly launched with `PE_STEAM_AUDIO_AUDIBLE=1`. A silent fixture smoke uses `PE_STEAM_AUDIO_FIXTURE=32` and `pe-app --headless --seconds 8`. The fixture alternates wood and metal hits and tops up the mix with synthetic sources. An explicit fixture count above the default voice cap raises the cap for that run, up to 512 for stress tests. Only `--headless` uses `PE_STEAM_AUDIO_RENDER=1` to draw to a GPU texture without a window or pixel readback.
-- [V] Linux output uses CPAL's ALSA backend. Build with the system ALSA development package available (`libasound2-dev` on Ubuntu or `alsa-lib-devel` on Fedora) and run with a 48 kHz system output route. `alsa-sys` links system libasound with checked-in Rust bindings. Run `python -B -I scripts/audit_steam_audio_trial.py` alongside the stock landing gate to check the enabled graph.
+- [V] Linux output uses CPAL's ALSA backend. Build with the system ALSA development package available (`libasound2-dev` on Ubuntu or `alsa-lib-devel` on Fedora) and run with a 48 kHz system output route. `alsa-sys` links system libasound with checked-in Rust bindings. The enabled-graph audit uses the trial-only ALSA allowance. Both friend-kit builders run the audit and stop on failure when the feature is selected.
+- [I] A production loader needs to ensure the bytes checked by the SHA-256 verifier are the same bytes opened by the native loader. The trial verifies the file before loading its path and assumes the kit directory is trusted.
 
 ## Impact material and voice limits
 

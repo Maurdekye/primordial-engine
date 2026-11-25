@@ -54,8 +54,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--offline", action="store_true")
     args = parser.parse_args()
-    allow = audit.Allow.parse(ROOT / "scripts" / "native_allow.txt")
     try:
+        allow = audit.Allow.parse(ROOT / "scripts" / "native_allow.txt")
+        allow.entries.extend(audit.Allow.parse(ROOT / "scripts" / "native_allow_steam_audio.txt").entries)
         failed = [inspect_target(ROOT, target, args.offline, allow) for target in TARGETS]
     except audit.GateError as error:
         print(error, file=sys.stderr)
