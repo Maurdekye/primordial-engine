@@ -102,11 +102,20 @@ $report | ForEach-Object { Write-Host $_ }
 $env:PE_XR_LOG = '1'
 $env:PE_CUT_LOG = Join-Path $logs 'cuts.txt'
 $env:PE_TICK_TRACE = Join-Path $logs 'trace.txt'
+# A Steam Audio trial kit carries phonon.dll (as run.sh's libphonon.so); a build without the trial feature ignores these.
+$env:PE_STEAM_AUDIO_LOG = Join-Path $logs 'steam-audio.txt'
+$phonon = Join-Path $here 'phonon.dll'
+if (-not $env:PE_STEAM_AUDIO_LIB -and (Test-Path $phonon)) { $env:PE_STEAM_AUDIO_LIB = $phonon }
 # No script toolchain: both machines' build ids must say the same (@engine-architect).
 Remove-Item Env:CARGO -ErrorAction SilentlyContinue
 
 $argv = @()
-if (-not $Headless -and -not $Window) { $argv += '--vr' }
+if (-not $Headless -and -not $Window) {
+    $argv += '--vr'
+    # Steam Audio writes silence unless asked: audible only for the headset run, not for -Headless or -Window checks
+    # (@audio-eval's kit contract).
+    if (-not $env:PE_STEAM_AUDIO_AUDIBLE) { $env:PE_STEAM_AUDIO_AUDIBLE = '1' }
+}
 if ($Headless) { $argv += '--headless' }
 # The friend test's plane, also when joining (pe-app ignores it there), so the menu's relaunches keep it.
 if (-not ($Rest -contains '--preset')) { $argv += @('--preset', 'plane') }

@@ -45,6 +45,9 @@ ldd --version | sed -n 1p
 # not an exit (an all-comment file killed both builders silently at d4f1313f).
 features=${PE_KIT_FEATURES-$({ sed -e 's/#.*//' scripts/friend-kit/features.txt 2>/dev/null || true; } | xargs)}
 if [[ $features =~ (^|[[:space:],])(pe-app/)?steam-audio-trial($|[[:space:],]) ]]; then
+  # A trial kit without the library would run silent with nothing said at build time.
+  [[ " ${PE_KIT_EXTRA:-} " =~ (^|[[:space:]/])libphonon\.so[[:space:]] ]] || {
+    echo "build-linux: the steam-audio-trial kit needs Valve's libphonon.so in PE_KIT_EXTRA" >&2; exit 2; }
   python3 -B -I scripts/audit_steam_audio_trial.py
 fi
 feat=()

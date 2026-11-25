@@ -9,30 +9,42 @@
 # crates/ and in the root Cargo.lock and Cargo.toml: pe-app's build id hashes all of them, ignored files included
 # (@engine-architect, @design-reviewer's L1 on S7), and both machines' ids must agree. The first line
 # pe-app prints ("pe-app ..., sources <id>") must be the same in both kits' logs.
+# The same holds for the Steam Audio trial's audit files and this kit's own scripts, so the audit that runs and the
+# launcher that ships are the commit's (@coordinator-opus; build-linux.sh's clean checkout does this).
 # The Linux kit (build-linux.sh) is built from the same commit.
+#
+# For the Steam Audio trial (features.txt; docs/steam-audio-trial.md), give Valve's files, which are never in Git:
+#   PE_KIT_EXTRA      files (Git Bash paths, space-separated) copied into the kit beside pe-app.exe: phonon.dll and
+#                     its LICENSE.md and THIRDPARTY.md. run-windows.ps1 points PE_STEAM_AUDIO_LIB at phonon.dll.
 set -euo pipefail
 sha=${1:?usage: build-windows.sh <full sha>}
 drop=${PE_KIT_DROP:-<work>/friend-kit}
 [ "$(git rev-parse HEAD)" = "$sha" ] || { echo "build-windows: this worktree isn't at $sha (it's $(git rev-parse HEAD))" >&2; exit 2; }
-left=$(git status --porcelain --ignored -- crates Cargo.lock Cargo.toml)
-[ -z "$left" ] || { echo "build-windows: changed, untracked or ignored files would change the build id:" >&2; echo "$left" >&2; exit 2; }
+left=$(git status --porcelain --ignored -- crates Cargo.lock Cargo.toml scripts/friend-kit scripts/audit_steam_audio_trial.py \
+  scripts/audit_native.py scripts/native_allow.txt scripts/native_allow_steam_audio.txt)
+[ -z "$left" ] || { echo "build-windows: changed, untracked or ignored files would change the build id, the audit or the kit:" >&2; echo "$left" >&2; exit 2; }
 unset CARGO
 # The kits' features: scripts/friend-kit/features.txt at this commit (as build-linux.sh), unless PE_KIT_FEATURES is set.
 features=${PE_KIT_FEATURES-$({ sed -e 's/#.*//' scripts/friend-kit/features.txt 2>/dev/null || true; } | xargs)}
 if [[ $features =~ (^|[[:space:],])(pe-app/)?steam-audio-trial($|[[:space:],]) ]]; then
+  # A trial kit without the library would run silent with nothing said at build time.
+  [[ " ${PE_KIT_EXTRA:-} " =~ (^|[[:space:]/])phonon\.dll[[:space:]] ]] || {
+    echo "build-windows: the steam-audio-trial kit needs Valve's phonon.dll in PE_KIT_EXTRA" >&2; exit 2; }
   python -B -I scripts/audit_steam_audio_trial.py
 fi
 feat=()
 [ -z "$features" ] || feat=(--features "$features")
 cargo build --release --locked -p pe-app "${feat[@]}"
 target=$(cargo metadata --format-version 1 --no-deps | python -c "import json,sys; print(json.load(sys.stdin)['target_directory'])")
-short=${sha:0:12}
+short=${sha:0:12}${features:+-${features//[ ,]/-}}
 out=$drop/pe-friend-win-$short
 rm -rf "$out"
 mkdir -p "$out"
 cp "$target/release/pe-app.exe" "$out/"
 here=$(cd "$(dirname "$0")" && pwd)
 cp "$here/run-windows.ps1" "$here/README-windows.md" "$out/"
+extra=()
+for f in ${PE_KIT_EXTRA:-}; do cp "$f" "$out/"; extra+=("$(basename "$f")"); done
 echo "$sha${features:+ features: $features}" > "$out/COMMIT"
 echo "build-windows: $out"
-sha256sum "$out/pe-app.exe"
+(cd "$out" && sha256sum pe-app.exe "${extra[@]}")

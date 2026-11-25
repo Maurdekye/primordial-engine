@@ -78,6 +78,9 @@ export PE_STEAM_AUDIO_LOG="$logs/steam-audio.txt"
 unset CARGO
 args=()
 case " $* " in *" --headless "*) ;; *) [ "${PE_KIT_NO_VR:-0}" = 1 ] || args+=(--vr) ;; esac
+# Steam Audio writes silence unless asked: audible only for the headset run, not for --headless or PE_KIT_NO_VR
+# checks (@audio-eval's kit contract).
+case " ${args[*]} " in *" --vr "*) export PE_STEAM_AUDIO_AUDIBLE=${PE_STEAM_AUDIO_AUDIBLE:-1} ;; esac
 # A session of its own opens the friend test's plane (@coordinator-opus); pe-app's own default is the
 # ball pit. Passed with --join too, where pe-app ignores it, so the menu's relaunches (Leave, New session) keep it
 # (@design-reviewer's L1 on S6).

@@ -1,3 +1,5 @@
 # The cargo features both friend kits build pe-app with (build-linux.sh and build-windows.sh read this file at the
 # commit they build; PE_KIT_FEATURES overrides it). @coordinator-opus: one friend kit, with the Steam
-# Audio trial on, once the trial is on main: then the next line becomes steam-audio-trial. Until then, none.
+# Audio trial on (docs/steam-audio-trial.md, on main from 8d21bffe). Both builders then run its audit and need Valve's
+# library in PE_KIT_EXTRA.
+steam-audio-trial
