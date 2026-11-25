@@ -42,6 +42,7 @@ pub mod scripted;
 pub mod shown;
 pub mod sim;
 pub mod slow;
+pub mod slowframe;
 #[cfg(test)]
 mod sources;
 pub mod spawn;

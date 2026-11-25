@@ -246,11 +246,20 @@ fn target(w: &PeWorld) -> Option<(ObjectId, Shape)> {
 pub struct FaultWorld {
     inner: PeWorld,
     fault: Option<Arc<Fault>>,
+    /// This process's deliberate slowdown (`--slow-frame`, [`crate::slowframe`]): each simulated frame waits it out.
+    slow: Option<Arc<crate::slowframe::SlowFrame>>,
 }
 
 impl FaultWorld {
+    /// `inner` with `fault`, and this process's armed slowdown, if any ([`crate::slowframe::armed`]).
     pub fn new(inner: PeWorld, fault: Option<Arc<Fault>>) -> FaultWorld {
-        FaultWorld { inner, fault }
+        FaultWorld { inner, fault, slow: crate::slowframe::armed() }
+    }
+
+    /// The same with `slow` in place of the process's slowdown: a test slows one replica.
+    pub fn with_slow(mut self, slow: Option<Arc<crate::slowframe::SlowFrame>>) -> FaultWorld {
+        self.slow = slow;
+        self
     }
 
     /// `inner` with this process's armed fault, if any ([`armed`]).
@@ -280,6 +289,10 @@ impl WorldModel for FaultWorld {
         let acts = self.inner.end_frame(frame);
         if let Some(fault) = self.fault.as_ref().filter(|f| f.at() == Some(frame)) {
             fault.inject(&mut self.inner);
+        }
+        // Every frame stepped, live or re-simulated, pays the slowdown: wall time only (crate::slowframe).
+        if let Some(slow) = &self.slow {
+            slow.spin();
         }
         acts
     }

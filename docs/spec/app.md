@@ -923,8 +923,8 @@ injects a fault on B. Two runtime flags arm it, and they exclude each other. Nei
 shipped build meets the feature policy.
 - `--arm-fault`, which the demo uses: typing `fault` and Enter in B's console fires it at the next frame B steps,
   `F`, and the console names `F`. Without the flag, `fault` is refused on any machine. Every machine's console reads
-  commands: `quit`, `hands`, `spawn` (4.2), `fault`, `replay`, `hand-mode` and `draw` (below), and on A also a
-  joiner's reply code (debug builds also take `panic`, the panic path's test).
+  commands: `quit`, `hands`, `spawn` (4.2), `fault`, `slow` (below), `replay`, `hand-mode` and `draw` (below), and on
+  A also a joiner's reply code (debug builds also take `panic`, the panic path's test).
 - `--inject-fault-at <F>`: it fires at session frame `F`, fixed at start. B's console prints the frame it joined at;
   the world runs at 60 Hz.
 
@@ -946,6 +946,28 @@ B's console says what it will do when a flag arms it, and says it again when the
   before the cure (@item:primordial-engine/at-n-2-a-root-split-s-first-rung-2-repair-fails-t).
 - At n = 2 none of these bundles can be replayed: a split's repair captures no replay evidence (divergence.md 6;
   @item:primordial-engine/replay-evidence-for-a-root-split-s-rung-2-repair). The demo shows them instead.
+
+**The test slowdown** (slowframe.rs; the friend test's K4 R3', @coordinator-opus after
+@fable-reviewer). R3' runs a member that can't keep real time, and no machine here falls behind at 500 balls, so
+`--slow-frame <ms>` makes one. Like the fault, it is a runtime flag, not a cargo feature, and no environment variable
+sets it.
+- Every frame the machine simulates (live, re-simulated after a rollback, or replayed) busy-waits `ms` of real time at
+  its end, at most 1,000. A really slow machine pays for each frame it simulates, so its catch-up costs as much as its
+  present; a wait per tick would make catch-up cheap.
+- The console's `slow <ms>` changes it and `slow 0` stops it. Without the flag, `slow` is refused.
+- Wall time only: it changes no state for the entries a replica is given, so a replica's roots are the same with it
+  as without it (`slowframe::tests`). In a session it changes what real slowness changes, which is its purpose: the
+  machine's entries are stamped and arrive late, its lead rises, its confirmations come late and it may resync, and the
+  roots agree as they would with a really slow machine. On a scripted test clock it costs wall time but no simulated
+  lag, so it can't drive the slow-member path in an in-process test.
+- It shows while it is on: a start-up line, a line at each `slow`, the status line ("Slowed on purpose: …", ahead of
+  any other status), and the end line's `slow_frame_ms` and `slowed_frames` (which count a `replay` thread's frames
+  too). Nothing reaches the other members, whose logs show a really slow peer, so a run's record pairs their logs with
+  this machine's start-up and end lines. A run with it is recorded as "run with injected slowness".
+- Only simulating waits: the simulation thread, and the `replay` check's thread while it replays. Rendering, the
+  transport thread and the console aren't slowed, where a really slow machine's would be; what the simulation thread
+  drafts (hands, spawns, votes) goes out late, as a slow machine's does. The start-up physics self-test steps
+  pe-physics directly, so start-up isn't slowed and the hello's digest is the same. `--check-replay` may run with it.
 
 **The hand-feel switch** (the pull-ahead plan's 1.10, `crate::handfeel`; @coordinator-opus). The
 headset test compares two hand feels in one session, switched by console commands that the operator types on the
