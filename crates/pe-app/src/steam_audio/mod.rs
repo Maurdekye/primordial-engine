@@ -21,10 +21,11 @@ use pe_render::present::Presenter;
 use sha2::{Digest, Sha256};
 
 use self::events::{Listener, Publisher};
-use self::mix::{BLOCK, DEFAULT_VOICE_CAP, DIRECT, Impact, MAX_VOICES, Mixer, RATE};
+use self::mix::{BLOCK, DEFAULT_VOICE_CAP, DIRECT, Impact, MAX_VOICES, Mixer, RATE, output_sample};
 
 const RELAXED: Ordering = Ordering::Relaxed;
 const WARMUP: Duration = Duration::from_secs(2);
+const MAX_ADMITS_PER_BLOCK: usize = 64;
 #[cfg(windows)]
 const PHONON_SHA256: &str = "ca3dbc01dbc24492717011e80f6a51404ca143ae344ca660971d2c983f1e058d";
 #[cfg(target_os = "linux")]
@@ -298,7 +299,7 @@ impl Callback {
         for frame in output.chunks_exact_mut(self.channels) {
             if self.cursor == BLOCK {
                 let dsp_start = Instant::now();
-                for hit in self.impacts.try_iter().take(MAX_VOICES) {
+                for hit in self.impacts.try_iter().take(MAX_ADMITS_PER_BLOCK) {
                     self.mix.admit(hit, listener.pos);
                 }
                 self.mix.render(listener);
@@ -318,16 +319,17 @@ impl Callback {
             }
             for (channel, out) in frame.iter_mut().take(2).enumerate() {
                 let value = self.mix.stereo[self.cursor + BLOCK * channel];
-                let finite = value.is_finite();
-                if recording {
-                    stats.invalid_samples += u64::from(!finite);
-                    if finite {
-                        stats.peak = stats.peak.max(value.abs());
-                        stats.limited_samples += u64::from(value.abs() > 0.42);
-                    }
+                if !value.is_finite() {
+                    stats.invalid_samples += u64::from(recording);
+                    continue;
                 }
-                if self.audible && finite {
-                    *out = T::from_sample(value.clamp(-0.42, 0.42));
+                let (sample, limited) = output_sample(value);
+                if recording {
+                    stats.peak = stats.peak.max(sample.abs());
+                    stats.limited_samples += u64::from(limited);
+                }
+                if self.audible {
+                    *out = T::from_sample(sample);
                 }
             }
             self.cursor += 1;

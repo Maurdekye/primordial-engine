@@ -119,6 +119,7 @@ struct Api {
     release_encode: Release,
     release_decode: Release,
     reset_binaural: unsafe extern "system" fn(Handle),
+    reset_encode: unsafe extern "system" fn(Handle),
     apply_binaural: Apply<BinauralParams>,
     apply_encode: Apply<EncodeParams>,
     apply_decode: Apply<DecodeParams>,
@@ -193,6 +194,7 @@ impl Spatializer {
             release_encode: load!("iplAmbisonicsEncodeEffectRelease", Release),
             release_decode: load!("iplAmbisonicsDecodeEffectRelease", Release),
             reset_binaural: load!("iplBinauralEffectReset", unsafe extern "system" fn(Handle)),
+            reset_encode: load!("iplAmbisonicsEncodeEffectReset", unsafe extern "system" fn(Handle)),
             apply_binaural: load!("iplBinauralEffectApply", Apply<BinauralParams>),
             apply_encode: load!("iplAmbisonicsEncodeEffectApply", Apply<EncodeParams>),
             apply_decode: load!("iplAmbisonicsDecodeEffectApply", Apply<DecodeParams>),
@@ -283,6 +285,10 @@ impl Spatializer {
 
     pub fn reset_binaural(&self, voice: usize) {
         unsafe { (self.api.reset_binaural)(self.binaural[voice].raw()) }
+    }
+
+    pub fn reset_encoder(&self, voice: usize) {
+        unsafe { (self.api.reset_encode)(self.encoders[voice].raw()) }
     }
 
     pub fn encode(&self, voice: usize, direction: Vec3, input: &mut [f32], output: &mut [f32]) {

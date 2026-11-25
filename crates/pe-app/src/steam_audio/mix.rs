@@ -18,6 +18,11 @@ pub(super) const MAX_VOICES: usize = 512;
 const BED_CHANNELS: usize = 4;
 const MAX_DISTANCE: f32 = 80.0;
 const TONE_PERIOD: usize = 2048;
+// An incumbent retains its direct slot until a challenger is more than 10% closer.
+const DIRECT_DISTANCE_BIAS_SQ: f32 = 0.9 * 0.9;
+const MASTER_GAIN: f32 = 0.5;
+const LIMIT_KNEE: f32 = 0.30;
+const OUTPUT_CEILING: f32 = 0.42;
 
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum Material {
@@ -51,6 +56,8 @@ struct Source {
     index: usize,
     relative: Direction,
     distance_sq: f32,
+    direct_rank: f32,
+    encoder: Option<usize>,
     synthetic: bool,
 }
 
@@ -61,6 +68,9 @@ pub(super) struct Mixer {
     sources: Vec<Source>,
     synthetic: Vec<Pos>,
     direct: [Option<u64>; DIRECT],
+    // Sorted by source ID for lookup. The scratch map is reused across blocks.
+    bed_slots: Vec<(u64, usize)>,
+    next_bed_slots: Vec<(u64, usize)>,
     next_id: u64,
     samples: usize,
     waveforms: [Vec<f32>; 2],
@@ -85,6 +95,8 @@ impl Mixer {
             sources: Vec::with_capacity(voice_cap),
             synthetic: Vec::with_capacity(synthetic_count),
             direct: [None; DIRECT],
+            bed_slots: Vec::with_capacity(voice_cap - DIRECT),
+            next_bed_slots: Vec::with_capacity(voice_cap - DIRECT),
             next_id: 1,
             samples: 0,
             waveforms: [waveform(Material::Wood), waveform(Material::Metal)],
@@ -161,25 +173,7 @@ impl Mixer {
             self.sources.push(source(u64::MAX - i as u64, i, at, listener.pos, true));
         }
         self.peak_voices = self.peak_voices.max(self.sources.len());
-        self.sources.sort_unstable_by(|a, b| a.distance_sq.total_cmp(&b.distance_sq).then(a.id.cmp(&b.id)));
-        let direct = &self.sources[..self.sources.len().min(DIRECT)];
-        let last = self.direct;
-        for slot in &mut self.direct {
-            if !direct.iter().any(|source| Some(source.id) == *slot) {
-                *slot = None;
-            }
-        }
-        for source in direct {
-            if !self.direct.contains(&Some(source.id)) {
-                let slot = self.direct.iter_mut().find(|slot| slot.is_none()).expect("at most eight direct sources");
-                *slot = Some(source.id);
-            }
-        }
-        for (index, id) in self.direct.iter().enumerate() {
-            if *id != last[index] {
-                self.sdk.reset_binaural(index);
-            }
-        }
+        self.assign_effects();
         let rotation = listener.rot.as_quat();
         for (index, source) in self.sources.iter().enumerate() {
             let direction = source.relative.try_normalize().unwrap_or(Direction::NEG_Z);
@@ -212,7 +206,8 @@ impl Mixer {
                 self.sdk.binaural(slot, ipl(relative), false, &mut self.mono, &mut self.wet);
                 add(&mut self.stereo, &self.wet);
             } else {
-                self.sdk.encode(index - DIRECT, ipl(direction), &mut self.mono, &mut self.encoded);
+                let encoder = source.encoder.expect("bed encoder assigned above");
+                self.sdk.encode(encoder, ipl(direction), &mut self.mono, &mut self.encoded);
                 add(&mut self.bed, &self.encoded);
             }
         }
@@ -227,11 +222,76 @@ impl Mixer {
         add(&mut self.stereo, &self.wet);
         self.samples = (self.samples + BLOCK) & (TONE_PERIOD - 1);
     }
+
+    fn assign_effects(&mut self) {
+        for source in &mut self.sources {
+            if self.direct.contains(&Some(source.id)) {
+                source.direct_rank *= DIRECT_DISTANCE_BIAS_SQ;
+            }
+        }
+        self.sources.sort_unstable_by(|a, b| a.direct_rank.total_cmp(&b.direct_rank).then(a.id.cmp(&b.id)));
+        let direct_count = self.sources.len().min(DIRECT);
+        let (direct, bed) = self.sources.split_at_mut(direct_count);
+        let last = self.direct;
+        for slot in &mut self.direct {
+            if !direct.iter().any(|source| Some(source.id) == *slot) {
+                *slot = None;
+            }
+        }
+        for source in direct {
+            if !self.direct.contains(&Some(source.id)) {
+                let slot = self.direct.iter_mut().find(|slot| slot.is_none()).expect("at most eight direct sources");
+                *slot = Some(source.id);
+            }
+        }
+        for (index, id) in self.direct.iter().enumerate() {
+            if *id != last[index] {
+                self.sdk.reset_binaural(index);
+            }
+        }
+
+        // Reserve surviving encoders before assigning new ones, even if the spatial order has changed.
+        let mut used = [false; MAX_VOICES - DIRECT];
+        for source in &mut *bed {
+            if let Ok(index) = self.bed_slots.binary_search_by_key(&source.id, |&(id, _)| id) {
+                let slot = self.bed_slots[index].1;
+                used[slot] = true;
+                source.encoder = Some(slot);
+            }
+        }
+        let mut free =
+            used[..self.voice_cap - DIRECT].iter().enumerate().filter_map(|(slot, used)| (!used).then_some(slot));
+        self.next_bed_slots.clear();
+        for source in bed {
+            let slot = *source.encoder.get_or_insert_with(|| {
+                let slot = free.next().expect("at most voice_cap - DIRECT bed sources");
+                self.sdk.reset_encoder(slot);
+                slot
+            });
+            self.next_bed_slots.push((source.id, slot));
+        }
+        self.next_bed_slots.sort_unstable_by_key(|&(id, _)| id);
+        std::mem::swap(&mut self.bed_slots, &mut self.next_bed_slots);
+    }
 }
 
 fn source(id: u64, index: usize, at: Pos, listener: Pos, synthetic: bool) -> Source {
     let relative = offset_vec(at - listener).clamp(DVec3::splat(-1e6), DVec3::splat(1e6)).as_vec3();
-    Source { id, index, relative, distance_sq: relative.length_squared(), synthetic }
+    let distance_sq = relative.length_squared();
+    Source { id, index, relative, distance_sq, direct_rank: distance_sq, encoder: None, synthetic }
+}
+
+/// Apply bus gain and a soft knee to a finite sample before device conversion.
+pub(super) fn output_sample(raw: f32) -> (f32, bool) {
+    let gained = raw * MASTER_GAIN;
+    let limited = gained.abs() > LIMIT_KNEE;
+    let output = if limited {
+        let range = OUTPUT_CEILING - LIMIT_KNEE;
+        (LIMIT_KNEE + range * ((gained.abs() - LIMIT_KNEE) / range).tanh()).copysign(gained)
+    } else {
+        gained
+    };
+    (output.clamp(-OUTPUT_CEILING, OUTPUT_CEILING), limited)
 }
 
 fn ipl(v: Direction) -> Vec3 {
@@ -262,4 +322,60 @@ fn waveform(material: Material) -> Vec<f32> {
             attack * release * modes.iter().map(|&(f, a, d)| a * (TAU * f * t).sin() * (-d * t).exp()).sum::<f32>()
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn output_gain_preserves_small_signals_and_soft_limits_loud_ones() {
+        assert_eq!(output_sample(0.0), (0.0, false));
+        assert_eq!(output_sample(0.2), (0.1, false));
+        let (loud, limited) = output_sample(0.8);
+        assert!(limited && loud > LIMIT_KNEE && loud < OUTPUT_CEILING);
+        assert_eq!(output_sample(-0.8), (-loud, true));
+        assert!(output_sample(10.0).0 <= OUTPUT_CEILING);
+    }
+
+    #[test]
+    #[ignore = "requires the pinned Steam Audio SDK at PE_STEAM_AUDIO_LIB"]
+    fn crowded_impact_mix() {
+        let path = std::env::var_os("PE_STEAM_AUDIO_LIB").expect("path to Steam Audio 4.8.1");
+        let path = super::super::verified_library(Path::new(&path)).unwrap();
+        let mut mix = Mixer::new(&path, DEFAULT_VOICE_CAP, 0).unwrap();
+        let at = Pos::ORIGIN.checked_add(Offset([0.0, 0.0, -0.75])).unwrap();
+        let listener = WorldPose { pos: Pos::ORIGIN, rot: glam::DQuat::IDENTITY };
+        let mut raw_peak = 0.0f32;
+        let mut peak = 0.0f32;
+        let mut limited_samples = 0;
+        let mut old_hard_clipped = 0;
+        let mut remaining = DEFAULT_VOICE_CAP;
+        for _ in 0..(RATE as usize / BLOCK / 2) {
+            let count = remaining.min(super::super::MAX_ADMITS_PER_BLOCK);
+            for i in 0..count {
+                let material = if i % 2 == 0 { Material::Wood } else { Material::Metal };
+                mix.admit(
+                    Impact { at, material, size_m: 0.30, strength: 25.0, submitted: Instant::now() },
+                    listener.pos,
+                );
+            }
+            remaining -= count;
+            mix.render(listener);
+            for raw in mix.stereo {
+                assert!(raw.is_finite());
+                let (sample, limited) = output_sample(raw);
+                raw_peak = raw_peak.max(raw.abs());
+                peak = peak.max(sample.abs());
+                limited_samples += usize::from(limited);
+                old_hard_clipped += usize::from(raw.abs() > OUTPUT_CEILING);
+            }
+        }
+        println!(
+            "crowded mix: voices={} raw_peak={raw_peak:.6} pre_mute_peak={peak:.6} limited_samples={limited_samples} legacy_hard_clipped={old_hard_clipped}",
+            mix.peak_voices
+        );
+        assert_eq!(mix.peak_voices, DEFAULT_VOICE_CAP);
+        assert!(raw_peak > OUTPUT_CEILING && limited_samples > 0 && peak <= OUTPUT_CEILING);
+    }
 }
