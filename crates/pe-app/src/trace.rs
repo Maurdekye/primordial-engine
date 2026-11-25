@@ -13,10 +13,14 @@
 //!   [`crate::sim::SimStats`] has the meaning of each. Its `lag_max`, and a `long` line's `lag`, is where the replica
 //!   is stepping, the present less its frame: it counts a rollback's re-simulation, which the slow watch's lag, the
 //!   shown world's age, doesn't ([`crate::slow`]). Last on the line, `others_input`, `others_edit` and
-//!   `others_other` count the other members' entries agreement held, by class, at the frames that became a second old
-//!   in that second: what of theirs this machine's world applies, a second on, so an entry still in flight isn't
-//!   missed. An author whose entries this machine defers (its pending cap, agreement.md 3) drops to 0 there while
-//!   its own `inputs` go on. `pending` is agreement's entries pending finality at the second's end.
+//!   `others_other` count the other members' entries agreement held, by class, at each frame when it became final or
+//!   a second old, whichever came first: what of theirs this machine holds to apply (a held entry not yet final may
+//!   still be voided as late). A final frame's entries are its cut's, and a second on an entry in flight has
+//!   arrived, so a frame short of another member's entries is one this machine hadn't admitted by then: deferred at
+//!   its pending cap (agreement.md 3), fetched late or never sent. The trace can't tell late from never: a deferred
+//!   entry admitted later is applied by a rollback and never counted. An author whose entries this machine defers
+//!   drops to 0 here while its own `inputs` go on. `pending` is agreement's entries pending finality at the second's
+//!   end.
 //! - `long`: one per tick longer than `PE_TICK_TRACE_MS` (default 50), with its every phase. `cpu_ms` against
 //!   `tick_ms` says whether the thread ran or waited: descheduled, or blocked on the console, a lock or the disk.
 //!   Windows counts thread time in clock ticks (about 15.6 ms), so `cpu_ms` is coarse below that.
@@ -78,7 +82,7 @@ pub struct Tick {
     /// (`SimStats::hands_out_of_reach`): a second with no entries but some of these is a hand out of reach, not a hold.
     pub out_of_reach: u64,
     /// The other members' entries agreement held, by class (`Class` as an index: Input, Edit, Governance, Protocol), at
-    /// the frames that became a second old in this tick. Not a running total.
+    /// the frames that became final or a second old in this tick, whichever came first. Not a running total.
     pub others: [u64; 4],
     /// Agreement's entries pending finality at the tick's end (`AgreeStats::pending_entries`).
     pub pending: usize,
