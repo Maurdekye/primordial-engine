@@ -15,6 +15,30 @@ use std::sync::Arc;
 
 use crate::world::World;
 
+/// The largest record an edit may leave (6.6, R_max; @coordinator-opus): an object's record or a
+/// table's, in bytes. pe-diverge refuses a claimed record longer than this, since a record pulled in pieces can only
+/// be checked once whole; pe-world refuses an edit that would take a record past it, as `TooLarge` with this limit.
+/// A ceiling far above use: about six full-size copy-then-deletes in one minute reach it in the tombstones table.
+pub const MAX_RECORD_BYTES: usize = 256 << 20;
+
+#[cfg(feature = "test-util")]
+thread_local! {
+    /// A test's lower ceiling, on its own thread only (`test_util::set_record_limit`).
+    pub(crate) static RECORD_LIMIT: std::cell::Cell<usize> = const { std::cell::Cell::new(MAX_RECORD_BYTES) };
+}
+
+/// The ceiling apply checks: [`MAX_RECORD_BYTES`], or a test's lower one.
+pub(crate) fn record_limit() -> usize {
+    #[cfg(feature = "test-util")]
+    {
+        RECORD_LIMIT.with(|c| c.get())
+    }
+    #[cfg(not(feature = "test-util"))]
+    {
+        MAX_RECORD_BYTES
+    }
+}
+
 /// The world tables, in their order in the tables root (6.6): the `LeafKey::Table` index is the position.
 pub mod table {
     pub const REGISTRY: u8 = 0;
@@ -149,6 +173,48 @@ fn canonical_row(d: &ComponentDesc, row: &[u8]) -> Vec<u8> {
     }
     out.extend_from_slice(&row[at..]);
     out
+}
+
+/// The length of `canonical_row(d, row)`, building it only for a row with a `Pos`, whose encoding is variable.
+fn canonical_len(d: &ComponentDesc, row: &[u8]) -> usize {
+    if d.fields().iter().any(|f| f.kind == FieldKind::Pos) { canonical_row(d, row).len() } else { row.len() }
+}
+
+/// The bytes of [`node_bytes`]: five links, creator, two entries, four `u32`s.
+const NODE_LEN: usize = 5 * 16 + 3 * 32 + 4 * 4;
+/// The bytes of [`version_bytes`].
+const VERSION_LEN: usize = 52;
+
+/// The length of an object's record ([`record_in`]) without building it; `None` if it does not exist. Checked
+/// against [`MAX_RECORD_BYTES`] after an edit.
+pub fn record_len(store: &pe_sim::SimStore, id: ObjectId) -> Option<usize> {
+    if !store.exists(id) {
+        return None;
+    }
+    let mut n = 16 + NODE_LEN + 4;
+    for d in store.registry().iter().filter(|d| d.id() != ComponentId::NODE) {
+        if let Some(row) = store.get_raw(d.id(), id) {
+            n += 16 + 32 + 2 + VERSION_LEN + 8 + canonical_len(d, row);
+        }
+    }
+    Some(n)
+}
+
+/// The length of the tombstones table's record (`table_record` of its entries) without building it. Checked against
+/// [`MAX_RECORD_BYTES`] after an edit that adds tombstones.
+pub fn tombstones_record_len(w: &World) -> usize {
+    let reg = w.store.registry();
+    let mut n = 8;
+    for t in w.tombstones.values() {
+        let mut pose = Vec::new();
+        world_pose_bytes(&mut pose, &t.world);
+        let mut v = 32 + 8 + 8 + if t.parent.is_some() { 17 } else { 1 } + 4 + pose.len() + NODE_LEN + 4;
+        for (c, bytes, _) in &t.rows {
+            v += 16 + VERSION_LEN + 8 + reg.get(*c).map_or(bytes.len(), |d| canonical_len(d, bytes));
+        }
+        n += 8 + 16 + 8 + v;
+    }
+    n
 }
 
 /// A `Node` record's bytes (6.6): the five links, creator, the two version entries, the two ops, `born_on`, then 4

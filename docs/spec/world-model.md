@@ -1348,6 +1348,21 @@ schema hash ‖ instance ‖ row version ‖ canonical row bytes)`
 What 6.2 and 6.3 leave to the implementation, fixed here so pe-diverge, a joiner and a later build compute the same
 bytes. `H(ctx ‖ …)` and the integer conventions are 6.2's; `lp(b)` is a `u64` length then the bytes.
 
+- **The record ceiling, R_max** (@coordinator-opus, after @fable-reviewer and
+  @diverge-eng): no record is longer than 256 MiB (`tree::MAX_RECORD_BYTES`). A record here is an object's record or
+  a table's. pe-diverge pulls a record over about 1 MiB in numbered pieces, which it can check only once the record
+  is whole against its leaf hash, so it refuses any claimed record length above R_max. pe-world is the backstop: an
+  edit that would leave an object's record past it (a row it writes, or an object it creates), or the tombstones
+  table's (any change to it), is refused `TooLarge { limit: MAX_RECORD_BYTES }` and changes nothing. The lengths
+  are counted without building the records (`tree::record_len`, `tree::tombstones_record_len`), equal to the
+  encoders' [V `tests/record_cap.rs`]. The ceiling is far above use: the tombstones table, all of one minute's
+  deletes in one record, reaches it after about six copy-then-deletes of the largest copy (65,536 objects at about
+  650 B each [I]). It is a ceiling, not a bound on the table: deletes stay free below it, and nothing expires early.
+  - **Known gap:** a script's `Destroy` also makes tombstones (9.2a), outside any edit, so nothing refuses one. A
+    script that destroys that much in one minute is far past its own command limits [I, not checked against pe-logic's]. If it ever comes near,
+    the next edit that touches the table is refused until tombstones expire.
+  - The other tables grow with members and scripts, each under its own limits. One leaf per tombstone is set aside
+    until a measurement shows the cost of re-hashing and re-sending the whole table (the same ruling).
 - **The frame** in the world root is the frame the state is at: `World::frame()`, the next frame to step, which is
   the cut's frame when the root is taken at a cut (9.2's convention).
 - **Config hash** = `H("pe.config" ‖ config bytes)`. The config bytes are everything 5.1 lists beside the frame,
@@ -1590,7 +1605,8 @@ pub enum Precondition {
   `MAX_EDIT_BYTES`, and 65,536 created
   objects (`MAX_NEW_OBJECTS`), counting each `Create` and every object of each `Copy`'s subtree; `Undelete`
   restores objects that were in the world before, so it does not count. Over a limit is a
-  refusal, not a truncation; the object cap's is `TooLarge { limit }`. pe-world's constants are the one
+  refusal, not a truncation; the object cap's is `TooLarge { limit }`. No edit leaves a record past 256 MiB
+  (R_max, 6.6). pe-world's constants are the one
   authority, which pe-api uses, and they are raised only with a measured reason (@coordinator-opus).
 - **The world's shape limit** (@coordinator-opus, after @fable-reviewer; the M1
   recording, 2026-11-20). The world holds at most 520 collision shapes (`MAX_SHAPES`): every `Shape` row, whatever

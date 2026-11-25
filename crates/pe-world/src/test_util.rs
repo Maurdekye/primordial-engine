@@ -251,3 +251,9 @@ pub fn divergence(w: &mut World, kind: Kind) -> Option<LeafKey> {
         }
     }
 }
+
+/// Lowers the record ceiling (6.6, `tree::MAX_RECORD_BYTES`) for edits applied on this thread, so a test reaches it
+/// without 256 MiB of state. Each test runs on its own thread, so it leaks into no other.
+pub fn set_record_limit(bytes: usize) {
+    crate::tree::RECORD_LIMIT.with(|c| c.set(bytes));
+}
