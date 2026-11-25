@@ -259,8 +259,13 @@ impl Net {
     /// Three members on `fixture()`; the victim's world comes from `victim_world`, and its live history is
     /// damaged by `plan`.
     fn new(victim_world: World, plan: Option<(Frame, Kind)>) -> Net {
+        Net::with(fixture, victim_world, plan)
+    }
+
+    /// As [`Net::new`], with the honest members' worlds from `honest`, each with a blob store of its own.
+    fn with(honest: fn() -> World, victim_world: World, plan: Option<(Frame, Kind)>) -> Net {
         let peers = (0..3)
-            .map(|i| if i == VICTIM { Peer::new(i, victim_world.clone(), plan) } else { Peer::new(i, fixture(), None) })
+            .map(|i| if i == VICTIM { Peer::new(i, victim_world.clone(), plan) } else { Peer::new(i, honest(), None) })
             .collect();
         Net { peers, frame: 0, height: 0 }
     }
@@ -501,4 +506,92 @@ fn a_physics_world_divergence_from_the_start_is_cured_by_rung_2_with_the_honest_
             assert_eq!(p.d.counters().diverged, 0, "honest member {i} diverged");
         }
     }
+}
+
+/// Objects whose `Shape.mesh` names a carried simulation blob (world-model.md 3.4), as a mesh collider's would.
+const MESHED: [u128; 2] = [0x3e5, 0x3e6];
+
+/// Mesh `i`'s bytes: `len` of them, distinct for each mesh.
+fn mesh_bytes(i: usize, len: usize) -> Vec<u8> {
+    (0..len).map(|k| (k as u8).wrapping_mul(31).wrapping_add(7 + 64 * i as u8)).collect()
+}
+
+/// `fixture()` plus the first `n` [`MESHED`] objects, each with a shape. With `lens`, mesh `i` is `lens[i]` bytes
+/// and in this world's own blob store; without, the shapes name no mesh. Either way the objects are made alike, so
+/// a world without the meshes differs from one with them in those objects' records alone.
+fn meshed(n: usize, lens: Option<&[usize]>) -> World {
+    let mut w = fixture();
+    for (i, id) in MESHED.iter().take(n).enumerate() {
+        let mesh = match lens {
+            Some(lens) => w.blobs().put(&mesh_bytes(i, lens[i])),
+            None => Default::default(),
+        };
+        let id = ObjectId::from_u128(*id);
+        w.create(id, None, MemberKey([1; 32]), GENESIS).expect("fresh id");
+        w.insert(id, Transform::at(Pos::ORIGIN)).expect("live object");
+        w.insert(id, Shape { mesh, ..Shape::default() }).expect("live object");
+    }
+    w
+}
+
+/// The largest carried blob, pe-world's `MAX_CARRIED_BLOB`.
+const CAP: usize = 960 * 1024;
+
+/// Repairs a victim whose `n` meshed objects name no mesh toward members whose do, at `lens`, and checks the cure:
+/// only those objects' leaves fetched, and the victim holding every mesh, byte for byte.
+fn repair_meshes(n: usize, lens: &'static [usize]) -> Net {
+    fn honest_1() -> World {
+        meshed(1, Some(&[CAP]))
+    }
+    fn honest_2() -> World {
+        meshed(2, Some(&[CAP, CAP]))
+    }
+    let honest: fn() -> World = if n == 1 { honest_1 } else { honest_2 };
+    assert_eq!(lens, &[CAP, CAP][..n]);
+    let mut net = Net::with(honest, meshed(n, None), None);
+    assert!(!net.converged(), "the victim's shapes name no mesh");
+    let refs: Vec<pe_world::BlobRef> = (0..n).map(|i| pe_world::BlobRef::of(&mesh_bytes(i, lens[i]))).collect();
+    assert!(
+        refs.iter().all(|r| net.peers[VICTIM].r.world().inner.world().blobs().get(r).is_none()),
+        "nor has the meshes"
+    );
+    net.run(40);
+    let v = &net.peers[VICTIM];
+    let c = v.d.counters().clone();
+    assert_eq!(c.cured_by_rung[..2], [0, 1], "{c:?}");
+    // Rung 1 fails first (no replay cures a world wrong from the start); rung 2 never asks another source.
+    assert_eq!((c.rung_failures, c.source_faults), (1, 0), "{c:?}");
+    let want: Vec<LeafKey> = MESHED.iter().take(n).map(|id| LeafKey::Object(ObjectId::from_u128(*id))).collect();
+    assert_eq!(v.fetched(), want, "only the meshed objects' leaves");
+    assert!(net.converged(), "not converged after rung 2");
+    for (i, r) in refs.iter().enumerate() {
+        let got = v.r.world().inner.world().blobs().get(r).expect("the victim now holds the mesh");
+        assert!(got[..] == mesh_bytes(i, lens[i])[..], "mesh {i} differs");
+    }
+    net
+}
+
+/// @item:primordial-engine/pe-diverge-join-repair-import-carries-simulation: the victim's meshed object names no mesh,
+/// and it lacks the mesh, a carried blob at the cap. Rung 2 fetches the object's record, and the reply carries the
+/// 960 KiB blob with it (it fits the 1 MiB reply budget), which the import needs (`MissingBlob` otherwise). Before,
+/// pe-diverge's messages refused any blob over 256 bytes, so no reply could be sent and the rung failed.
+#[test]
+fn rung_2_carries_a_mesh_blob_at_the_cap_to_a_member_that_lacks_it() {
+    let net = repair_meshes(1, &[CAP]);
+    let carried = net.peers.iter().flat_map(|p| &p.sent).any(|m| match m {
+        Msg::RecordReply { blobs, .. } => blobs.iter().any(|b| b.len() == CAP),
+        _ => false,
+    });
+    assert!(carried, "a record reply carried the 960 KiB blob");
+}
+
+/// Two meshes at the cap don't fit one reply: the reply carries one and names the other, which the victim pulls
+/// before it imports (divergence.md 4.2, step 3; @coordinator-opus).
+#[test]
+fn rung_2_pulls_the_mesh_a_record_reply_can_t_carry() {
+    let net = repair_meshes(2, &[CAP, CAP]);
+    let v = &net.peers[VICTIM];
+    assert_eq!(v.d.counters().blobs_pulled, 1, "{:?}", v.d.counters());
+    let asked: Vec<&Msg> = v.sent.iter().filter(|m| matches!(m, Msg::BlobRequest { .. })).collect();
+    assert_eq!(asked.len(), 1, "one pull");
 }

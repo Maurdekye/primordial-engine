@@ -259,7 +259,19 @@ impl St {
 pub struct MockTree {
     st: St,
     named: BTreeSet<u128>,
+    sizes: BTreeMap<u128, usize>,
     have: BTreeMap<Hash, Bytes>,
+}
+
+/// A named object's blob: its name ([`name_of`]), or one of the length `sizes` gives it, as a mesh would be.
+pub fn blob_for(sizes: &BTreeMap<u128, usize>, id: u128) -> Bytes {
+    match sizes.get(&id) {
+        None => name_of(id),
+        Some(len) => {
+            let seed = id.to_le_bytes();
+            Bytes::from((0..*len).map(|i| seed[i % 16] ^ (i / 16) as u8).collect::<Vec<u8>>())
+        }
+    }
 }
 
 /// The inline-class simulation blob a named object's row references (world-model.md 3.4): a name, under 256 bytes.
@@ -289,7 +301,7 @@ impl Tree for MockTree {
                 && self.named.contains(&o.to_u128())
                 && self.st.objs.contains_key(&o.to_u128())
             {
-                let h = Hash::plain(&name_of(o.to_u128()));
+                let h = Hash::plain(&blob_for(&self.sizes, o.to_u128()));
                 if let Some(b) = self.have.get(&h) {
                     out.insert(h, b.clone());
                 }
@@ -386,6 +398,8 @@ pub struct Mock {
     pub not_ready: u32,
     /// Objects whose rows reference an inline-class simulation blob ([`name_of`]), and the blobs this machine has.
     pub named: BTreeSet<u128>,
+    /// Named objects whose blob is not their name but this many bytes ([`blob_for`]; set with [`Mock::set_blob_len`]).
+    pub sizes: BTreeMap<u128, usize>,
     pub blobs: BTreeMap<Hash, Bytes>,
     /// As pe-replica: a replay forgets the votes that kept its cut's snapshot, so the root there is not held again
     /// until `root_at_cut` is asked (replica.md 4.1).
@@ -425,6 +439,7 @@ impl Mock {
             served: Vec::new(),
             refuse: None,
             named: (1..=objects).filter(|k| k % 4 == 1).map(spread).collect(),
+            sizes: BTreeMap::new(),
             blobs: BTreeMap::new(),
         };
         m.blobs = m.named.iter().map(|id| (Hash::plain(&name_of(*id)), name_of(*id))).collect();
@@ -445,7 +460,9 @@ impl Mock {
                 continue;
             }
             let extra = u64::from(self.faulty.map(spread) == Some(*id));
-            *c = Cell::obj(*id, rec(val(&c.bytes).wrapping_add((*id as u64 % 7) + 1 + extra), wake(&c.bytes)));
+            let mut b = rec(val(&c.bytes).wrapping_add((*id as u64 % 7) + 1 + extra), wake(&c.bytes));
+            b.extend_from_slice(&c.bytes[16..]);
+            *c = Cell::obj(*id, b);
         }
         n.phys.bytes = (val(&n.phys.bytes) + 3 + u64::from(self.faulty_physics)).to_le_bytes().to_vec();
         n.phys.cache = phys_hash(&n.phys.bytes);
@@ -492,6 +509,26 @@ impl Mock {
             if rehash {
                 c.cache = obj_hash(id, &c.bytes);
             }
+        });
+    }
+
+    /// Named object `n`'s blob becomes `len` bytes long, here and in this machine's store.
+    pub fn set_blob_len(&mut self, n: u128, len: usize) {
+        let id = spread(n);
+        assert!(self.named.contains(&id), "object {n} names no blob");
+        self.blobs.remove(&Hash::plain(&blob_for(&self.sizes, id)));
+        self.sizes.insert(id, len);
+        let b = blob_for(&self.sizes, id);
+        self.blobs.insert(Hash::plain(&b), b);
+    }
+
+    /// Object `n`'s record grows by `extra` bytes from frame 0 on, kept by every step: a record longer than a reply.
+    pub fn pad(&mut self, n: u128, extra: usize) {
+        let id = spread(n);
+        self.edit(0, |st| {
+            let c = st.objs.get_mut(&id).unwrap();
+            c.bytes.extend((0..extra).map(|i| (i % 251) as u8));
+            c.cache = obj_hash(id, &c.bytes);
         });
     }
 
@@ -648,7 +685,12 @@ impl Replica for Mock {
     }
     fn tree(&self, root: &Hash) -> Option<Box<dyn Tree + '_>> {
         let f = self.held(root)?;
-        Some(Box::new(MockTree { st: self.states[&f].clone(), named: self.named.clone(), have: self.blobs.clone() }))
+        Some(Box::new(MockTree {
+            st: self.states[&f].clone(),
+            named: self.named.clone(),
+            sizes: self.sizes.clone(),
+            have: self.blobs.clone(),
+        }))
     }
     fn physics_image(&self, root: &Hash) -> Option<PhysicsImage> {
         let f = self.held(root)?;
@@ -708,7 +750,7 @@ impl Replica for Mock {
             .iter()
             .filter_map(|r| if let LeafKey::Object(o) = r.key { Some(o.to_u128()) } else { None })
             .filter(|id| self.named.contains(id))
-            .map(|id| Hash::plain(&name_of(id)))
+            .map(|id| Hash::plain(&blob_for(&self.sizes, id)))
             .collect();
         let mut given = BTreeSet::new();
         for (i, b) in import.blobs.iter().enumerate() {
@@ -866,6 +908,15 @@ pub enum Lie {
     NoBlobs,
     /// Sends a blob no row references with its records.
     JunkBlob,
+    /// Answers a pull of blobs `NotHeld`, as a source that no longer holds them would.
+    NoPulledBlobs,
+    /// Names 266 blobs at the cap (about 249 MiB, within one reply's `MAX_NAMED`) that no row references, in every
+    /// record reply.
+    HugeNames,
+    /// Sends each record piece one byte short.
+    ShortPiece,
+    /// Flips a byte of every record piece it sends, keeping its length.
+    BadPiece,
 }
 
 pub struct Peer {
@@ -1158,14 +1209,15 @@ impl Net {
 /// What a lying source sends instead.
 fn lie(how: Lie, bytes: &[u8]) -> Vec<u8> {
     match (how, Msg::decode(bytes)) {
-        (Lie::NoBlobs, Ok(Msg::RecordReply { cut, root, records, .. })) => {
-            Msg::RecordReply { cut, root, records, blobs: vec![] }.encode().unwrap().to_vec()
+        // Neither carried nor named: the requester can't know of them.
+        (Lie::NoBlobs, Ok(Msg::RecordReply { cut, root, records, large, .. })) => {
+            Msg::RecordReply { cut, root, records, large, blobs: vec![], named: vec![] }.encode().unwrap().to_vec()
         }
-        (Lie::JunkBlob, Ok(Msg::RecordReply { cut, root, records, mut blobs })) => {
+        (Lie::JunkBlob, Ok(Msg::RecordReply { cut, root, records, large, mut blobs, named })) => {
             blobs.insert(0, Bytes::from_static(b"junk"));
-            Msg::RecordReply { cut, root, records, blobs }.encode().unwrap().to_vec()
+            Msg::RecordReply { cut, root, records, large, blobs, named }.encode().unwrap().to_vec()
         }
-        (Lie::Records, Ok(Msg::RecordReply { cut, root, mut records, blobs })) => {
+        (Lie::Records, Ok(Msg::RecordReply { cut, root, mut records, large, blobs, named })) => {
             for r in &mut records {
                 let mut b = r.bytes.to_vec();
                 if let Some(x) = b.first_mut() {
@@ -1173,7 +1225,33 @@ fn lie(how: Lie, bytes: &[u8]) -> Vec<u8> {
                 }
                 r.bytes = Bytes::from(b);
             }
-            Msg::RecordReply { cut, root, records, blobs }.encode().unwrap().to_vec()
+            Msg::RecordReply { cut, root, records, large, blobs, named }.encode().unwrap().to_vec()
+        }
+        (Lie::HugeNames, Ok(Msg::RecordReply { cut, root, records, large, blobs, mut named }))
+            if !records.is_empty() =>
+        {
+            let key = records[0].key;
+            for i in 0..266u32 {
+                let mut seed = format!("{key:?}").into_bytes();
+                seed.extend_from_slice(&i.to_le_bytes());
+                named.push(pe_diverge::msg::Named { key, hash: Hash::plain(&seed), len: pe_diverge::msg::MAX_BLOB });
+            }
+            Msg::RecordReply { cut, root, records, large, blobs, named }.encode().unwrap().to_vec()
+        }
+        (Lie::NoPulledBlobs, Ok(Msg::BlobReply { cut, root, .. })) => {
+            Msg::NotHeld { cut, root }.encode().unwrap().to_vec()
+        }
+        (Lie::ShortPiece | Lie::BadPiece, Ok(Msg::PieceReply { cut, root, key, first, mut pieces })) => {
+            for p in &mut pieces {
+                let mut b = p.to_vec();
+                if how == Lie::ShortPiece {
+                    b.pop();
+                } else {
+                    b[0] ^= 1;
+                }
+                *p = Bytes::from(b);
+            }
+            Msg::PieceReply { cut, root, key, first, pieces }.encode().unwrap().to_vec()
         }
         (Lie::Nodes, Ok(Msg::NodeReply { cut, root, mut nodes })) => {
             for (_, n) in &mut nodes {

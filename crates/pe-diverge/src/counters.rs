@@ -61,6 +61,13 @@ pub struct Counters {
     pub serve_refused: u64,
     /// Messages not sent because they broke a codec limit (nothing is truncated).
     pub encode_refused: u64,
+    /// Blobs and record pieces a repair or join pulled after the record replies named them (divergence.md 4.2, step 3).
+    pub blobs_pulled: u64,
+    pub pieces_pulled: u64,
+    /// Named blobs an earlier, overtaken attempt had already hashed: taken from the cache, not pulled again.
+    pub blobs_reused: u64,
+    /// Runs of `SLOW_OVERTAKES` repairs overtaken in a row with nothing new kept: the link too slow to resync.
+    pub link_too_slow: u64,
     /// Joins from a final cut whose import matched its certified root, and joins that failed ([`crate::Join`]).
     pub joins: u64,
     pub join_failures: u64,
