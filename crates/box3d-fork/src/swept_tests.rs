@@ -3,8 +3,8 @@
 // SPDX-License-Identifier: MIT
 
 use crate::body::{
-    body_get_linear_velocity, body_get_mass as body_mass, body_get_position, body_is_awake, body_set_linear_velocity,
-    create_body,
+    body_get_linear_velocity, body_get_mass as body_mass, body_get_position, body_is_awake, body_set_angular_velocity,
+    body_set_linear_velocity, create_body,
 };
 use crate::math_functions::length_squared;
 use crate::geometry::{Capsule, Sphere};
@@ -759,4 +759,98 @@ fn a_swept_impact_is_a_hit_event_when_its_shapes_ask() {
         assert!(e.normal.x.abs() > 0.99, "{e:?}");
         assert!(x_of(&world, id) < 1.0);
     }
+}
+
+/// A static, frictionless, perfectly elastic thin box whose face, `half` long each way, lies on the plane through `at`
+/// with unit normal `normal` (in the x-y plane): the box turned about z by the quaternion (0, 0, `sine`, `cosine`).
+fn mirror(world: &mut World, at: Vec3, normal: Vec3, sine: f32, cosine: f32, half: f32) {
+    let thick = 0.005;
+    let mut def = default_body_def();
+    def.position = pos(at.x - thick * normal.x, at.y - thick * normal.y, 0.0);
+    def.rotation = crate::math_functions::Quat { v: v3(0.0, 0.0, sine), s: cosine };
+    let id = create_body(world, &def);
+    let mut shape = default_shape_def();
+    shape.base_material.restitution = 1.0;
+    shape.base_material.friction = 0.0;
+    create_hull_shape(world, id, &shape, &make_box_hull(thick, half, 0.3).base);
+}
+
+/// One 1/240 s step (1.67 m): two 45 degree mirrors turn a 400 m/s bullet from +x to +y, then to -x, toward a static
+/// ball beside its first path. Its third path lies inside the bounding box of the first two, which the searches
+/// covered, but outside both paths, so only a search on that path finds the ball. The bullet must bounce off it, not
+/// pass through. It spins (frictionless): each box grows by its piece's turn, the first box most, so the third path
+/// lies inside that bounding box by about a millimetre on every side, not by rounding (in z the paths' boxes would
+/// differ only by rounding).
+#[test]
+fn a_bullet_deflected_twice_in_a_sub_step_still_finds_what_its_third_path_meets() {
+    let mut world = World::new(&no_gravity());
+    let (r, s8, c8) = (0.01f32, 0.382_683_43f32, 0.923_879_5f32);
+    let root_half = 0.707_106_77f32;
+    // Mirror A, facing (-1, 1): its thin axis along (1, -1), a -45 degree turn.
+    mirror(&mut world, v3(0.8, 0.0, 0.0), v3(-root_half, root_half, 0.0), -s8, c8, 0.3);
+    // Mirror B above the first hit, facing (-1, -1): a +45 degree turn.
+    let hit_x = 0.8 - r / root_half;
+    mirror(&mut world, v3(hit_x, 0.4, 0.0), v3(-root_half, -root_half, 0.0), s8, c8, 0.3);
+    // The ball on the third path, where B sends the bullet.
+    let mut def = default_body_def();
+    let ball_y = 0.4 - r / root_half;
+    def.position = pos(0.5, ball_y, 0.0);
+    let c_id = create_body(&mut world, &def);
+    let mut shape = default_shape_def();
+    shape.base_material.restitution = 1.0;
+    shape.base_material.friction = 0.0;
+    create_sphere_shape(&mut world, c_id, &shape, &Sphere { center: VEC3_ZERO, radius: 0.02 });
+
+    let mut def = default_body_def();
+    def.type_ = BodyType::Dynamic;
+    def.swept = true;
+    def.linear_velocity = v3(400.0, 0.0, 0.0);
+    def.angular_velocity = v3(0.0, 0.0, 40.0);
+    let id = create_body(&mut world, &def);
+    create_sphere_shape(&mut world, id, &shape, &Sphere { center: VEC3_ZERO, radius: r });
+    world.step(DT / SUB_STEPS as f32, 1);
+    // Back off the ball (it meets it at about t = 0.87): on the mirrors' side of it, heading for B again.
+    let p = body_get_position(&world, id);
+    let v = body_get_linear_velocity(&world, id);
+    assert!(
+        p.x as f32 > 0.53 && v.x > 390.0,
+        "the bullet passed through the ball: at ({}, {}) moving {v:?}, counters {:?}",
+        p.x,
+        p.y,
+        world.swept_counters
+    );
+}
+
+/// A bullet deflected after another body's reach grew is searched again within the larger reach, even when its new
+/// path lies inside a box it searched before: that box's dynamic query reached only as far as the smaller reach.
+/// One 1/240 s step (h): bullet S (120 m/s, 0.5 m a step) turns back at a wall at t = 0.5. A heavy bullet S2 knocks a
+/// light unswept ball B (S's weight) to 240 m/s at t = 0.3, so the reach grows from 0.5 m to 0.7 m. B started out of
+/// reach of S's first search and of its search at t = 0.3, but within the larger reach of S's path back, and meets S
+/// at about t = 0.96. S must bounce off B, not pass it. S spins (frictionless), so its first box is wider than its
+/// path back by the turn, about a millimetre on every side: inside it by more than rounding.
+#[test]
+fn a_bullet_deflected_after_the_reach_grew_finds_a_body_the_smaller_reach_missed() {
+    let mut world = World::new(&no_gravity());
+    let s = elastic_ball(&mut world, pos(0.0, 0.0, 0.0), 0.01, 1.0, v3(120.0, 0.0, 0.0));
+    body_set_angular_velocity(&mut world, s, v3(0.0, 0.0, 40.0));
+    wall(&mut world, 0.26, 0.1);
+    let b_x = -0.655f32;
+    let mut def = default_body_def();
+    def.type_ = BodyType::Dynamic;
+    def.position = pos(b_x, 0.0, 0.0);
+    let b = create_body(&mut world, &def);
+    let mut shape = default_shape_def();
+    shape.density = 1.0;
+    shape.base_material.restitution = 1.0;
+    shape.base_material.friction = 0.0;
+    create_sphere_shape(&mut world, b, &shape, &Sphere { center: VEC3_ZERO, radius: 0.01 });
+    // S2 closes the 0.15 m to B in 0.3 of the step.
+    elastic_ball(&mut world, pos(b_x - 0.01 - 0.05 - 0.15, 0.0, 0.0), 0.05, 1000.0, v3(120.0, 0.0, 0.0));
+
+    world.step(DT / SUB_STEPS as f32, 1);
+    let (xs, xb) = (x_of(&world, s), x_of(&world, b));
+    let vb = body_get_linear_velocity(&world, b);
+    assert!(xs > xb, "S at {xs} passed B at {xb} (B moving {vb:?}), counters {:?}", world.swept_counters);
+    // S and B weigh the same, so the elastic hit swaps their velocities.
+    assert!(vb.x < 0.0, "B never met S: moving {vb:?}");
 }
