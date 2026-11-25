@@ -40,7 +40,10 @@ cd "$base/src"
 uname -srm
 rustc --version
 ldd --version | sed -n 1p
-features=${PE_KIT_FEATURES:-}
+# The kits' features: scripts/friend-kit/features.txt at this commit (comments and blank lines skipped), unless
+# PE_KIT_FEATURES is set.
+features=${PE_KIT_FEATURES-$(grep -v '^#' scripts/friend-kit/features.txt 2>/dev/null | tr -s ' 
+' ' ' | xargs)}
 feat=()
 [ -z "$features" ] || feat=(--features "$features")
 CARGO_TARGET_DIR=$base/target nice -n 19 cargo build --release --locked -p pe-app -j "$jobs" "${feat[@]}"
