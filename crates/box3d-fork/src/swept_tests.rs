@@ -328,6 +328,49 @@ fn a_far_swept_body_leaves_the_others_bit_identical() {
     assert_eq!(run(true), run(false));
 }
 
+/// Three bullets fired into a pile of balls in a box stay well inside the budget, with no hold. The closing bound
+/// along the contact normal is what keeps rolling and jostling contacts cheap: without it a hundred bullets in M1's
+/// pit spent 262144 queries a step (scratch/ccd/cost-red-ccd-directional.log). Returns the most queries a step and
+/// the holds.
+fn bullets_into_a_pile() -> (i32, i32) {
+    let mut world = World::new(&default_world_def());
+    let mut def = default_body_def();
+    def.position = pos(0.0, -0.5, 0.0);
+    let floor = create_body(&mut world, &def);
+    create_hull_shape(&mut world, floor, &default_shape_def(), &make_box_hull(2.0, 0.5, 2.0).base);
+    for (x, z, hx, hz) in [(0.55, 0.0, 0.05, 0.6), (-0.55, 0.0, 0.05, 0.6), (0.0, 0.55, 0.6, 0.05), (0.0, -0.55, 0.6, 0.05)] {
+        let mut def = default_body_def();
+        def.position = pos(x, 0.3, z);
+        let wall = create_body(&mut world, &def);
+        create_hull_shape(&mut world, wall, &default_shape_def(), &make_box_hull(hx, 0.3, hz).base);
+    }
+    for k in 0..48 {
+        let at = pos(0.13 * (k % 6) as f32 - 0.33, 0.07 + 0.13 * (k / 36) as f32, 0.13 * ((k / 6) % 6) as f32 - 0.33);
+        ball(&mut world, at, 0.06, VEC3_ZERO, false);
+    }
+    for _ in 0..60 {
+        world.step(DT, SUB_STEPS);
+    }
+    for (k, speed) in [(0, 60.0f32), (1, 120.0), (2, 30.0)] {
+        let at = pos(-0.9, 0.5 + 0.1 * k as f32, 0.1 * k as f32 - 0.1);
+        ball(&mut world, at, 0.01, v3(speed, -0.3 * speed, 0.0), true);
+    }
+    let (mut most, mut holds) = (0, 0);
+    for _ in 0..120 {
+        world.step(DT, SUB_STEPS);
+        most = most.max(world.swept_counters.iterations);
+        holds += world.swept_counters.holds;
+    }
+    (most, holds)
+}
+
+#[test]
+fn bullets_into_a_pile_cost_few_queries_and_no_hold() {
+    // Measured: at most 38 queries a step; 96 without the closing bound along the normal (scratch/ccd/pile-*.log).
+    let (most, holds) = bullets_into_a_pile();
+    assert!(most <= 64 && holds == 0, "{most} queries in a step, {holds} holds");
+}
+
 // ---- The ruling's cases (@coordinator-opus) ----
 
 /// A dynamic box asleep in a world without gravity, its near face at `x`.
