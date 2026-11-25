@@ -22,8 +22,8 @@ use pe_replica::{DriveReport, Driver};
 use pe_seams::world_api::TxId;
 use pe_seams::{
     Advance, AgreeEvent, Agreement, ChainId, Class, Cut, CutRef, EntryRef, Frame, FrameClock, FrameView, Hand,
-    HandFeed, Health, HostTime, Lane, MemberKey, NetEvent, ObjectId, Outcome, Pos, Replica, SelfTest, SimRate,
-    SubmitError, Transport, ViewFlags, VoidReason,
+    HandFeed, Health, HostTime, Lane, MemberKey, MoveFeed, MoveInput, NetEvent, ObjectId, Outcome, Pos, Replica,
+    SelfTest, SimRate, SubmitError, Transport, ViewFlags, VoidReason,
 };
 
 use crate::clock::HostClock;
@@ -237,6 +237,11 @@ pub struct SimStats {
     /// The local player's hand inputs agreement took, and those it refused (step 2).
     pub inputs: u64,
     pub inputs_refused: u64,
+    /// The local player's locomotion samples step 2 read from the move feed ([`Sim::with_moves`]), one per frame it
+    /// read the hands at, and the frames the feed had none (no headset and no desktop movement). Both 0 without a
+    /// feed. The Move entry (locomotion L3) is made from the sample.
+    pub moves_sampled: u64,
+    pub moves_absent: u64,
     /// Frames whose hand inputs step 2 held back. Always 0 since F3's S1 (hands are never held); kept so logs from
     /// before it compare.
     pub hands_paced: u64,
@@ -523,6 +528,9 @@ pub struct Sim {
     /// shown.
     hand_feel: Option<Arc<crate::handfeel::HandFeel>>,
     hand_feel_shown: u64,
+    /// The local player's locomotion ([`Sim::with_moves`]), and its newest sample with the stamp it was read for.
+    moves: Option<Arc<dyn MoveFeed>>,
+    last_move: Option<(Frame, MoveInput)>,
     /// The status line shows the join's catch-up.
     catching_up: bool,
     /// The tick trace, when `PE_TICK_TRACE` names a file ([`Sim::with_tick_trace`], [`crate::trace`]).
@@ -780,6 +788,8 @@ impl Sim {
             status_own: None,
             hand_feel: None,
             hand_feel_shown: 0,
+            moves: None,
+            last_move: None,
             catching_up: false,
             trace: None,
             slow: crate::slow::SlowWatch::default(),
@@ -1087,6 +1097,19 @@ impl Sim {
     pub fn with_hand_feel(mut self, feel: Arc<crate::handfeel::HandFeel>) -> Sim {
         self.hand_feel = Some(feel);
         self
+    }
+
+    /// The local player's locomotion (friend-test locomotion, L4b): step 2 reads it once a frame, at the host time it
+    /// reads the hands at, so a frame's Move and its hand entries share one moment (@engine-architect:
+    /// a hand's body-frame pose uses that frame's heading). [`Sim::last_move`] keeps the newest sample.
+    pub fn with_moves(mut self, moves: Arc<dyn MoveFeed>) -> Sim {
+        self.moves = Some(moves);
+        self
+    }
+
+    /// The newest locomotion sample step 2 read, with the stamp of the frame it was read for (the Move entry's, L3).
+    pub fn last_move(&self) -> Option<(Frame, MoveInput)> {
+        self.last_move
     }
 
     /// Puts this simulation's own status up, or takes it down with `None`. Below it, the line shows the hand-feel
@@ -1611,6 +1634,16 @@ impl Sim {
                 }
                 for (id, object) in sent.released {
                     l.released.insert(id, (object, stamp, false));
+                }
+                // The player's locomotion at the same moment as the hands (L4b), kept for the frame's Move entry.
+                if let Some(moves) = &self.moves {
+                    match moves.move_at(at) {
+                        Some(m) => {
+                            self.stats.moves_sampled += 1;
+                            self.last_move = Some((stamp, m));
+                        }
+                        None => self.stats.moves_absent += 1,
+                    }
                 }
             }
             self.input_frame = Some(ps);
@@ -2629,6 +2662,65 @@ pub(crate) mod tests {
         }
         assert_eq!(s.stats().inputs - inputs, 6, "both hands every frame once it clears");
         assert_eq!(s.stats().hands_floor_thinned, thinned);
+    }
+
+    /// Locomotion L4b: with a move feed, step 2 reads the player's locomotion once a frame at the very host time it
+    /// reads the hands at, keeps the newest sample with the frame's stamp, and counts the frames the feed had none.
+    #[test]
+    fn the_move_feed_is_read_once_a_frame_at_the_hands_moment() {
+        use std::sync::Mutex;
+        struct Asked(Mutex<Vec<HostTime>>, StillHands);
+        impl pe_seams::HandFeed for Asked {
+            fn hand_at(&self, hand: pe_seams::Hand, at: HostTime) -> Option<pe_seams::HandInput> {
+                if hand == pe_seams::Hand::Left {
+                    self.0.lock().unwrap().push(at);
+                }
+                self.1.hand_at(hand, at)
+            }
+        }
+        // A stick pushed forward, the heading turning a little each sample; none from the sixth ask on.
+        struct Moves(Mutex<Vec<HostTime>>);
+        impl pe_seams::MoveFeed for Moves {
+            fn move_at(&self, at: HostTime) -> Option<MoveInput> {
+                let mut asked = self.0.lock().unwrap();
+                asked.push(at);
+                let n = asked.len() as u32;
+                (n <= 5).then_some(MoveInput {
+                    sampled_at: at,
+                    stick: [0.0, 1.0],
+                    stick_yaw: 0.0,
+                    heading: n * 1000,
+                    jumps: 0,
+                    head: pe_seams::RigPose { position: [0.0, 1.6, 0.0], orientation: [0.0, 0.0, 0.0, 1.0] },
+                    tracked: true,
+                })
+            }
+        }
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let me = crate::world::DEV_MEMBER;
+        let replica = crate::world::open_ball_pit(7, me, RATE, clock.clone(), runner()).expect("pit");
+        let slot = Arc::new(FrameSlot::new());
+        let hands = Arc::new(Asked(Mutex::new(Vec::new()), StillHands([0.0, 1.0, -0.4])));
+        let moves = Arc::new(Moves(Mutex::new(Vec::new())));
+        let agree = Box::new(SoloAgreement::new(LineId::origin()));
+        let mut s = Sim::new(agree, replica, clock.clone(), slot, Budget::new(RATE))
+            .with_local(me, [7; 32], hands.clone())
+            .with_moves(moves.clone());
+        assert_eq!(s.last_move(), None);
+        for f in 1..=8 {
+            s.tick(clock.host_time_of(Frame(f))).expect("ticked");
+        }
+        let (h, m) = (hands.0.lock().unwrap().clone(), moves.0.lock().unwrap().clone());
+        assert!(!m.is_empty(), "the feed was read");
+        // Step 2 reads the hands twice a frame (the speed test and the entries), both at the stamped frame's end
+        // while the lead holds; the move feed is read with the entries, once a frame.
+        assert!(m.iter().all(|t| h.contains(t)), "at a moment the hands were read: {m:?} vs {h:?}");
+        assert!(m.windows(2).all(|w| w[0] < w[1]), "once a frame: {m:?}");
+        assert!(m.len() <= 8, "at most one a tick: {m:?}");
+        assert_eq!((s.stats().moves_sampled, s.stats().moves_absent), (5, m.len() as u64 - 5));
+        let (stamp, last) = s.last_move().expect("a sample");
+        assert_eq!((last.heading, last.sampled_at), (5000, m[4]), "the newest the feed gave");
+        assert!(stamp.0 >= 1 && stamp.0 <= 8, "keyed by its frame's stamp: {stamp:?}");
     }
 
     /// The console's `hand-mode` (the pull-ahead plan's 1.10, [`crate::handfeel`]): a member alone sends `HandMode` for

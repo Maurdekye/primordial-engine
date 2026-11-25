@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use pe_seams::{
     Agreement, ChainId, Class, DomainId, Entry, EntryRef, Frame, FrameView, Hand, HandFeed, HandInput, HostTime,
-    LineId, MemberKey, ObjectId, Offset, Pos, RigTransform, SignedEntry,
+    LineId, MemberKey, MoveFeed, MoveInput, ObjectId, Offset, Pos, RigTransform, SignedEntry,
 };
 use pe_world::input::{HandPose, Input};
 
@@ -165,6 +165,30 @@ impl SwitchedHands {
 impl HandFeed for SwitchedHands {
     fn hand_at(&self, hand: Hand, at: HostTime) -> Option<HandInput> {
         if self.vr_on.load(Ordering::Acquire) { self.vr.hand_at(hand, at) } else { self.desktop.hand_at(hand, at) }
+    }
+}
+
+/// The move feed in use (locomotion L4b), switched with [`SwitchedHands`]: VR's while an XR session runs, the
+/// desktop's otherwise. pe-app flips both together.
+pub struct SwitchedMove {
+    vr: Arc<dyn MoveFeed>,
+    desktop: Arc<dyn MoveFeed>,
+    vr_on: AtomicBool,
+}
+
+impl SwitchedMove {
+    pub fn new(vr: Arc<dyn MoveFeed>, desktop: Arc<dyn MoveFeed>) -> SwitchedMove {
+        SwitchedMove { vr, desktop, vr_on: AtomicBool::new(false) }
+    }
+
+    pub fn use_vr(&self, on: bool) {
+        self.vr_on.store(on, Ordering::Release);
+    }
+}
+
+impl MoveFeed for SwitchedMove {
+    fn move_at(&self, at: HostTime) -> Option<MoveInput> {
+        if self.vr_on.load(Ordering::Acquire) { self.vr.move_at(at) } else { self.desktop.move_at(at) }
     }
 }
 
