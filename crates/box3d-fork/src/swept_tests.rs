@@ -13,7 +13,9 @@ use crate::id::BodyId;
 use crate::math_functions::{Pos, Vec3, VEC3_ZERO};
 use crate::recording::hash_world_state;
 use crate::recording::snapshot::clone_world_via_snapshot;
-use crate::shape::{create_capsule_shape, create_hull_shape, create_sphere_shape};
+use crate::constants::linear_slop;
+use crate::mesh::{create_mesh, MeshDef};
+use crate::shape::{create_capsule_shape, create_hull_shape, create_mesh_shape, create_sphere_shape};
 use crate::types::{default_body_def, default_shape_def, default_world_def, BodyType, WorldDef};
 use crate::world::{world_set_worker_count, World};
 
@@ -901,4 +903,248 @@ fn a_ball_knocked_toward_a_bullet_s_line_is_met_on_its_way_back() {
     world.step(DT / SUB_STEPS as f32, 1);
     let (va, vn) = (body_get_linear_velocity(&world, a), body_get_linear_velocity(&world, n));
     assert!(va.y < -10.0, "the bullet passed the ball: the bullet moving {va:?}, the ball {vn:?}");
+}
+
+// CCD part 2 A: mesh triangles as partners.
+
+/// A body of `type_` at `at`, turning at `spin` about z, with one frictionless, elastic mesh shape (front: counter-
+/// clockwise). `identify_edges` gives the mesh its internal-edge flags.
+fn mesh_body(
+    world: &mut World,
+    type_: BodyType,
+    at: Pos,
+    spin: f32,
+    vertices: Vec<Vec3>,
+    indices: Vec<i32>,
+    identify_edges: bool,
+) -> BodyId {
+    let mesh = create_mesh(
+        &MeshDef { vertices, stride: core::mem::size_of::<Vec3>(), indices, identify_edges, ..Default::default() },
+        None,
+    )
+    .expect("a mesh");
+    let mut def = default_body_def();
+    def.type_ = type_;
+    def.position = at;
+    def.angular_velocity = v3(0.0, 0.0, spin);
+    let id = create_body(world, &def);
+    let mut shape = default_shape_def();
+    shape.base_material.restitution = 1.0;
+    shape.base_material.friction = 0.0;
+    create_mesh_shape(world, id, &shape, &mesh, v3(1.0, 1.0, 1.0));
+    id
+}
+
+/// A 1 m square of two triangles in the plane x = `x`, its front facing -x.
+fn wall_facing_minus_x(x: f32) -> (Vec<Vec3>, Vec<i32>) {
+    let v = vec![v3(x, -0.5, -0.5), v3(x, 0.5, -0.5), v3(x, 0.5, 0.5), v3(x, -0.5, 0.5)];
+    (v, vec![0, 2, 1, 0, 3, 2])
+}
+
+/// A closed box mesh, half extents `h`, centred at `c`, its faces' fronts outward.
+fn box_mesh(c: Vec3, h: Vec3) -> (Vec<Vec3>, Vec<i32>) {
+    let mut v = Vec::new();
+    for k in 0..8 {
+        let sx = if k & 1 != 0 { 1.0 } else { -1.0 };
+        let sy = if k & 2 != 0 { 1.0 } else { -1.0 };
+        let sz = if k & 4 != 0 { 1.0 } else { -1.0 };
+        v.push(v3(c.x + sx * h.x, c.y + sy * h.y, c.z + sz * h.z));
+    }
+    let i = vec![0, 2, 1, 1, 2, 3, 4, 5, 6, 5, 7, 6, 0, 1, 4, 1, 5, 4, 2, 6, 3, 3, 6, 7, 0, 4, 2, 2, 4, 6, 1, 3, 5, 3, 7, 5];
+    (v, i)
+}
+
+/// A flat floor in the plane y = 0, its front up: `nx` by `nz` squares of `size`, two triangles each, from x = 0,
+/// centred on z = 0.
+fn triangulated_floor(nx: usize, nz: usize, size: f32) -> (Vec<Vec3>, Vec<i32>) {
+    let mut v = Vec::new();
+    for i in 0..=nx {
+        for k in 0..=nz {
+            v.push(v3(i as f32 * size, 0.0, k as f32 * size - 0.5 * nz as f32 * size));
+        }
+    }
+    let at = |i: usize, k: usize| (i * (nz + 1) + k) as i32;
+    let mut idx = Vec::new();
+    for i in 0..nx {
+        for k in 0..nz {
+            // Counter-clockwise seen from above: +z before +x.
+            idx.extend_from_slice(&[at(i, k), at(i, k + 1), at(i + 1, k), at(i + 1, k), at(i, k + 1), at(i + 1, k + 1)]);
+        }
+    }
+    (v, idx)
+}
+
+/// A 400 m/s swept ball bounces off a static mesh wall one triangle thick, which faces it. Swept bodies skip Box3D's
+/// own continuous pass, so without triangles as partners it would pass.
+#[test]
+fn a_swept_ball_bounces_off_a_one_triangle_thick_mesh_wall() {
+    let mut world = World::new(&no_gravity());
+    let (v, i) = wall_facing_minus_x(1.0);
+    mesh_body(&mut world, BodyType::Static, pos(0.0, 0.0, 0.0), 0.0, v, i, false);
+    let id = elastic_ball(&mut world, pos(0.0, 0.0, 0.0), 0.01, 1.0, v3(400.0, 0.0, 0.0));
+    world.step(DT, SUB_STEPS);
+    let (x, v) = (x_of(&world, id), body_get_linear_velocity(&world, id));
+    assert!(x < 1.0 && v.x < -399.0, "the ball passed the wall: at x = {x}, moving {v:?}, {:?}", world.swept_counters);
+}
+
+/// Box3D's triangles are one-sided: a ball arriving from behind a mesh wall passes it, as through the contact
+/// solver, and the sweep leaves those triangle pairs alone.
+#[test]
+fn a_swept_ball_passes_a_mesh_wall_from_behind() {
+    let mut world = World::new(&no_gravity());
+    let (v, i) = wall_facing_minus_x(1.0);
+    mesh_body(&mut world, BodyType::Static, pos(0.0, 0.0, 0.0), 0.0, v, i, false);
+    let id = elastic_ball(&mut world, pos(2.0, 0.0, 0.0), 0.01, 1.0, v3(-400.0, 0.0, 0.0));
+    world.step(DT, SUB_STEPS);
+    let (x, v) = (x_of(&world, id), body_get_linear_velocity(&world, id));
+    assert!(x < 1.0 && v.x < -399.0, "the ball didn't pass from behind: at x = {x}, moving {v:?}");
+    assert!(world.swept_counters.behind > 0, "{:?}", world.swept_counters);
+}
+
+/// The user's paddle case: a kinematic paddle, a closed box mesh 1 m long turning at 40 rad/s (32 m/s at the ball,
+/// 13 cm a sub-step), meets a 1 cm swept ball at rest in its path and bats it away. Without triangles as partners
+/// its leading face passes through the ball within a sub-step.
+#[test]
+fn a_kinematic_mesh_paddle_bats_a_ball_in_its_path() {
+    let mut world = World::new(&no_gravity());
+    let (v, i) = box_mesh(v3(0.6, 0.0, 0.0), v3(0.5, 0.05, 0.1));
+    mesh_body(&mut world, BodyType::Kinematic, pos(0.0, 0.0, 0.0), 40.0, v, i, false);
+    let id = elastic_ball(&mut world, pos(0.8, 0.3, 0.0), 0.01, 1.0, VEC3_ZERO);
+    world.step(DT, SUB_STEPS);
+    let v = body_get_linear_velocity(&world, id);
+    assert!(length_squared(v) > 20.0 * 20.0, "the paddle passed the ball: it moves {v:?}, {:?}", world.swept_counters);
+}
+
+/// Three spinning bullets (a sphere, a capsule, a box) fired at 150 to 250 m/s low over a triangulated floor, among
+/// resting boxes, past a turning mesh paddle, at a mesh wall, under gravity.
+fn mesh_scene(world: &mut World) {
+    let (v, i) = triangulated_floor(16, 8, 0.25);
+    mesh_body(world, BodyType::Static, pos(0.0, 0.0, 0.0), 0.0, v, i, true);
+    let (v, i) = wall_facing_minus_x(4.0);
+    mesh_body(world, BodyType::Static, pos(0.0, 0.5, 0.0), 0.0, v, i, false);
+    let (v, i) = box_mesh(v3(0.3, 0.0, 0.0), v3(0.25, 0.03, 0.1));
+    mesh_body(world, BodyType::Kinematic, pos(2.0, 0.6, 0.0), 25.0, v, i, false);
+    for k in 0..10 {
+        let mut def = default_body_def();
+        def.type_ = BodyType::Dynamic;
+        def.position = pos(1.0 + 0.25 * k as f32, 0.1, 0.3 - 0.06 * k as f32);
+        let id = create_body(world, &def);
+        create_hull_shape(world, id, &default_shape_def(), &make_box_hull(0.1, 0.1, 0.1).base);
+    }
+    for k in 0..3 {
+        let mut def = default_body_def();
+        def.type_ = BodyType::Dynamic;
+        def.swept = true;
+        def.position = pos(0.2, 0.1 + 0.15 * k as f32, -0.2 + 0.2 * k as f32);
+        def.linear_velocity = v3(150.0 + 50.0 * k as f32, -5.0, 0.0);
+        def.angular_velocity = v3(0.0, 0.0, 30.0);
+        let id = create_body(world, &def);
+        let shape = default_shape_def();
+        match k {
+            0 => create_sphere_shape(world, id, &shape, &Sphere { center: VEC3_ZERO, radius: 0.05 }),
+            1 => create_capsule_shape(
+                world,
+                id,
+                &shape,
+                &Capsule { center1: v3(-0.05, 0.0, 0.0), center2: v3(0.05, 0.0, 0.0), radius: 0.03 },
+            ),
+            _ => create_hull_shape(world, id, &shape, &make_box_hull(0.04, 0.04, 0.04).base),
+        };
+    }
+}
+
+/// [`mesh_scene`] gives the same state at 1, 2, 4 and 8 workers, and after a snapshot restore.
+#[test]
+fn mesh_hits_give_the_same_state_at_every_worker_count_and_after_a_snapshot() {
+    let mut hashes: Vec<Vec<u64>> = Vec::new();
+    for &workers in &[1, 2, 4, 8] {
+        let mut def = default_world_def();
+        def.worker_count = workers;
+        let mut world = World::new(&def);
+        mesh_scene(&mut world);
+        let mut run = Vec::new();
+        for _ in 0..60 {
+            world.step(DT, SUB_STEPS);
+            run.push(hash_world_state(&world));
+        }
+        hashes.push(run);
+    }
+    for run in &hashes[1..] {
+        assert_eq!(run, &hashes[0]);
+    }
+    let mut world = World::new(&default_world_def());
+    mesh_scene(&mut world);
+    for _ in 0..10 {
+        world.step(DT, SUB_STEPS);
+    }
+    let mut copy = clone_world_via_snapshot(&world).expect("a snapshot");
+    world_set_worker_count(&mut copy, 1);
+    for _ in 0..50 {
+        world.step(DT, SUB_STEPS);
+        copy.step(DT, SUB_STEPS);
+        assert_eq!(hash_world_state(&copy), hash_world_state(&world));
+    }
+}
+
+/// A swept ball and a swept box sliding at 50 m/s across a flat floor of 1000 triangles (edges identified), under
+/// gravity, keep to the floor: the edges between its triangles don't bump them.
+#[test]
+fn bullets_sliding_across_a_triangulated_floor_keep_to_it() {
+    let mut world = World::new(&default_world_def());
+    let (v, i) = triangulated_floor(50, 10, 0.2);
+    mesh_body(&mut world, BodyType::Static, pos(0.0, 0.0, 0.0), 0.0, v, i, true);
+    let ball = elastic_ball(&mut world, pos(0.1, 0.01, -0.3), 0.01, 1.0, v3(50.0, 0.0, 0.0));
+    let mut def = default_body_def();
+    def.type_ = BodyType::Dynamic;
+    def.swept = true;
+    def.position = pos(0.1, 0.02, 0.3);
+    def.linear_velocity = v3(50.0, 0.0, 0.0);
+    let cube = create_body(&mut world, &def);
+    let mut shape = default_shape_def();
+    shape.base_material.friction = 0.0;
+    create_hull_shape(&mut world, cube, &shape, &make_box_hull(0.02, 0.02, 0.02).base);
+    let mut worst = 0.0f32;
+    for _ in 0..9 {
+        world.step(DT, SUB_STEPS);
+        for (id, rest) in [(ball, 0.01f32), (cube, 0.02f32)] {
+            let (p, v) = (body_get_position(&world, id), body_get_linear_velocity(&world, id));
+            worst = worst.max(v.y.abs());
+            assert!((p.y as f32 - rest).abs() < 0.01, "left the floor: at {p:?} moving {v:?}, {:?}", world.swept_counters);
+        }
+    }
+    eprintln!("RESULT floor slide: worst vertical speed {worst} m/s");
+    assert!(worst < 0.5, "bumped: a vertical speed of {worst} m/s");
+}
+
+/// The costly case for triangle partners: a 1 cm bullet skimming a dense mesh floor (5000 triangles of 10 cm
+/// squares) diagonally at 200 m/s, with no gravity, 2 mm above it and touching it. Every triangle under its path is a
+/// candidate.
+#[test]
+fn a_bullet_skimming_a_dense_mesh_floor_costs_few_queries() {
+    for height in [0.012f32, 0.01] {
+        let mut world = World::new(&no_gravity());
+        let (v, i) = triangulated_floor(50, 50, 0.1);
+        mesh_body(&mut world, BodyType::Static, pos(0.0, 0.0, 0.0), 0.0, v, i, true);
+        let id = elastic_ball(&mut world, pos(0.05, height, -2.45), 0.01, 1.0, v3(141.4, 0.0, 141.4));
+        let (mut pairs, mut queries, mut culled, mut slow, mut most) = (0, 0, 0, 0, 0);
+        for _ in 0..3 {
+            world.step(DT, SUB_STEPS);
+            let c = world.swept_counters;
+            pairs += c.pairs;
+            queries += c.iterations;
+            culled += c.culled;
+            slow += c.slow;
+            most = most.max(c.iterations);
+        }
+        let p = body_get_position(&world, id);
+        eprintln!(
+            "RESULT skim at {height} m: pairs {pairs}, queries {queries} (most {most} a step), culled {culled}, slow {slow}, at {p:?}, {:?}",
+            world.swept_counters
+        );
+        // Every candidate stays in front of its triangle's plane: proven apart without a query (611 queries in a step
+        // without that test, at 2 mm).
+        assert!(most <= 16, "{most} queries in a step skimming at {height} m");
+        // Box3D's mesh contact rests a body a slop above a mesh (its rest offset): the bullet may rise to there.
+        assert!(p.y as f32 > height - 2e-3 && (p.y as f32) < 0.01 + 2.0 * linear_slop(), "the bullet left its line: at {p:?}");
+    }
 }
