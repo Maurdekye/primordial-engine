@@ -789,16 +789,25 @@ impl SweptPass {
                         pair.event = Some((t, Event::Hit { point: core.point, normal: core.normal }));
                         return Stop::Swept;
                     }
+                    // The cores' clouds overlap, or the cores overlap deeper than the floor and a band: the bodies
+                    // began the piece inside each other (a spawn, a teleport, an edit), which no sweep made (the floor
+                    // keeps a swept motion short of it) and none can undo. The contact solver has the pair
+                    // (@design-reviewer's M1 on d78fdfc0: held there, a bullet stayed inside a box for good).
+                    if !core.apart || core.upper < -(pair.floor + deep_band(pair.thin, tol)) {
+                        pair.done = true;
+                        self.counters.embedded += 1;
+                        return Stop::Swept;
+                    }
                     // Not approaching where they meet. If neither can close the rest of the way across the thinner
-                    // core by the sub-step's end (judged along the normal when the cores' clouds are apart, so a
-                    // slide along the contact isn't counted as closing), the contact solver has the pair. Otherwise
-                    // the rest of the motion can't be proven, so both are held here.
-                    let (reach, gap) = if core.apart { (along(core.normal), core.lower_n) } else { (closing, core.lower) };
-                    if reach * (1.0 - t) > 2.0 * pair.thin + gap {
+                    // core by the sub-step's end (judged along the normal, so a slide along the contact isn't
+                    // counted as closing), the contact solver has the pair. Otherwise the rest of the motion can't
+                    // be proven, so both are held here.
+                    // A pair that can't close at all can't get deeper, so only a closing one is judged.
+                    let reach = along(core.normal);
+                    if reach > 0.0 && reach * (1.0 - t) > 2.0 * pair.thin + core.lower_n {
                         // Not provable. If either body moves away along the normal, it keeps just that motion; else
                         // both are held.
-                        let away = core.apart
-                            && (dot(mb.rate(), core.normal) > 0.0 || dot(ma.rate(), core.normal) < 0.0);
+                        let away = dot(mb.rate(), core.normal) > 0.0 || dot(ma.rate(), core.normal) < 0.0;
                         let event = if away { Event::Separate { normal: core.normal } } else { Event::Uncertain };
                         pair.event = Some((t, event));
                         return Stop::Swept;

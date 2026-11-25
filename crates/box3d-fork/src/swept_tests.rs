@@ -371,6 +371,87 @@ fn bullets_into_a_pile_cost_few_queries_and_no_hold() {
     assert!(most <= 64 && holds == 0, "{most} queries in a step, {holds} holds");
 }
 
+/// A bullet that starts inside something (spawned or teleported into it, or a crate edited in over it) isn't held
+/// there: the contact solver pushes it out, a static box or a sleeping dynamic one (@design-reviewer's M1 on
+/// d78fdfc0). Two starts: 3 cm inside the face (the cores overlap), and 20 cm inside (the cores' point clouds overlap,
+/// M1's case). Returns, for each case, where the ball's centre ends and the holds over the last 30 frames.
+fn bullets_started_inside_a_box() -> Vec<(f32, i32)> {
+    [(false, 0.22f32), (true, 0.22), (false, 0.05), (true, 0.05)]
+        .into_iter()
+        .map(|(dynamic, at)| {
+            let mut world = World::new(&no_gravity());
+            let mut def = default_body_def();
+            if dynamic {
+                def.type_ = BodyType::Dynamic;
+                def.is_awake = false;
+            }
+            let block = create_body(&mut world, &def);
+            create_hull_shape(&mut world, block, &default_shape_def(), &make_box_hull(0.25, 0.25, 0.25).base);
+            let id = ball(&mut world, pos(at, 0.0, 0.0), 0.05, VEC3_ZERO, true);
+            let mut late = 0;
+            for f in 0..60 {
+                world.step(DT, SUB_STEPS);
+                if f >= 30 {
+                    late += world.swept_counters.holds;
+                }
+            }
+            (x_of(&world, id) - x_of(&world, block), late)
+        })
+        .collect()
+}
+
+#[test]
+fn a_bullet_started_inside_a_box_is_pushed_out_not_held() {
+    for (k, (x, late)) in bullets_started_inside_a_box().into_iter().enumerate() {
+        // Out past the face (0.25) by its radius, less the contact solver's slop.
+        assert!(x > 0.25 + 0.05 - 0.01 && late == 0, "case {k}: centre {x} m from the box's, {late} late holds");
+    }
+}
+
+/// A box bullet sliding and tumbling across a dynamic box floor (not a static plane) for a second, with no hold: the
+/// rounded cores give a box-on-box graze room before the floor branch (@design-reviewer's Q1 on d78fdfc0). Returns
+/// the holds and the Separates (counted as holds too) over the second.
+fn a_box_bullet_across_a_box_floor() -> i32 {
+    let mut world = World::new(&default_world_def());
+    let mut def = default_body_def();
+    def.position = pos(0.0, -0.5, 0.0);
+    let ground = create_body(&mut world, &def);
+    create_hull_shape(&mut world, ground, &default_shape_def(), &make_box_hull(20.0, 0.5, 20.0).base);
+    // A heavy dynamic plank as the floor the bullet crosses.
+    let mut def = default_body_def();
+    def.type_ = BodyType::Dynamic;
+    def.position = pos(1.5, 0.05, 0.0);
+    let plank = create_body(&mut world, &def);
+    let mut shape = default_shape_def();
+    shape.density = 2000.0;
+    create_hull_shape(&mut world, plank, &shape, &make_box_hull(2.0, 0.05, 1.0).base);
+    for _ in 0..30 {
+        world.step(DT, SUB_STEPS);
+    }
+    let mut def = default_body_def();
+    def.type_ = BodyType::Dynamic;
+    def.swept = true;
+    def.allow_fast_rotation = true;
+    def.position = pos(0.0, 0.2, 0.0);
+    def.linear_velocity = v3(12.0, -2.0, 0.0);
+    def.angular_velocity = v3(3.0, 0.0, -30.0);
+    let id = create_body(&mut world, &def);
+    create_hull_shape(&mut world, id, &default_shape_def(), &make_box_hull(0.04, 0.01, 0.02).base);
+    let mut holds = 0;
+    for _ in 0..60 {
+        world.step(DT, SUB_STEPS);
+        holds += world.swept_counters.holds;
+        assert!(body_get_position(&world, id).y as f32 > 0.0, "the bullet sank through the plank");
+    }
+    holds
+}
+
+#[test]
+fn a_box_bullet_tumbling_across_a_box_floor_is_never_held() {
+    let holds = a_box_bullet_across_a_box_floor();
+    assert!(holds == 0, "{holds} holds");
+}
+
 // ---- The ruling's cases (@coordinator-opus) ----
 
 /// A dynamic box asleep in a world without gravity, its near face at `x`.
