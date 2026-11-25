@@ -102,16 +102,14 @@ fn blob_at(bytes: &[u8], at: usize) -> Option<BlobRef> {
 /// source. Read against `reg` after the ops, so a component the transaction registers is known; an op naming an
 /// unknown component or a wrong size introduces nothing (the op itself was refused, or the edit would not be here).
 pub fn introduced(reg: &Registry, tx: &Transaction) -> BTreeSet<BlobRef> {
-    let row = |c, bytes: &[u8]| -> Vec<BlobRef> {
-        reg.get(c)
-            .and_then(|d| row_blobs(d, bytes))
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|(r, sim)| is_carried(r, *sim))
-            .map(|b| b.0)
-            .collect()
-    };
-    let mut out = BTreeSet::new();
+    written(reg, tx).into_iter().filter(|(r, sim)| is_carried(r, *sim)).map(|b| b.0).collect()
+}
+
+/// Every blob reference a transaction's ops write (a `Create` row, a `SetRow`, a `SetField` of a blob field), each
+/// with whether its field is a simulation blob; [`introduced`] keeps the carried ones.
+fn written(reg: &Registry, tx: &Transaction) -> Vec<(BlobRef, bool)> {
+    let row = |c, bytes: &[u8]| reg.get(c).and_then(|d| row_blobs(d, bytes)).unwrap_or_default();
+    let mut out = Vec::new();
     for op in &tx.ops {
         match op {
             Op::Create { rows, .. } => rows.iter().for_each(|r| out.extend(row(r.component, &r.bytes))),
@@ -120,9 +118,7 @@ pub fn introduced(reg: &Registry, tx: &Transaction) -> BTreeSet<BlobRef> {
                 let f = reg.get(*component).and_then(|d| d.fields().get(*field as usize));
                 if let Some(f) = f.filter(|f| matches!(f.kind, FieldKind::BlobRef | FieldKind::SimBlobRef)) {
                     let sim = f.kind == FieldKind::SimBlobRef;
-                    out.extend(
-                        (0..f.count as usize).filter_map(|k| blob_at(value, k * 40)).filter(|r| is_carried(r, sim)),
-                    );
+                    out.extend((0..f.count as usize).filter_map(|k| blob_at(value, k * 40)).map(|r| (r, sim)));
                 }
             }
             _ => {}
@@ -133,7 +129,9 @@ pub fn introduced(reg: &Registry, tx: &Transaction) -> BTreeSet<BlobRef> {
 
 /// Checks a transaction's inline bytes against what its ops introduce (3.4), after the ops ran: inline-class bytes
 /// over [`MAX_INLINE_BYTES`] in total, or carried bytes (over 256 each) over [`MAX_CARRIED_BYTES`], is `TooLarge`
-/// with that limit, and a blob no op introduces is `Invalid`. The same verdict on every
+/// with that limit, and a blob no op introduces is `Invalid`. A simulation reference an op writes that is longer
+/// than [`MAX_CARRIED_BLOB`] is `TooLarge { limit: MAX_CARRIED_BLOB }`: its bytes could not travel with it, so a
+/// machine without them would build differently (@chunks-reviewer's M1), until the blob transport lifts it. The same verdict on every
 /// machine, since it reads only the entry and the registry.
 ///
 /// With `complete`, every inline-class reference an op introduces must come with its bytes too (3.4, phase 3), or
@@ -147,7 +145,11 @@ pub fn check(reg: &Registry, tx: &Transaction, inline: &[Vec<u8>], complete: boo
     if inline.iter().filter(|b| !small(b)).map(|b| b.len()).sum::<usize>() > MAX_CARRIED_BYTES {
         return Err(Reason::TooLarge { limit: MAX_CARRIED_BYTES as u32 });
     }
-    let wanted = introduced(reg, tx);
+    let written = written(reg, tx);
+    if written.iter().any(|(r, sim)| *sim && r.len > MAX_CARRIED_BLOB as u64) {
+        return Err(Reason::TooLarge { limit: MAX_CARRIED_BLOB as u32 });
+    }
+    let wanted: BTreeSet<BlobRef> = written.into_iter().filter(|(r, sim)| is_carried(r, *sim)).map(|b| b.0).collect();
     let given: BTreeSet<BlobRef> = inline.iter().map(|b| BlobRef::of(b)).collect();
     if !given.is_subset(&wanted) || (complete && !wanted.is_subset(&given)) {
         return Err(Reason::Invalid { field: None });

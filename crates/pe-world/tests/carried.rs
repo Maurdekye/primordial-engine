@@ -119,7 +119,8 @@ fn a_mesh_reference_without_its_bytes_is_refused_and_the_dry_run_agrees() {
     assert_eq!(a, b);
     assert_eq!(refused(&a), Reason::Invalid { field: None });
     assert_eq!(f.b.root_hash(DomainId(0)), before);
-    // A simulation reference past the carried class needs no bytes (it is fetched, later; 3.4's late entry).
+    // A simulation reference past the carried class is refused, everywhere alike: its bytes can't travel with it, so
+    // a machine without them would build differently (@chunks-reviewer's M1). Until the blob transport lifts it.
     let huge = BlobRef { hash: [9; 32], len: MAX_CARRIED_BLOB as u64 + 1 };
     let far = Op::Create {
         new: 0,
@@ -127,7 +128,17 @@ fn a_mesh_reference_without_its_bytes_is_refused_and_the_dry_run_agrees() {
         index: None,
         rows: vec![row(Transform::at(Pos::ORIGIN)), row(Shape { mesh: huge, ..Default::default() })],
     };
-    assert!(matches!(both(&mut f, &tx(vec![far], vec![])), Outcome::Applied { .. }));
+    let o = both(&mut f, &tx(vec![far], vec![]));
+    assert_eq!(refused(&o), Reason::TooLarge { limit: MAX_CARRIED_BLOB as u32 });
+    assert_eq!(f.b.root_hash(DomainId(0)), before);
+    // A display reference that long is still by reference only: drawing may wait for it, simulation never reads it.
+    let name = Op::Create {
+        new: 0,
+        parent: Target::Root,
+        index: None,
+        rows: vec![row(Transform::at(Pos::ORIGIN)), row(Name { text: huge })],
+    };
+    assert!(matches!(both(&mut f, &tx(vec![name], vec![])), Outcome::Applied { .. }));
 }
 
 #[test]

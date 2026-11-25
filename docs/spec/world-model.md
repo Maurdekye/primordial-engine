@@ -681,9 +681,9 @@ which fixes the origin's role deliberately.
   - **Kept:** the store deletes nothing today [V, `BlobStore`]. When pruning comes, an inline-class blob is kept
     while any live or tombstoned row references it, even after its entry has left the log's retention, since a joiner's
     import is then the only way it travels.
-  - **Known gap (M1):** display blobs over 256 bytes (meshes to draw, textures) and simulation blobs over 960 KiB
-    still travel by reference only, and nothing fetches them yet
-    (@item:primordial-engine/blob-transport-the-bytes-of-names-and-meshes-ano).
+  - **Known gap (M1):** display blobs over 256 bytes (meshes to draw, textures) still travel by reference only, and
+    nothing fetches them yet (@item:primordial-engine/blob-transport-the-bytes-of-names-and-meshes-ano). A simulation
+    blob over 960 KiB is refused (carried blobs, below) until that item lifts it.
 - **Carried simulation blobs** (@coordinator-opus Q1; the CCD part 2 dependency,
   @item:primordial-engine/simulation-blobs-travel-in-their-entry-mesh-and-h). A blob a `SimBlobRef` field references,
   of 257 bytes to 960 KiB (`MAX_CARRIED_BLOB`), travels inside the entry that introduces it, like the inline class.
@@ -698,7 +698,10 @@ which fixes the origin's role deliberately.
   - **At apply:** inline-class bytes over 2 KiB, or carried bytes over 960 KiB in all (`MAX_CARRIED_BYTES`), are
     `TooLarge` with that cap as the limit. A carried blob no op introduces is `Invalid`, and so is a carried reference
     an op introduces without its bytes. A display blob over 256 bytes in the list is one no op introduces, so it is
-    `Invalid` too. Each verdict is the same on every machine, and the dry run gives the same one. An applied edit
+    `Invalid` too. A simulation reference an op writes that is over 960 KiB is `TooLarge { limit: MAX_CARRIED_BLOB }`:
+    its bytes can't travel in an entry, and nothing fetches them yet, so a machine without them would build a
+    different body (@chunks-reviewer's M1). Each verdict is the same on every machine, and the dry run gives the same
+    one. An applied edit
     puts the bytes into the machine's store; a refused one stores nothing
     [V `tests/carried.rs`].
   - **Why 960 KiB, not 1 MiB** [V]: an entry's payload is at most `MAX_PAYLOAD`, 1 MiB + 4 KiB, and an edit at most
@@ -709,6 +712,9 @@ which fixes the origin's role deliberately.
     (@api-eng), so an undo whose old meshes grew through a race still fits under pe-world's 960 KiB. An undo still
     over it is refused ("undo this in parts").
   - **Undo:** an outcome's inverse carries the carried blobs it restores, from the store, as it does inline ones.
+    So each kept outcome whose inverse restores a mesh holds a copy of up to 960 KiB for as long as it is kept
+    (@chunks-reviewer's L1). An inverse that names bytes already in the store, instead of copying them, is the later
+    fix if editing large meshes makes that cost show.
   - **In an import:** `Tree::export_blobs` gives the carried blobs the imported rows reference too, live rows and
     tombstones alike. A joiner that lacks one refuses the import with `MissingBlob`, since without it it could step
     differently; the repair then asks the next donor. pe-diverge sends one record's blobs across as many replies as
@@ -731,7 +737,8 @@ which fixes the origin's role deliberately.
     itself, at most `MAX_SOURCE_BYTES` (7.9), and applying the commit puts it into the machine's blob store, on every
     machine, so each can build the version; a refused commit stores nothing, and what a rollback leaves behind is
     store garbage, pruned with the store (@coordinator-opus). Meshes and hulls up to 960 KiB travel in
-    their entry as carried blobs (above). Larger ones follow the rule of a late entry: a machine that lacks the bytes at the entry's frame simulates as if that change had not arrived yet, which
+    their entry as carried blobs (above); larger ones are refused until the blob transport comes. With it, larger
+    ones follow the rule of a late entry: a machine that lacks the bytes at the entry's frame simulates as if that change had not arrived yet, which
     is a prediction, and rewinds and replays from that frame when the bytes arrive. It does not vote for a cut that
     includes the entry until it holds the bytes. Nobody waits; only that machine's view lags.
   - **A compiled module is never a blob** (@iter-bench, under Q3c [U]: no machine runs another's
