@@ -263,6 +263,10 @@ equals the quorum's root. Throughout, the machine keeps simulating and drawing: 
          record past either can't be served: the source notes the refused reply, and the requester's rung fails
          at every source (@design-reviewer's L1 on 8e3d7086). No table's rows reference simulation blobs today
          [I]; an object's script fields could.
+       - One repair's or join's carried blobs must total at most `R_max` (about 273 meshes at the 960 KiB cap): past
+         that, every source's reply is refused as its fault, and the rung fails, blaming its sources (at n = 2, the
+         one source). That's the trade for bounding a lying source (@design-reviewer), and well inside
+         what `T_join` carries on most links (256 MiB in 25 s is about 86 Mbit/s).
        - Skipping blobs the requester already holds is not done: it needs an S2 call to ask the replica, so a repair
          pulls them again [C].
        - A source exports a record's blobs, or an oversize record, once per peer and key, so a tombstones table
