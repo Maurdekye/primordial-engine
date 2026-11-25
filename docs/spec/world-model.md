@@ -485,16 +485,24 @@ which fixes the origin's role deliberately.
         tiny and scaled up loses triangles that are large in the world, an author-facing limit that the import
         warning (below) names;
       - **the scale floor:** any axis of a mesh's or a hull's world scale (parent scales included) under 0.01 in
-        magnitude is refused, `InvalidValue`, and the body isn't built; the reason names the axis and the 0.01
-        floor, and says to rescale the mesh at import (@coordinator-opus, after @vdw-physics and
+        magnitude is refused and the body isn't built: a mesh's by pe-physics, `InvalidValue`, "mesh scale x is
+        under 0.01 in magnitude, Box3D's floor on scale: rescale the mesh at import"; a hull's by pe-replica (below).
+        The reason names the axis and the 0.01 floor (@coordinator-opus, after @vdw-physics and
         @fable-reviewer). Box3D would otherwise raise such an axis to 0.01, keeping its sign (−0 to
         +0.01) [V `box3d-fork/src/math_functions/vector.rs`, `safe_scale`], so a mesh scaled flat would collide and
         weigh as a solid 1% thick where it is drawn flat. It is a floor on scale, not on size: a 10 m mesh scaled to
         1 cm is refused, while a 1 cm box builds. Lowering or removing the floor in the fork is a later, measured
         change;
-      - **a `Scale` edit re-sums the mass:** the sum runs on scaled positions, so each change of a mesh body's world
-        scale is one more pass over its triangles, linear in them, at the rebuild, never in the step. A scale
-        animation on a large dynamic mesh pays that once per change [I, @vdw-physics confirms];
+      - **a `Scale` edit rebuilds the body** (pe-replica's `Rebuilt`: the body is removed and added again), never in
+        the step. The rebuild sums the mass twice, once in pe-physics's refusal check and once in Box3D's
+        composition. Each sum runs the closedness test's sort again, since the fork's mass sees only the built mesh,
+        so a rebuild is O(n log n) in the triangles. With the built mesh kept by blob (part D keeps it), a rebuild
+        measured 0.16 ms at 1,000 triangles, 2.4 ms at 10,000 and 8.9 ms at 50,000, near the blob cap. Without it,
+        each rebuild also builds the mesh from its blob again: 0.45, 5.2 and 22 ms, and about as much again for its
+        back with both sides [V @vdw-physics, rough: release build, medians on a shared machine at idle priority,
+        `examples/mesh_cost.rs`]. So a scale animation on a large dynamic mesh pays that once per change. Caching
+        the unscaled moments and transforming them would give other bits than the scaled sum; that is a later,
+        measured change;
       - **holding:** a held mesh is checked against walls by a capsule around its scaled vertices, as a hull is
         (replica.md 3.3, `static_in_way`). So a held object made only of meshes never passes through a wall, but
         the capsule is coarser than the mesh: a held hoop can't be passed over a static post;
@@ -520,18 +528,23 @@ which fixes the origin's role deliberately.
       are what opened the mesh (the blob's triangles, less those with two equal positions, are closed and the built
       mesh is not), the refusal says so with their count, the blob's triangles less the built mesh's, whatever the
       cause: "N of the mesh's triangles are under the minimum area and were left out; without them the mesh is
-      open". Otherwise it is the ordinary open-mesh refusal. At import, pe-world neither welds nor
-      repairs a mesh: where a mesh blob is imported, a cheap warning runs the same test as the build (how many
-      triangles are dropped, and whether the mesh is still closed without them); mesh repair belongs in the import
-      tool, later. A golden test pins one blob with a sliver: its mass and its open or closed verdict are bit-equal
-      on every tier-2 platform (@fable-reviewer). A static or kinematic body takes no mass, so any mesh suits it,
-      open or closed. The mass is computed when the body is built or rebuilt, once per mesh, linear in its triangles.
+      open". Otherwise it is the ordinary open-mesh refusal. At import, pe-world neither welds nor repairs a mesh:
+      where a mesh blob is imported, a cheap warning runs the same test as the build (how many triangles are dropped,
+      and whether the mesh is still closed without them); mesh repair belongs in the import tool, later; one lossless
+      step it could take is merging exactly equal positions into one index, since Box3D marks smooth edges by shared
+      vertex index and a split seam collides as a sharp edge, which can catch a body sliding across it (it changes
+      neither the verdict nor the mass). A golden test pins one blob with a sliver: its mass and its open or closed
+      verdict are bit-equal on every tier-2 platform (@fable-reviewer). A static or kinematic body takes no mass, so
+      any mesh suits it, open or closed. The mass is computed when the body is built or rebuilt, once per mesh, in
+      O(n log n) of its triangles (the closedness test's sort; costs above).
       Considered and set aside: the convex hull's mass (any mesh has one, but a concave one weighs as if filled, a
       bowl as a solid dome) and the bounding box's (cruder still). This rule can
       be loosened later without changing any built world (an open mesh would go from unbuildable to buildable), where
       starting from the hull's mass and switching later would change masses in existing worlds (@fable-reviewer);
   - a hull is a convex `SimBlobRef`, on any body, its mass Box3D's. The mesh's scale floor (above) holds for it
-    too.
+    too, but there it is pe-replica's: pe-replica passes a hull's points already scaled into the body's frame and
+    pe-physics never scales a hull, so the refusal is `Unbuildable::Shape` at pe-replica's build, with the same
+    reason (@vdw-physics).
   - **The blob formats** (@coordinator-opus, Q2, after @vdw-physics's proposal and @fable-reviewer's
     points). `Shape.mesh` names a mesh or a hull blob by `Shape.kind`; both travel inside their entry (3.4, carried
     blobs). Common to both: little-endian; coordinates are `f32` metres in the shape's local frame, before the
@@ -539,7 +552,10 @@ which fixes the origin's role deliberately.
     a fault, the same on every machine, never a guess. pe-physics checks every blob when it builds the body: every
     value finite, every index in range, the fork's limits, the 960 KiB cap. A blob that fails is a deterministic
     fault, `Unbuildable::Shape`, never a panic. The fork's own built forms (a mesh's BVH, its version and hash) never
-    travel: each machine builds them from these bytes.
+    travel in entries: each machine builds them from these bytes. A joiner's physics transfer (pe-physics's
+    `save_transfer`, checked against the confirmed check hash) does carry them, at about twice the blob's size per
+    mesh shape and twice that again with both sides (42, 381 and 1,819 KiB for blobs of 17, 175 and 878 KiB) [V
+    @vdw-physics]; part D's join limits count it.
     - **mesh v1:** the magic `PEM1` (4 bytes), a `u32` vertex count, the vertices as `f32 x3`, a `u32` triangle
       count, then the triangles as `u32 x3` vertex indices. A triangle's front is the side its vertices run
       counter-clockwise when seen from the front. The triangle order is kept as written: the mass sum and the build
