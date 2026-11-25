@@ -354,3 +354,106 @@ fn a_moving_body_s_hand_reaches_as_far_further_as_the_body_moved_last_step() {
     assert_eq!(reason(&grab_after(0.0)), Reason::OutOfReach, "a body at rest: reach plus slack only");
     assert!(applied(&grab_after(0.3)), "0.3 m moved: 0.45 m");
 }
+
+fn edit(w: &mut World, f: u64, b: &mut EntryBuilder, ops: Vec<pe_world::edit::Op>) -> Outcome {
+    let t = pe_world::edit::Transaction {
+        inline: vec![],
+        actor: pe_world::edit::Actor::Person,
+        label: None,
+        preconditions: vec![],
+        ops,
+        blobs: vec![],
+    };
+    let e: SignedEntry = b.next(Class::Edit, Frame(f), Bytes::from(t.encode()));
+    w.apply_edit(Frame(f), &e).0
+}
+
+fn set_row<T: pe_sim::Component>(id: ObjectId, v: T) -> pe_world::edit::Op {
+    let row = pe_world::edit::Row { component: T::ID, instance: 0, bytes: bytemuck::bytes_of(&v).to_vec() };
+    pe_world::edit::Op::SetRow { id: pe_world::edit::Target::Existing(id), row }
+}
+
+fn invalid(o: &Outcome) -> bool {
+    matches!(o, Outcome::Refused { reason: Reason::Invalid { .. }, .. })
+}
+
+/// @chunks-reviewer's I1 and M1 on cc8da1fb: an edit wrote `Player` rows (a hijack, and a leave that destroyed
+/// scenery past undo) and placed another member's body. Only world logic and the mover place a body (8.2).
+#[test]
+fn no_edit_or_script_writes_a_player_row_or_places_a_body() {
+    let keys = keys();
+    let mut w = plane();
+    let mut b0 = EntryBuilder::new(&keys, 0);
+    let mut b1 = EntryBuilder::new(&keys, 1);
+    let (k0, k1) = (keys.key(0), keys.key(1));
+    let body = w.body_of(k0).unwrap();
+    let scenery = w
+        .store()
+        .iter::<pe_sim::Transform>()
+        .map(|(id, _)| id)
+        .find(|&id| w.store().parent(id).is_none() && w.store().get::<Player>(id).is_none())
+        .expect("a scenery root");
+    let mine = Player { owner: k1, ..player(&w, body) };
+    let mut f = 1;
+    let mut refused = |w: &mut World, b: &mut EntryBuilder, op: pe_world::edit::Op, what: &str| {
+        let o = edit(w, f, b, vec![op]);
+        assert!(invalid(&o), "{what}: {o:?}");
+        f += 1;
+    };
+    refused(&mut w, &mut b1, set_row(body, mine), "another member's body's Player row");
+    refused(&mut w, &mut b0, set_row(scenery, mine), "a Player row on scenery");
+    let row = pe_world::edit::Op::RemoveRow {
+        id: pe_world::edit::Target::Existing(body),
+        component: pe_world::components::ids::PLAYER,
+        instance: 0,
+        tag: 0,
+    };
+    refused(&mut w, &mut b0, row, "removing a body's Player row");
+    let mut t = *w.store().get::<pe_sim::Transform>(body).unwrap();
+    t.scale = [3.0; 3];
+    refused(&mut w, &mut b1, set_row(body, t), "scaling another member's body");
+    refused(&mut w, &mut b0, set_row(body, t), "scaling one's own body");
+    let up = pe_world::edit::Op::Reparent {
+        id: pe_world::edit::Target::Existing(body),
+        parent: pe_world::edit::Target::Existing(scenery),
+        index: None,
+        keep_world: true,
+    };
+    refused(&mut w, &mut b0, up, "reparenting a body");
+    refused(
+        &mut w,
+        &mut b1,
+        pe_world::edit::Op::Delete { id: pe_world::edit::Target::Existing(body) },
+        "deleting a body",
+    );
+    let size = w.store().subtree(body).len() as u32;
+    let copy = pe_world::edit::Op::Copy {
+        source: pe_world::edit::Target::Existing(body),
+        new: 0,
+        parent: pe_world::edit::Target::Root,
+        index: None,
+        size,
+    };
+    refused(&mut w, &mut b0, copy, "copying a body");
+    assert_eq!(w.body_of(k0), Some(body));
+    assert_eq!(w.body_of(k1).map(|b| b == body), Some(false), "k1 keeps its own body");
+    assert_eq!(w.players().len(), 2);
+    // Scripts may write a Transform, but not a body's.
+    let check = w.script_row_checker();
+    assert!(check(pe_sim::ComponentId::TRANSFORM, body, bytemuck::bytes_of(&t)).is_err());
+    assert!(check(pe_sim::ComponentId::TRANSFORM, scenery, bytemuck::bytes_of(&t)).is_ok());
+}
+
+/// @chunks-reviewer's M1: a teleport (a respawn, or a bad mover step) can't open a hand's reach past one step's
+/// bound.
+#[test]
+fn a_body_s_move_counts_at_most_max_moved_for_reach() {
+    let keys = keys();
+    let mut w = plane();
+    let body = w.body_of(keys.key(0)).unwrap();
+    let feet = w.snapshot(w.frame()).offset_in(body, None).unwrap().0;
+    let far = Pos::ORIGIN.checked_add(Offset([feet[0] + 100.0, feet[1], feet[2]])).unwrap();
+    w.write_poses(&[(body, far, [0.0, 0.0, 0.0, 1.0])]);
+    w.end_frame(Frame(1));
+    assert_eq!(f64::from(player(&w, body).moved), pe_world::player::MAX_MOVED);
+}

@@ -197,7 +197,7 @@ fn from_row_version(v: RowVersion) -> Version {
 
 /// Components no edit may write (7.6 step 4): the hierarchy, derived physics state and hands (inputs).
 fn edit_writable(c: ComponentId) -> bool {
-    c != ComponentId::NODE && c != ids::BODY_STATE && c != ids::HAND
+    c != ComponentId::NODE && c != ids::BODY_STATE && c != ids::HAND && c != ids::PLAYER
 }
 
 /// A hand's own rows an edit can't write or remove, though another object's it may: the ones that place it or make
@@ -933,8 +933,8 @@ impl World {
         let doomed = self.store.subtree(o);
         // Hands are made and removed only by logic (`admit`, `leave`), so a subtree holding one is no edit's to delete,
         // as it is no edit's to copy (7.5; @coordinator-opus).
-        if doomed.iter().any(|&d| self.store.get_raw(ids::HAND, d).is_some()) {
-            return Err(invalid_field(ids::HAND, u32::MAX));
+        if let Some(c) = doomed.iter().find_map(|&d| self.placed_by_logic(d)) {
+            return Err(invalid_field(c, u32::MAX));
         }
         // A hold by anyone but the author refuses the delete (7.2). The author's own holds end with it, so a player
         // can delete what they hold without letting go first (@coordinator-opus, option (b)).
@@ -1025,8 +1025,8 @@ impl World {
             {
                 return Err(Reason::Protected { owner: p.owner });
             }
-            if self.store.get_raw(ids::HAND, x).is_some() {
-                return Err(invalid_field(ids::HAND, u32::MAX));
+            if let Some(c) = self.placed_by_logic(x) {
+                return Err(invalid_field(c, u32::MAX));
             }
         }
         let (parent, orphan_base) = match self.resolve(cx, parent)? {
@@ -1257,10 +1257,20 @@ impl World {
         Ok(())
     }
 
-    /// Refuses an edit that would move hand `id` or write one of its [`hand_only`] rows, as `Invalid` naming `Hand`
-    /// (7.5): a hand is moved only by its member's input. A subtree that merely holds a hand may still move.
+    /// Refuses an edit that would move hand or player body `id` or write one of its [`hand_only`] rows, as `Invalid`
+    /// naming `Hand` or `Player` (7.5, 8.2): a hand is moved only by its member's input, a body only by the mover. A
+    /// subtree that merely holds a hand may still move.
     fn not_a_hand(&self, id: ObjectId) -> Result<(), Reason> {
-        if self.store.get_raw(ids::HAND, id).is_some() { Err(invalid_field(ids::HAND, u32::MAX)) } else { Ok(()) }
+        match self.placed_by_logic(id) {
+            Some(c) => Err(invalid_field(c, u32::MAX)),
+            None => Ok(()),
+        }
+    }
+
+    /// `Hand` or `Player` when `id` is a hand or a player body: objects only world logic makes, places and removes
+    /// (7.5, 8.2), so no edit moves, deletes or copies them.
+    pub(crate) fn placed_by_logic(&self, id: ObjectId) -> Option<ComponentId> {
+        [ids::HAND, ids::PLAYER].into_iter().find(|&c| self.store.get_raw(c, id).is_some())
     }
 
     /// The owner of the nearest `Protection` at or above `id`. Iterative and bounded (3.3).
@@ -1292,9 +1302,10 @@ impl World {
         if hand_only(c) {
             self.not_a_hand(id)?;
         }
-        // A superseded version's components take no writes, and no hand takes a tag (7.9).
+        // A superseded version's components take no writes, and no hand or player body takes a tag (7.9, 8.2), so no
+        // script may destroy one.
         self.superseded(c)?;
-        if self.is_tag(c) && self.store.has::<Hand>(id) {
+        if self.is_tag(c) && self.placed_by_logic(id).is_some() {
             return Err(invalid_field(c, u32::MAX));
         }
         if held_rows(c)

@@ -715,14 +715,18 @@ impl World {
     /// faults the call on an `Err`. The sets it needs are taken now, so it borrows nothing of the world.
     pub fn script_row_checker(&self) -> impl Fn(ComponentId, ObjectId, &[u8]) -> Result<(), String> + use<> {
         let held: BTreeSet<ObjectId> = self.claims.keys().copied().collect();
-        let hands: BTreeSet<ObjectId> = self.store.column_raw(ids::HAND).0.iter().copied().collect();
+        // Hands and player bodies take no script's writes: only world logic and the mover place them (7.5, 8.2).
+        let mut hands: BTreeSet<ObjectId> = self.store.column_raw(ids::HAND).0.iter().copied().collect();
+        if self.store.registry().get(ids::PLAYER).is_some() {
+            hands.extend(self.store.column_raw(ids::PLAYER).0.iter().copied());
+        }
         move |c, obj, bytes| {
             let e = ENGINE_COMPONENTS.iter().find(|e| e.id == c).ok_or("not an engine component a script names")?;
             if !e.scripts_may_write {
                 return Err(format!("{} is not written by scripts", e.name));
             }
             if hands.contains(&obj) {
-                return Err("a hand takes no script's writes".into());
+                return Err("a hand or a player body takes no script's writes".into());
             }
             if c == ComponentId::TRANSFORM && held.contains(&obj) {
                 return Err("held".into());

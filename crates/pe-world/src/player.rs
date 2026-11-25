@@ -32,6 +32,11 @@ pub const MAX_HAND_OFFSET: f64 = 4.0;
 /// How far the head may be from the rig's origin, per axis, in metres [I]: a room-scale space, not a world.
 pub const MAX_HEAD_OFFSET: f32 = 50.0;
 
+/// The most [`Player::moved`] can be, in metres: the reach slack a body's last step adds is clamped to it, so a
+/// respawn or a bad mover step can't open a hand's reach. About the mover's top speed plus a fall's over one step
+/// (@chunks-reviewer; [I], @vdw-physics's numbers win).
+pub const MAX_MOVED: f64 = 0.5;
+
 /// One locomotion sample (pe-seams' `MoveInput`, quantised): what the step reads for one frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct MoveSample {
@@ -292,7 +297,7 @@ impl World {
             if let Some(t) = self.store.world_transform(body) {
                 let feet = (t.pos - pe_core::Pos::ORIGIN).0;
                 let d: f64 = feet.iter().zip(old.prev_feet).map(|(a, b)| (a - b) * (a - b)).sum::<f64>().sqrt();
-                row.moved = d as f32;
+                row.moved = d.min(MAX_MOVED) as f32;
                 row.prev_feet = feet;
             }
             if old.span > 0 {

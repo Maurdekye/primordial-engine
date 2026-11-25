@@ -2566,7 +2566,11 @@ its input; pe-physics moves it (L1's `move_player`, @vdw-physics); pe-replica's 
   It is 3.5's avatar root: the hands are its children, at the same offsets from the feet as M1's root hands. It has
   no `Shape` or `Body` row: pe-physics builds the player's capsule from its own tuning when it sees a `Player` row
   (`add_player`), and players pass through each other there. The body never turns, so its frame is the world's axes
-  at its feet. No edit writes a `Player` row (like `Hand`, 7.6). A returning member keeps its body.
+  at its feet. A returning member keeps its body.
+- **A body is placed like a hand** (7.5, 7.6; @chunks-reviewer's I1 and M1): no edit writes or removes a `Player`
+  row, and none writes a body's `Transform`, `Body` or `Shape`, reparents, deletes, copies or tags it, the owner's
+  own edits included. Each is refused `Invalid` naming `Player`. No script writes a body's rows. Only world logic
+  and the mover place a body; a respawn or a teleport is a later logic action.
 - **`Player`** holds the owner and the newest Move sample: the stick (i8 steps of 1/127 after the dead zone), the
   stick's yaw, the cumulative heading (a wrapping u32, 2^32 one turn, positive turning left, 0 facing -Z), the press
   count `jumps`, the head's rig-frame pose and whether it is tracked. Three fields are derived by pe-world, from rows
@@ -2575,13 +2579,17 @@ its input; pe-physics moves it (L1's `move_player`, @vdw-physics); pe-replica's 
     without a jump, so a held or re-sent sample never jumps twice;
   - `prev_head` and `prev_heading`, what the step used last frame, rolled forward by `end_frame`: the mover's
     room-scale step is the difference, rotated by the heading;
-  - `moved` and `prev_feet`, how far the feet moved over the last frame (`prev_feet` is `pos - ORIGIN`, 4.2).
+  - `moved` and `prev_feet`, how far the feet moved over the last frame, at most `MAX_MOVED` (0.5 m [I]: about the
+    mover's top speed plus a fall's over one step), so a respawn or a bad mover step can't open a hand's reach
+    (`prev_feet` is `pos - ORIGIN`, 4.2).
 - **`Input::Move { body, samples, hold }`** (tag 6): the owner's samples, packed and held like a hand pack (8.1),
   1-16 samples. Sample `j` is what the step reads at `stamp + j`; the last is held `hold` more frames, and after that
   the stick is zero (the body stops, the heading and head stay). Any other member's is refused `NotYourHand`
   [I: pe-seams has no reason of its own for a body]. A sample is refused `Invalid` for a stick axis of -128, a head
   more than 50 m from the rig's origin on an axis, or a non-unit head rotation. `MoveSample::quantise_stick` is the
-  senders' quantiser: the stick's length clamped to 1, each axis rounded to 1/127, symmetric (@xr-eng). The samples are raw values, never a velocity (the trinket seam).
+  senders' quantiser: the stick's length clamped to 1, each axis rounded to 1/127, symmetric (@xr-eng). The samples are raw values, never a velocity (the trinket seam). The rate is a
+  hand pack's: one pending pack per body, which each Move entry replaces, of at most 16 samples. A per-author entry
+  budget would be pe-agree's, and it has none yet [V: pe-agree core.rs 310].
 - **`Input::BodyHand { hand, poses, hold }`** (tag 7): `Hand`'s pack for a hand whose parent is the author's body,
   each pose an `Offset` and rotation in the body's frame, at most 4 m from the feet on an axis. The sender computes it
   from the heading and head pose it put in that frame's Move (the two must agree, or the hand and the body it hangs
@@ -2595,9 +2603,11 @@ its input; pe-physics moves it (L1's `move_player`, @vdw-physics); pe-replica's 
   step. The body's pose is written back to its `Transform` like any bound body's. `World::players()` gives the rows
   in id order; `World::body_of(member)` the body.
 - **Reach** (7.2, @engine-architect): a grab by a body's hand is judged before this frame's step moves
-  the body, so its reach adds the body's `moved`, about |v|·dt (7 cm at 4 m/s). A known looseness that a later
-  reorder of the input phase around the mover could remove. Every other reach path (`pick_grab`, a push's `at`)
-  measures through `world_transform`, which composes the body.
+  the body, so its reach adds the body's `moved`, about |v|·dt (7 cm at 4 m/s), at most `MAX_MOVED`. A known
+  looseness that a later reorder of the input phase around the mover could remove. Every other reach path
+  (`pick_grab`) measures through `world_transform`, which composes the body. A push names no hand: its `at` is a
+  world point checked against the object's bound. A throw's velocity is the sender's world velocity (`Throw`
+  carries it), so it already includes the body's; pe-world adds nothing.
 - **Leave** (2.4): after the hands, the leaver's body goes, with its Move pack; anything still under it becomes a
   root keeping its world pose. `LeaveReport::bodies` names it. A rejoin makes a new body (the id includes the frame).
 - **In the root** (6.2): pending `BodyHand` and `Move` packs sit in the hand-packs table under 17-byte keys (the id
