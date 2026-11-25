@@ -6,7 +6,10 @@
 //! - **Off the render thread:** the menu and the console only queue a job. A worker thread applies it and leaves a
 //!   one-line status for the spawn panel and the console.
 //! - **Where:** a button press gives the point in front of the head; the console's `spawn` uses a fixed point in
-//!   front of the origin. A stack goes on the floor; the rest are dropped from where they appear.
+//!   front of the origin. A stack goes on the floor; the rest are dropped from where they appear. The console's
+//!   `spawn <kind> <count>` (a self-test's way to fill the world: K4's R5', the shape limit) queues that many, each
+//!   its own job, on a grid of their own ([`grid_at`]), so a hundred never land inside each other as the console's
+//!   row of five, which repeats every 20, would put them.
 //! - **Only on the plane:** the worker looks for `/Spawned` until it finds it, every [`LOOK_AGAIN`], and again before
 //!   a job while it hasn't. A joiner's world is empty until the cut's state arrives, so a miss is never final
 //!   (@engine-architect's M1 on S4). Until it is found (and in the ball pit, always) the panel isn't shown, and a job
@@ -81,6 +84,16 @@ const CONNECTION: ConnectionId = ConnectionId(u64::MAX - 7);
 /// 0.3 m to the right of the last, five to a row.
 const CONSOLE_AT: [f64; 3] = [-0.6, 0.8, -1.0];
 
+/// Where the console's counted `spawn <kind> <count>` starts its grid: 3 m in front of the origin, past the single
+/// spawns' rows, 0.8 m up (a stack on the floor), [`GRID_ACROSS`] to a row [`GRID_STEP`] apart, each row
+/// [`GRID_STEP`] further ahead. A stack's boxes are 0.15 m across, so one that falls reaches its neighbours.
+pub const GRID_AT: [f64; 3] = [-1.35, 0.8, -3.0];
+pub const GRID_STEP: f64 = 0.3;
+pub const GRID_ACROSS: u32 = 10;
+/// The most one counted `spawn` queues: the world's shape limit (pe-world `MAX_SHAPES`, world-model.md 7.1), past
+/// which every spawn is refused anyway.
+pub const COUNT_MAX: u32 = 520;
+
 /// The jobs' queue and their last status.
 pub struct Spawner {
     tx: Mutex<Sender<Job>>,
@@ -97,6 +110,8 @@ struct State {
     pending: usize,
     /// Console spawns so far, for their row.
     console: u32,
+    /// Counted console spawns so far, for their grid; back to 0 at a Clear.
+    grid: u32,
 }
 
 static INSTALLED: OnceLock<Arc<Spawner>> = OnceLock::new();
@@ -157,23 +172,77 @@ impl Spawner {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).status.clone()
     }
 
-    /// The console's `spawn box|sphere|capsule|stack|clear` (@engine-architect); `args` follows the word.
+    /// The console's `spawn box|sphere|capsule|stack|clear` (@engine-architect), or `spawn <kind>
+    /// <count>` for that many on the grid; `args` follows the word.
     pub fn on_command(&self, args: &str) -> Result<String, String> {
         let what = args.trim();
-        let job = if what == "clear" {
-            Job::Clear
-        } else {
-            let k =
-                Kind::parse(what).ok_or_else(|| format!("`spawn {what}`: say box, sphere, capsule, stack or clear"))?;
-            let n = {
-                let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
-                st.console += 1;
-                st.console - 1
-            };
-            Job::Spawn(k, console_at(k, n))
+        let (jobs, said) = match parse_command(what)? {
+            Command::Clear => {
+                self.state.lock().unwrap_or_else(|e| e.into_inner()).grid = 0;
+                (vec![Job::Clear], format!("spawn {what}: queued"))
+            }
+            Command::One(k) => {
+                let n = {
+                    let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                    st.console += 1;
+                    st.console - 1
+                };
+                (vec![Job::Spawn(k, console_at(k, n))], format!("spawn {what}: queued"))
+            }
+            Command::Many(k, count) => {
+                let first = {
+                    let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                    st.grid += count;
+                    st.grid - count
+                };
+                let jobs = (first..first + count).map(|n| Job::Spawn(k, grid_at(k, n))).collect();
+                (jobs, format!("spawn {what}: queued {count} on the grid"))
+            }
         };
-        if self.ask(job) { Ok(format!("spawn {what}: queued")) } else { Err(self.status().unwrap_or_default()) }
+        for job in jobs {
+            if !self.ask(job) {
+                return Err(self.status().unwrap_or_default());
+            }
+        }
+        Ok(said)
     }
+}
+
+/// What the console's `spawn` was asked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Command {
+    Clear,
+    /// One, in the console's row.
+    One(Kind),
+    /// That many, 1 to [`COUNT_MAX`], on the grid.
+    Many(Kind, u32),
+}
+
+/// The console's `spawn` arguments: `clear`, a kind, or a kind and a count.
+pub fn parse_command(what: &str) -> Result<Command, String> {
+    let words: Vec<&str> = what.split_whitespace().collect();
+    let kind =
+        |w: &str| Kind::parse(w).ok_or_else(|| format!("`spawn {what}`: say box, sphere, capsule, stack or clear"));
+    match words[..] {
+        ["clear"] => Ok(Command::Clear),
+        [w] => Ok(Command::One(kind(w)?)),
+        [w, n] => {
+            let k = kind(w)?;
+            match n.parse::<u32>() {
+                Ok(c) if (1..=COUNT_MAX).contains(&c) => Ok(Command::Many(k, c)),
+                _ => Err(format!("`spawn {what}`: a count is a whole number from 1 to {COUNT_MAX}")),
+            }
+        }
+        _ => Err(format!("`spawn {what}`: say box, sphere, capsule, stack [count] or clear")),
+    }
+}
+
+/// The counted spawn's `n`-th place: [`GRID_ACROSS`] to a row from [`GRID_AT`], [`GRID_STEP`] apart, rows going
+/// away from the origin; a stack on the floor.
+pub fn grid_at(k: Kind, n: u32) -> [f64; 3] {
+    let x = GRID_AT[0] + GRID_STEP * f64::from(n % GRID_ACROSS);
+    let z = GRID_AT[2] - GRID_STEP * f64::from(n / GRID_ACROSS);
+    [x, if k == Kind::Stack { FLOOR_GAP } else { GRID_AT[1] }, z]
 }
 
 /// The console's `n`-th spawn's place: a row of five in front of the origin, a stack on the floor.
@@ -563,5 +632,37 @@ mod tests {
         assert_eq!(console_at(Kind::Box, 0), [-0.6, 0.8, -1.0]);
         assert_eq!(console_at(Kind::Stack, 6)[1], FLOOR_GAP);
         assert!((console_at(Kind::Box, 6)[2] + 1.4).abs() < 1e-9, "the second row");
+    }
+
+    /// `spawn <kind> <count>` (K4's R5', the shape limit): that many on a grid of their own, every place its own, past
+    /// the single spawns' rows; a count from 1 to the world's shape limit.
+    #[test]
+    fn a_counted_spawn_fills_a_grid_of_its_own() {
+        assert_eq!(parse_command("clear"), Ok(Command::Clear));
+        assert_eq!(parse_command("stack"), Ok(Command::One(Kind::Stack)));
+        assert_eq!(parse_command("stack 102"), Ok(Command::Many(Kind::Stack, 102)));
+        assert_eq!(parse_command("box  520"), Ok(Command::Many(Kind::Box, COUNT_MAX)));
+        for bad in ["stack 0", "stack 521", "stack x", "stack -3", "clear 3", "stack 2 3", "ball 4", ""] {
+            assert!(parse_command(bad).is_err(), "`{bad}` refused");
+        }
+        assert_eq!(grid_at(Kind::Box, 0), GRID_AT);
+        assert_eq!(grid_at(Kind::Stack, 0)[1], FLOOR_GAP);
+        // 102 stacks (510 boxes, the plane's room under 520 shapes): every place apart from the others, and from the
+        // single spawns' rows (z -1.0 to -2.2).
+        let at: Vec<[f64; 3]> = (0..102).map(|n| grid_at(Kind::Stack, n)).collect();
+        for (i, a) in at.iter().enumerate() {
+            assert!(a[2] <= -3.0 + 1e-9, "past the rows: {a:?}");
+            for b in &at[i + 1..] {
+                let d = ((a[0] - b[0]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+                assert!(d >= GRID_STEP - 1e-9, "{a:?} and {b:?} {d} m apart");
+            }
+        }
+        assert!((grid_at(Kind::Box, 10)[2] - (GRID_AT[2] - GRID_STEP)).abs() < 1e-9, "the second row");
+        // The grid's last place is on the plane: the world takes a stack there.
+        let me = MemberKey([1; 32]);
+        let (api, c) = (plane_api(me, true), person(me));
+        let dry = ApplyOpts { mode: pe_seams::world_api::Mode::DryRun, ..Default::default() };
+        let o = api.apply(&c, spawn_tx(Kind::Stack, at[101]), &dry).expect("an answer");
+        assert_eq!(o.status, Status::Accepted, "{:?}", o.refusal);
     }
 }
