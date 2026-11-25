@@ -478,6 +478,39 @@ each hand to aim and select. Pointers are local UI: never sent, never in a hand 
   (`menu_toggled`, any number of toggles counting as one) since the last drawn frame, so a press made in a frame that isn't drawn is never lost. Focus loss
   clears them.
 
+### 5.8 Locomotion
+
+The friend test's smooth first-person locomotion (@item:primordial-engine/locomotion-l4a-pe-xr-move-turn-and-jump-actions-o;
+the plan is engine-architect/friend-test-replan.md section 6). pe-xr reads the controllers and writes one
+`pe_seams::MoveInput` per display frame into [`MoveRing`], the `MoveFeed` the simulation thread samples (pe-app's
+`SwitchedMove` picks it while VR runs). pe-xr never moves the rig: the simulation walks the player's body from the
+samples, and the rig follows the body (L2, L3).
+
+- **The actions,** in the `pe_hands` set beside the hands' and the pointers': `move` (a 2D vector) on the left
+  thumbstick; `turn` (a value) on the right thumbstick's x; `jump` (a button) on the right A button. Suggested on the
+  Touch profile (WiVRn's Quest 3) and the Index profile, in the same suggestion as each profile's other bindings, since
+  a later suggestion for a profile replaces the earlier one. The simple controller and tracked hands have no
+  locomotion (the user's ruling: controllers only).
+- **The head:** a VIEW reference space, located in the rig's space at the display time.
+- **The sample,** each frame at its predicted display time (crate::locomotion):
+  - `stick`: the move stick after a radial dead zone of 0.15, rescaled so the zone's edge is 0 and full tilt 1, and
+    never longer than 1 (a square gate's corner). Zero while the action isn't active.
+  - `stick_yaw`: the head's yaw in the rig frame (0 facing -Z, positive turning left): movement is head-relative.
+    Looking straight up or down, the head's up axis stands in.
+  - `heading`: the wrapping heading. The turn stick, past its own dead zone, turns it at 120 degrees a second at full
+    tilt [I], integrated over each display frame's time (at most 0.1 s, so a stall never spins the player). Stick
+    right turns right. Smooth only: no snap turn, no vignette, no comfort options (the user's ruling, via
+    @coordinator-opus).
+  - `jumps`: the A button's press edges, counted and wrapping. A button already held at the first frame, or as
+    focus returns, is adopted rather than counted (Quest's overlay selects with A; @chunks-reviewer's L1).
+  - `head` and `tracked`: the head's rig-frame pose when located, else the last located one with `tracked` false.
+- **Not focused:** a standstill each frame (stick zero, no turn, no new jump; the heading, the jump count and the head
+  carried on), so the simulation never holds a walk the player can't stop. A button still held when focus returns
+  is not a press until it is let go and pressed again. The desktop's feed does the same when its window stops drawing (render.md 9).
+- **The session's end** clears the ring: `move_at` then answers `None` until the next session.
+- **The log** (`PE_XR_LOG`): at the first focused frame, whether `move`, `turn` and `jump` are active and the head is
+  located. A runtime that ignored the suggestion (SteamVR with its own bindings) shows there as "not active".
+
 ## 6. Time
 
 ### 6.1 One clock

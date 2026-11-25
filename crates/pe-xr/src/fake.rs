@@ -60,6 +60,7 @@ pub enum Op {
 type HandScript = Box<dyn FnMut(Hand, HostTime) -> Reading>;
 type JointScript = Box<dyn Fn(Hand, HostTime) -> Option<HandJoints>>;
 type PointerScript = Box<dyn FnMut(Hand, HostTime) -> PointerReading>;
+type MoveScript = Box<dyn FnMut(HostTime) -> crate::locomotion::MoveReading>;
 
 pub struct FakeRuntime {
     pub calls: Vec<Call>,
@@ -82,6 +83,8 @@ pub struct FakeRuntime {
     joint_script: JointScript,
     /// The pointer actions for a hand at a time (`read_pointer`); none by default.
     pointer_script: PointerScript,
+    /// The locomotion actions and the head at a time (`read_move`); none by default.
+    move_script: MoveScript,
     /// Extra time to add to the next frame's display time, to fake a missed frame.
     pub skip_next_ns: i64,
     /// Set by a test's renderer while it holds wrappers of the swapchain images: destroying the swapchain then is a
@@ -136,6 +139,7 @@ impl FakeRuntime {
             }),
             joint_script: Box::new(|_, _| None),
             pointer_script: Box::new(|_, _| PointerReading::default()),
+            move_script: Box::new(|_| crate::locomotion::MoveReading::default()),
             skip_next_ns: 0,
             images_held: Arc::new(AtomicBool::new(false)),
             frames: 0,
@@ -193,6 +197,12 @@ impl FakeRuntime {
     /// The pointer actions (aim pose, select, menu button) a hand reads at a time.
     pub fn pointers(mut self, f: impl FnMut(Hand, HostTime) -> PointerReading + 'static) -> Self {
         self.pointer_script = Box::new(f);
+        self
+    }
+
+    /// The locomotion actions (sticks, jump) and the head the session reads at a time.
+    pub fn moves(mut self, f: impl FnMut(HostTime) -> crate::locomotion::MoveReading + 'static) -> Self {
+        self.move_script = Box::new(f);
         self
     }
 
@@ -399,6 +409,14 @@ impl Backend for FakeRuntime {
             self.violate("a pointer read before xrSyncActions this frame");
         }
         (self.pointer_script)(hand, at)
+    }
+
+    fn read_move(&mut self, at: HostTime) -> crate::locomotion::MoveReading {
+        self.need_session("an action read");
+        if !self.synced_this_frame {
+            self.violate("a locomotion read before xrSyncActions this frame");
+        }
+        (self.move_script)(at)
     }
 
     fn acquire_image(&mut self) -> Result<ImageIndex, XrError> {

@@ -92,6 +92,36 @@ pub trait HandFeed: Send + Sync {
     fn hand_at(&self, hand: Hand, at: HostTime) -> Option<HandInput>;
 }
 
+/// One sample of the local player's locomotion (friend-test locomotion; refound-plan.md piece 7). pe-xr's actions or
+/// the desktop's keys write it, and the simulation thread reads it once a frame into the member's `Move` entry
+/// (pe-world). Raw values only, never a derived velocity, so a controller can be wrapped later (the trinket seam).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MoveInput {
+    pub sampled_at: HostTime,
+    /// The movement stick after its dead zone: x right, y forward, each in -1..=1, and zero at rest.
+    pub stick: [f32; 2],
+    /// The yaw the stick is relative to, in the rig frame: radians about +Y, 0 facing -Z, positive turning left. The
+    /// head's for head-relative movement, the left controller's for hand-relative.
+    pub stick_yaw: f32,
+    /// The cumulative heading the player has asked for, a wrapping angle (2^32 is one turn, positive turning left).
+    /// The local side integrates snaps and smooth turns into it at the display's rate. The simulation only reads it,
+    /// so a lost or thinned sample heals at the next (@fable-reviewer's yaw fix).
+    pub heading: u32,
+    /// Jump presses so far, wrapping. Each increase is one jump, a one-shot value the simulation applies once.
+    pub jumps: u32,
+    /// The head's pose in the rig frame. With room-scale walking it moves the body (refound-plan.md piece 7).
+    pub head: RigPose,
+    /// Whether the head pose is valid now. When false, `head` is the last valid one.
+    pub tracked: bool,
+}
+
+/// Written by pe-xr (or the desktop's keys), read by the simulation thread.
+pub trait MoveFeed: Send + Sync {
+    /// The local player's locomotion for a simulation frame's host time. `None` while there is none: no headset and
+    /// no desktop movement.
+    fn move_at(&self, at: HostTime) -> Option<MoveInput>;
+}
+
 // ---- the view ------------------------------------------------------------------------------------------------------
 
 /// The local player's rig in the world: an exact position, a rotation and a uniform scale (the player's scale).

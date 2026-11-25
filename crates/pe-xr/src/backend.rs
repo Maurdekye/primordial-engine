@@ -126,6 +126,12 @@ pub trait Backend {
     fn read_pointer(&mut self, _hand: Hand, _at: HostTime) -> crate::pointer::PointerReading {
         crate::pointer::PointerReading::default()
     }
+    /// The locomotion actions and the head at a host time (spec 5.8): the left stick, the right stick's x, the right
+    /// A button, and the VIEW space in the rig frame. Read after [`Self::sync_actions`]. Default: nothing (a backend
+    /// without locomotion).
+    fn read_move(&mut self, _at: HostTime) -> crate::locomotion::MoveReading {
+        crate::locomotion::MoveReading::default()
+    }
     /// Each hand's current interaction profile (left, right), for the diagnostic log: "none" while the runtime
     /// has none. `None` where the backend can't tell.
     fn interaction_profiles(&self) -> Option<[String; 2]> {
