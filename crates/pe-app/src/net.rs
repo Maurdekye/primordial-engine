@@ -1564,11 +1564,32 @@ mod tests {
         // pe-agree over pe-net: each sees the other's hands, and cuts become final.
         let host = crate::clock::shared();
         let (mut sims, feeds) = joined_pair(&host);
-        // Run both in real time to 2 s after frame 0.
-        let end = Instant::now() + Duration::from_millis(1500 + 2500);
+        // Where each machine's view should have the other's right hand: its fed pose, 0.2 m right.
+        let want = |i: usize| {
+            let feed = feeds[1 - i];
+            let at = [f64::from(feed[0]) + 0.2, f64::from(feed[1]), f64::from(feed[2])];
+            pe_seams::Pos::ORIGIN.checked_add(pe_seams::Offset(at)).expect("in range")
+        };
+        let seen = |sims: &[Machine], i: usize| {
+            let them = sims[1 - i].2;
+            sims[i].1.newest().is_some_and(|v| {
+                v.objects
+                    .iter()
+                    .find(|o| o.hand_of == Some((them, Hand::Right)))
+                    .is_some_and(|o| (o.pos - want(i)).0.iter().all(|c| c.abs() < 1e-3))
+            })
+        };
+        // Run both in real time until each has a final cut and shows the other's right hand where it was fed, for at
+        // most 30 s: about 2 s after frame 0 on a quiet machine. A fixed 4 s window failed under a loaded parallel run,
+        // where the views trailed the present and nothing was final yet, so the other's hand entries hadn't arrived
+        // (two-pe-app-join-tests item: in integrator-1's job-652f32a9 run the hand was at its spawn place).
+        let end = Instant::now() + Duration::from_secs(30);
         while Instant::now() < end {
             for (sim, ..) in &mut sims {
                 let _ = sim.tick(host());
+            }
+            if (0..2).all(|i| sims[i].0.stats().finalized > 0 && seen(&sims, i)) {
+                break;
             }
             std::thread::sleep(Duration::from_millis(4));
         }
