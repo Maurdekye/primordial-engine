@@ -1137,8 +1137,12 @@ world-model.md 3.2 says what a bullet means; this is the solver's side [V `crate
   - At the floor, a pair that approaches is answered once. One that doesn't, but could close the rest of the way
     across the thinner core before the sub-step ends, keeps only each body's motion apart along the contact normal:
     a translation along the distance's gradient, which never shortens it. So the contact solver's push-out goes
-    ahead. If neither body moves apart, both are held. A pair that can't close that far is left to the contact
-    solver.
+    ahead. If neither body moves apart, both are held. A pair that can't close that far, or can't close at all, is
+    left to the contact solver.
+  - A pair that began the piece inside each other (the cores' clouds overlap, or the cores overlap deeper than the
+    floor and a band) is the contact solver's: a spawn, a teleport or an edit put it there, which no sweep made and
+    none can undo [V test: bullets started 3 cm and 20 cm inside a static and a sleeping box are pushed out with no
+    hold; @design-reviewer's M1 on d78fdfc0].
   - Each step of the advancement is the longer of two safe ones: over the pair's closing speed in any direction, and
     over its closing speed along the contact normal, which a slide along the contact doesn't shorten.
   - Resting and sliding contact stays the contact solver's: a resting or sliding bullet raises no sweep event and
