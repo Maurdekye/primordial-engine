@@ -13,7 +13,8 @@
 //!    (a separating plane's gap; GJK's witness distance is an upper bound). The earliest impact over all pairs is
 //!    handled first: both bodies move to it, take a two-body impulse at the contact point (the pair's mixed friction
 //!    and restitution), and their pairs are swept again on the rest of the sub-step. A swept body deflected out of
-//!    every box a search covered is searched again, and every one again when a body's reach grows.
+//!    every box a search covered is searched again, and every one again when a body's reach grows. A candidate a
+//!    search turned away because the two paths didn't meet is looked at again when either body's piece changes.
 //! 3. A fixed number of distance queries per sub-step ([`World::swept_iteration_budget`]) bounds the work. When it
 //!    runs out, every body connected through candidate pairs to a pair not yet proven safe is held at the set's last
 //!    time proven safe.
@@ -91,6 +92,8 @@ pub struct SweptCounters {
     pub deferred: i32,
     /// Searches run again after a deflection left every box a search covered, or a body's reach grew.
     pub researches: i32,
+    /// Body pairs a search had turned away, looked at again after a piece changed.
+    pub reconsidered: i32,
 }
 
 /// [`Level::Deep`]'s band: a quarter slop, or a quarter of the thinner core's half-extent if that is less.
@@ -161,6 +164,13 @@ struct Mover {
     held: bool,
     /// Its piece changed this sub-step: the state is written back.
     changed: bool,
+    /// How many new pieces an impulse or a separation gave it this sub-step ([`Culled::other_pieces`]).
+    pieces: u32,
+    /// The heads of its lists of [`Culled`] entries: those its own searches made, and those naming it as `other`.
+    culled_by: u32,
+    culled_from: u32,
+    /// The latest search that kept an entry naming it as `other`: one entry a search.
+    culled_mark: u32,
     /// How far its farthest shape point is from its centre of mass.
     radius: f32,
 }
@@ -309,6 +319,25 @@ struct Pending {
     dw: Vec3,
 }
 
+/// A candidate a search turned away because the two bodies' paths' boxes didn't meet then ([`SweptPass::consider`]).
+/// A later piece of either body can meet the other's, so the pair is looked at again when one of them changes
+/// ([`SweptPass::reconsider`]). Kept only when `other` is awake and dynamic: no other body's piece changes within a
+/// sub-step.
+#[derive(Clone, Copy)]
+struct Culled {
+    /// The swept mover whose search turned it away, and the mover whose shape that search found.
+    searcher: usize,
+    other: usize,
+    /// `other`'s [`Mover::pieces`] when it was turned away.
+    other_pieces: u32,
+    /// The next entry with the same `searcher`, and the next with the same `other` ([`NO_ENTRY`]: none).
+    next_by_searcher: u32,
+    next_by_other: u32,
+}
+
+/// The end of a mover's list of [`Culled`] entries.
+const NO_ENTRY: u32 = u32::MAX;
+
 /// The pass of one step: [`SweptPass::find`] and [`SweptPass::resolve`] around each sub-step's `integrate positions`,
 /// then [`finish`] after the step.
 pub(super) struct SweptPass {
@@ -323,9 +352,15 @@ pub(super) struct SweptPass {
     /// How far any awake body can have moved from its broad-phase box by the end of the sub-step.
     reach: f32,
     /// This sub-step's searches since the reach last grew: the swept mover and the box searched (world frame, before
-    /// the reach). Each box was queried whole, so every shape a path inside it can meet is a candidate already; a
-    /// box bounding two of them was not (the corner between two legs of a deflected path).
+    /// the reach). Each box was queried whole, so a path inside it can meet only shapes that query found: each is a
+    /// candidate, or was turned away on paths that met nowhere and is kept in `culled` while the other body's piece
+    /// can still change. A box bounding two of them was not queried whole (the corner between two legs of a
+    /// deflected path).
     searched: Vec<(usize, Aabb)>,
+    /// This sub-step's turned-away candidates since the reach last grew ([`Culled`]).
+    culled: Vec<Culled>,
+    /// Counts this sub-step's searches, for [`Mover::culled_mark`].
+    search_serial: u32,
     budget: i32,
     /// `resolve` is under way: the awake states already hold the sub-step's end.
     resolving: bool,
@@ -349,6 +384,8 @@ impl SweptPass {
             held_for_step: Vec::new(),
             reach: 0.0,
             searched: Vec::new(),
+            culled: Vec::new(),
+            search_serial: 0,
             budget: 0,
             resolving: false,
             h: context.h,
@@ -370,6 +407,8 @@ impl SweptPass {
         self.movers.clear();
         self.pairs.clear();
         self.searched.clear();
+        self.culled.clear();
+        self.search_serial = 0;
         self.budget = world.swept_iteration_budget;
         self.resolving = false;
 
@@ -460,6 +499,10 @@ impl SweptPass {
             dw,
             held,
             changed: held && self.resolving,
+            pieces: 0,
+            culled_by: NO_ENTRY,
+            culled_from: NO_ENTRY,
+            culled_mark: 0,
             radius,
         });
         let index = self.movers.len() - 1;
@@ -502,6 +545,7 @@ impl SweptPass {
         let t = from.unwrap_or(0.0);
         let path = self.path_box(world, m, t, predicted);
         self.searched.push((m, path));
+        self.search_serial += 1;
         let wide = aabb_inflate(path, self.reach);
         let mut found: Vec<i32> = Vec::new();
         for (tree, query) in [(BodyType::Static, path), (BodyType::Kinematic, wide), (BodyType::Dynamic, wide)] {
@@ -519,7 +563,7 @@ impl SweptPass {
             let own = &world.shapes[shape_id as usize];
             if own.sensor_index == NULL_INDEX && convex(own) {
                 for &other in &found {
-                    self.consider(world, states, m, shape_id, other, t, path, predicted);
+                    self.consider(world, states, m, shape_id, other, t, path, predicted, true);
                 }
             }
             shape_id = own.next_shape_id;
@@ -528,7 +572,8 @@ impl SweptPass {
 
     /// Adds the pair of swept mover `m`'s `shape_id` and shape `other` if they collide at all and their paths' boxes
     /// overlap. A pair found after the sub-step's start begins at `t`: before it, both bodies were on pieces an
-    /// earlier search covered.
+    /// earlier search covered, or that an earlier look turned away. A search (`keep`) keeps what its path test turns
+    /// away ([`Culled`]).
     #[allow(clippy::too_many_arguments)]
     fn consider(
         &mut self,
@@ -540,6 +585,7 @@ impl SweptPass {
         t: f32,
         path: Aabb,
         predicted: bool,
+        keep: bool,
     ) {
         let own = &world.shapes[shape_id as usize];
         let shape = &world.shapes[other as usize];
@@ -576,6 +622,9 @@ impl SweptPass {
         let Some(n) = self.mover(world, states, other_body) else { return };
         let other_path = self.path_box(world, n, t, predicted);
         if !aabb_overlaps(path, other_path) {
+            if keep {
+                self.keep_culled(m, n);
+            }
             return;
         }
         let (a, b) = if body_id < other_body { (m, n) } else { (n, m) };
@@ -925,6 +974,9 @@ impl SweptPass {
                 self.separate(b, t, normal);
                 self.restart(a, t);
                 self.restart(b, t);
+                // The motion apart along the normal can leave every box the bodies' searches covered.
+                self.after_deflection(world, states, a, t);
+                self.after_deflection(world, states, b, t);
                 return;
             }
         };
@@ -1089,6 +1141,7 @@ impl SweptPass {
         mv.w = w;
         mv.held = false;
         mv.changed = true;
+        mv.pieces += 1;
         self.restart(m, t);
     }
 
@@ -1125,6 +1178,7 @@ impl SweptPass {
         mv.d2 = mul_add(d, along, away);
         mv.q2 = q;
         mv.changed = true;
+        mv.pieces += 1;
         self.counters.holds += 1;
     }
 
@@ -1140,9 +1194,11 @@ impl SweptPass {
         }
     }
 
-    /// After mover `m` was deflected at `t`: a swept body's new path is searched again unless one box searched since
-    /// the reach last grew contains it. If any body's new path reaches farther than the reach every search allowed,
-    /// the reach grows, the boxes searched within the smaller one stop counting, and every swept body is searched again.
+    /// After mover `m` was deflected or separated at `t`: a swept body's new path is searched again unless one box
+    /// searched since the reach last grew contains it, and the candidates turned away on its old path are looked at
+    /// again ([`SweptPass::reconsider`]). If any body's new path reaches farther than the reach every search allowed,
+    /// the reach grows, the boxes searched and the candidates turned away within the smaller one stop counting, and
+    /// every swept body is searched again.
     fn after_deflection(&mut self, world: &World, states: &[BodyState], m: usize, t: f32) {
         let mv = self.movers[m];
         if mv.state_index == NULL_INDEX || mv.held {
@@ -1156,8 +1212,14 @@ impl SweptPass {
         if reach > self.reach {
             self.reach = reach;
             self.counters.researches += 1;
-            // Those boxes' kinematic and dynamic queries reached only as far as the smaller reach.
+            // Those boxes' kinematic and dynamic queries reached only as far as the smaller reach. The searches below
+            // find and turn away afresh.
             self.searched.clear();
+            self.culled.clear();
+            for mover in &mut self.movers {
+                mover.culled_by = NO_ENTRY;
+                mover.culled_from = NO_ENTRY;
+            }
             for s in 0..self.movers.len() {
                 if self.movers[s].swept {
                     self.search(world, states, s, Some(t));
@@ -1172,6 +1234,68 @@ impl SweptPass {
                 self.counters.researches += 1;
                 self.search(world, states, m, Some(t));
             }
+        }
+        self.reconsider(world, states, m, t);
+    }
+
+    /// Keeps swept mover `m`'s search's turned-away candidate on mover `n` ([`Culled`]): once a search, and only when
+    /// `n` is awake and dynamic, so that its piece can still change.
+    fn keep_culled(&mut self, m: usize, n: usize) {
+        let other = self.movers[n];
+        if other.state_index == NULL_INDEX || other.fixed || other.culled_mark == self.search_serial {
+            return;
+        }
+        let at = self.culled.len() as u32;
+        self.culled.push(Culled {
+            searcher: m,
+            other: n,
+            other_pieces: other.pieces,
+            next_by_searcher: self.movers[m].culled_by,
+            next_by_other: other.culled_from,
+        });
+        self.movers[m].culled_by = at;
+        self.movers[n].culled_from = at;
+        self.movers[n].culled_mark = self.search_serial;
+    }
+
+    /// Mover `m`'s piece changed at `t`: the candidates turned away on the old pieces are looked at again on the
+    /// paths from `t`. Every one naming `m` as `other` is (its old path was what kept them apart), and every one `m`'s
+    /// own searches turned away whose other body has had a new piece since. The rest stand: `m`'s new path lies in a
+    /// box its searches covered or is searched again, and the other body's path is still inside the one the search
+    /// turned away.
+    fn reconsider(&mut self, world: &World, states: &[BodyState], m: usize, t: f32) {
+        let mut e = self.movers[m].culled_from;
+        while e != NO_ENTRY {
+            let c = self.culled[e as usize];
+            self.consider_bodies(world, states, c.searcher, m, t);
+            e = c.next_by_other;
+        }
+        let mut e = self.movers[m].culled_by;
+        while e != NO_ENTRY {
+            let c = self.culled[e as usize];
+            if self.movers[c.other].pieces != c.other_pieces {
+                self.consider_bodies(world, states, m, c.other, t);
+            }
+            e = c.next_by_searcher;
+        }
+    }
+
+    /// Considers every pair of swept mover `s`'s shapes and mover `n`'s from `t`, as a search would, keeping nothing
+    /// it turns away (the entry that brought it here stands).
+    fn consider_bodies(&mut self, world: &World, states: &[BodyState], s: usize, n: usize, t: f32) {
+        self.counters.reconsidered += 1;
+        let path = self.path_box(world, s, t, false);
+        let mut own_id = world.bodies[self.movers[s].body_id as usize].head_shape_id;
+        while own_id != NULL_INDEX {
+            let own = &world.shapes[own_id as usize];
+            if own.sensor_index == NULL_INDEX && convex(own) {
+                let mut other_id = world.bodies[self.movers[n].body_id as usize].head_shape_id;
+                while other_id != NULL_INDEX {
+                    self.consider(world, states, s, own_id, other_id, t, path, false, false);
+                    other_id = world.shapes[other_id as usize].next_shape_id;
+                }
+            }
+            own_id = own.next_shape_id;
         }
     }
 
