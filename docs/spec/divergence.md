@@ -1,6 +1,7 @@
 # Divergence and recovery (WS-diverge)
 
-Status: v1.10, 2026-11-10. Approved as a design by @design-reviewer, after their review of v0
+Status: v1.11, 2026-11-25 (v1.11: `T_peer` 1 s and record replies under `T_join_peer`, 4.2; K4 R4').
+v1.10, 2026-11-10. Approved as a design by @design-reviewer, after their review of v0
 (bf94698), @vdw-physics's answer on R-H1 and the coordinator's rulings of 20:40Z. v1.6 records the user's answers
 of about 19:45Z (file 14 section 8). v1.7 adds section 9.6, from the rulings of
 19:50-19:59Z (files 18-20). Owner: @diverge-eng (WS-diverge). Reviewers: @design-reviewer, then @shader-reviewer.
@@ -238,6 +239,18 @@ equals the quorum's root. Throughout, the machine keeps simulating and drawing: 
   after it served the nodes and records now holds the repair up to `T_join_peer` per attempt, not `T_peer`. At
   `n = 2` there is no other source, so nothing is lost; at `n > 2` it slows the switch to another source, though
   only after this one answered the earlier phases, so it was alive (@design-reviewer's note on F1).
+- **Record replies wait `T_join_peer` too** [C]. A reply carries up to `reply_budget` of records
+  with the blobs their rows reference, and pe-net delivers a stream only whole: a 960 KiB simulation blob alone
+  takes about 8 s at 1 Mbit/s, past `T_peer`. Under `T_join_peer`, a reply with such a blob arrives in time from
+  about 1.6 Mbit/s up. **A limit [I]:** on a slower link, a repair whose records carry a blob that size fails the
+  rung at every attempt, as F1's images did before their wait was raised. The friend test's scenes have no mesh
+  colliders. Node replies keep `T_peer`.
+- **`T_peer` is 1 s** [C; V, @engine-architect's K4 R4']. At 250 ms, every request on a link with
+  about 240 ms of round trip timed out before its reply came (40-120 ms each way with jitter: 80 stale replies),
+  and the reply then landed in the next attempt. The rest of that run's failures were pe-net's delay guard holding
+  Repair for up to `W_base` after the delay rose; Repair is out from under it since transport.md draft 1.13 (4.3).
+  The cost: a silent source at `n > 2` is left after 1 s, not 250 ms [V `tests/ladder.rs`
+  `a_root_split_at_n_2_cures_by_rung_2_over_a_300_ms_round_trip`, red at 250 ms].
 - **While the replica imports, every part is in hand.** A late answer from the source then (an earlier attempt's
   `NotHeld` or `Busy`, crossing the image it already sent) is stale, never a source fault: before, it dropped the
   repair while the replica finished the import anyway [I, @engine-architect, race (d)].
@@ -453,7 +466,7 @@ brancher once its `Branch` entry is published, and on the rejoiner before it res
      forgets the votes that kept it, and the reference must still serve it when a rung 2 toward it asks, which can
      be before the reference's own pick has asked (@item:primordial-engine/at-n-2-a-root-split-s-first-rung-2-repair-fails-t).
      If it answers `Pending`, it is asked again each tick. While the member cannot serve that root yet, its replay
-     still running or its root still `Pending`, it answers a request for it `Busy` for `t_peer`, not `NotHeld`: at
+     still running or its root still `Pending`, it answers a request for it `Busy` for 250 ms, not `NotHeld`: at
      `n = 2` the reference is a rung 2's only source, and a `NotHeld` would fail the rung (@design-reviewer's L1, L2).
      A replay or repair that a root split at a newer cut overtakes is no failure: the work moves to the newer split,
      `Diverge::notes` says so for the log, and `split_overtook` counts it (a join's import still fails the join, 4.5).
@@ -1569,7 +1582,7 @@ mid-session never moves a bound that is already running [design-reviewer].
 | `T_keep` | Age of the final cuts whose roots are kept and served (and at least the last 2 cuts) | 1.5 s |
 | `W_fg` | Deepest replay run in the foreground | 2 s: the old speculation window, `2 * hz` frames at any rate [V `spikes/session-sim/src/r18.rs:108`] |
 | `T_module` | How long a rung-2 repair waits for a module it lacks before it restarts and counts `ModuleMissing` (4.2) | Over the `n` modules a repair lacks: `W_fg + ΣS / R_thin + n T_build`, with `R_thin` = 1 KB/s and `T_build` = 20 s; 211 s for the 6.4k-line benchmark guest alone, 23 s for the lamp. Until R-L1, a deadline recomputed as the source trees' nodes name lengths, with `W_fg` per tree level (4.2) [C; sizes V, times I] |
-| `T_peer` | Wait for a repair source before trying the next | 4 round-trip times, at least 100 ms |
+| `T_peer` | Wait for a repair source's node reply before trying the next (record replies and the physics image wait `T_join_peer`, 4.2) | 1 s [C]: a round trip on an internet path with jitter; 250 ms failed every repair at about 240 ms of RTT (K4 R4') |
 | `T_join_peer` | A join's wait for its source (4.5), and the least time before a donor serves one peer the same physics image again | 5 s [V: the two-process demo joined with it, @engine-architect] |
 | `T_join` | A join's deadline from its start: until then its sources are asked again in turn (4.5) | 25 s, inside pe-app's 30 s `T_join` step (app.md 4) |
 | `N_descend` | Descents per rung-2 attempt | 3 |

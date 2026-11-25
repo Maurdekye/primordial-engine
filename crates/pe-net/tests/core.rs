@@ -811,3 +811,37 @@ fn a_duplicate_close_on_the_only_connection_is_an_ordinary_loss() {
     assert!(net.nodes[b].events.contains(&NetEvent::LinkDown { peer: ka }), "{:?}", net.nodes[b].events);
     assert!(!net.nodes[b].core.peers().contains(&ka));
 }
+
+/// @ticket:primordial-engine/pe-diverge-repair-fails-under-internet-like-late (K4 R4'): when a link's delay rises
+/// mid-session, as a route change or Wi-Fi jitter does, a Repair message still goes out at once and arrives about one
+/// one-way delay later. The delay guard held it until `base_rtt`'s window (`W_base`, 30 s) rolled past the faster
+/// samples: 30.6 s, while every repair at n = 2 timed out.
+#[test]
+fn a_repair_message_arrives_about_one_delay_after_the_link_slows() {
+    let (mut net, a, b) = joined();
+    let (ka, kb) = (net.nodes[a].key, net.nodes[b].key);
+    // Both sides' hands: an Action message each way every frame.
+    let traffic = |net: &mut Net, ms: u32| {
+        for _ in 0..ms.div_ceil(16) {
+            net.nodes[a].core.send(kb, Lane::Action, Bytes::from(vec![1u8; 120]));
+            net.nodes[b].core.send(ka, Lane::Action, Bytes::from(vec![2u8; 120]));
+            net.run(16);
+        }
+    };
+    traffic(&mut net, 3_000);
+    net.delay_ms = 45;
+    let mut waits = Vec::new();
+    for _ in 0..20 {
+        let before = net.nodes[b].got.iter().filter(|r| r.lane == Lane::Repair).count();
+        net.nodes[a].core.send(kb, Lane::Repair, Bytes::from(vec![3u8; 200]));
+        let mut waited = 0;
+        while net.nodes[b].got.iter().filter(|r| r.lane == Lane::Repair).count() == before && waited < 5_000 {
+            traffic(&mut net, 16);
+            waited += 16;
+        }
+        waits.push(waited);
+        traffic(&mut net, 240);
+    }
+    // One way is 45 ms; the traffic loop steps 16 ms at a time, and a lost-and-resent stream packet would cost an RTO.
+    assert!(waits.iter().all(|w| *w <= 45 + 2 * 16), "Repair waits after the delay rose, ms: {waits:?}");
+}

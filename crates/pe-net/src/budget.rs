@@ -2,8 +2,8 @@
 //! endpoint observes (quinn's `cwnd` and RTTs, 4.1).
 //!
 //! - **The budget** is `cwnd / srtt` bytes per second (4.2).
-//! - **The delay guard** (4.3): Repair and Bulk send only while `srtt - base_rtt` is under `D_guard`; `base_rtt`
-//!   is the least RTT seen over the last `W_base`.
+//! - **The delay guard** (4.3): Bulk sends only while `srtt - base_rtt` is under `D_guard`; `base_rtt` is the
+//!   least RTT seen over the last `W_base`. Repair is not under it (K4 R4').
 //! - **The ride gate** (4.2): redundant rides are on only while the delay guard holds, with a band (off at
 //!   `D_guard`, back on below `D_guard / 2`), and the budget is at least `K_redundant` times the reliable send
 //!   rate: the wire bytes of Protocol and Action messages first sent, over a one-second window that slides.
@@ -96,7 +96,7 @@ impl Budget {
         self.base_rtt().map_or(Duration::ZERO, |b| self.srtt.saturating_sub(b))
     }
 
-    /// The delay guard (4.3): may Repair and Bulk send now?
+    /// The delay guard (4.3): may Bulk send now? (Repair is not under it.)
     pub fn low_lanes_may_send(&self) -> bool {
         self.queueing_delay() < self.p.d_guard
     }

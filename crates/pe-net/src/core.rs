@@ -8,8 +8,8 @@
 //! (3); the close reasons (6.6); seam S4's `Transport`.
 //!
 //! **The budget** (4): datagrams go to quinn only while its send buffer has room, so priority holds above it
-//! (4.2); redundant rides follow the ride gate; Repair and Bulk streams start and continue only under the delay
-//! guard (4.3).
+//! (4.2); redundant rides follow the ride gate; Bulk streams start and continue only under the delay guard (4.3),
+//! Repair streams whenever their share of the stream credit allows.
 //!
 //! **The clock** (5): every connected peer gets a clock ping each `T_sample` (`T_sample_fast` while converging),
 //! answered with the session time; the answers are the clock's samples, and it ticks at the same cadence. A
@@ -192,8 +192,9 @@ struct Conn {
     superseded: bool,
     /// Incoming streams being read, with the bound their first byte sets.
     inbound: HashMap<StreamId, (Vec<u8>, usize)>,
-    /// Outgoing stream bytes quinn hasn't taken yet, and whether the stream is a low lane (Repair, Bulk).
-    outbound: VecDeque<(StreamId, Bytes, bool)>,
+    /// Outgoing stream bytes quinn hasn't taken yet, and the stream's priority (`open_stream`): under 2 a low lane
+    /// (Repair 1, Bulk 0), which shares half the peer's stream credit; under 1 Bulk, which the delay guard holds too.
+    outbound: VecDeque<(StreamId, Bytes, i32)>,
     /// Stream messages quinn can't open yet, the peer's `N_streams_in` credit being used up (3.5), with their
     /// priority: highest first, in order within one priority. They wait for the peer's MAX_STREAMS, which comes in a
     /// packet, so each `drive` retries them. Nothing is dropped.
@@ -770,13 +771,14 @@ impl Core {
             }
             // A lane message leaves its lane's queue only once nothing waits for a stream, so at most one is outside
             // it, and the lane order and the delay guard still apply to the rest (3.5). Repair and Bulk streams not
-            // yet fully handed to quinn (the delay guard holds them mid-write) keep at most half the peer's stream
+            // yet fully handed to quinn (the delay guard holds Bulk mid-write) keep at most half the peer's stream
             // credit, so Protocol and Action always have the other half (both sides run one build, so the peer's
-            // `N_streams_in` is ours; @design-reviewer's Low 1 on 9e71ac4c).
+            // `N_streams_in` is ours; @design-reviewer's Low 1 on 9e71ac4c). Repair is not under the delay guard
+            // (4.3): a guard that held it for `W_base` after a rise in delay failed every repair at n = 2 (K4 R4').
             let low_cap = (self.cfg.n_streams_in / 2).max(1) as usize; // at least 1, or a limit of 0-1 never sends low
             while c.unopened.is_empty()
                 && let Some((lane, seq, bytes)) =
-                    c.link.poll_stream(low && c.outbound.iter().filter(|o| o.2).count() < low_cap)
+                    c.link.poll_stream(c.outbound.iter().filter(|o| o.2 < 2).count() < low_cap, low)
             {
                 let mut b = vec![lane as u8];
                 put_varint(&mut b, seq);
@@ -1174,17 +1176,17 @@ fn open_waiting(c: &mut Conn) {
             break;
         };
         let _ = c.q.send_stream(id).set_priority(priority);
-        c.outbound.push_back((id, bytes, priority < 2));
+        c.outbound.push_back((id, bytes, priority));
     }
 }
 
-/// Hand quinn what it takes now; finish each stream when its bytes are all in. Repair and Bulk streams wait
-/// while the delay guard is closed (`low` false), even halfway through.
+/// Hand quinn what it takes now; finish each stream when its bytes are all in. Bulk streams wait while the delay
+/// guard is closed (`low` false), even halfway through; Repair's don't (4.3).
 fn flush_streams(c: &mut Conn, low: bool) {
     let mut i = 0;
     while i < c.outbound.len() {
-        let (id, rest, is_low) = &mut c.outbound[i];
-        if *is_low && !low {
+        let (id, rest, priority) = &mut c.outbound[i];
+        if *priority < 1 && !low {
             i += 1;
             continue;
         }

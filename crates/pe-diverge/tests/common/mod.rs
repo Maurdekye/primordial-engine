@@ -891,6 +891,9 @@ pub struct Peer {
     /// This peer's `PhysicsReply` messages reach their requester this many frames late (a large image, a slow link
     /// or a saturated requester: the M1 redo's F1).
     pub physics_delay: u64,
+    /// Every repair-lane message this peer sends reaches its receiver this many frames late (a link's one-way delay;
+    /// K4 R4': 40 ms each way is between 2 and 3 frames at 60 Hz).
+    pub link_delay: u64,
 }
 
 pub struct Net {
@@ -939,6 +942,7 @@ impl Net {
                 verdict_delay: 0,
                 skip_splits: 0,
                 physics_delay: 0,
+                link_delay: 0,
             })
             .collect();
         Net {
@@ -1094,8 +1098,11 @@ impl Net {
                 for o in p.d.tick(now, &Clock, &mut p.r, &mut p.src) {
                     let m = Msg::decode(&o.bytes);
                     if let (Ok(Msg::PhysicsReply { image, .. }), true) = (&m, p.physics_delay > 0) {
-                        self.physics_log.push((frame, frame + p.physics_delay, image.bytes.len()));
-                        self.delayed.push((frame + p.physics_delay, p.key, o.to, o.bytes.to_vec()));
+                        let due = frame + p.physics_delay + p.link_delay;
+                        self.physics_log.push((frame, due, image.bytes.len()));
+                        self.delayed.push((due, p.key, o.to, o.bytes.to_vec()));
+                    } else if p.link_delay > 0 {
+                        self.delayed.push((frame + p.link_delay, p.key, o.to, o.bytes.to_vec()));
                     } else {
                         batch.push((p.key, o.to, o.bytes.to_vec()));
                     }

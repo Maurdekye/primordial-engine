@@ -306,12 +306,18 @@ impl Link {
     }
 
     /// The next message for the stream path, in lane priority; `None` when there is none. Repair and Bulk only if
-    /// `low` (the delay guard, 4.3, holds).
-    pub fn poll_stream(&mut self, low: bool) -> Option<(Lane, u64, Bytes)> {
+    /// `low_room` (their share of the peer's stream credit, 3.5), and Bulk only if `bulk` too (the delay guard, 4.3,
+    /// holds).
+    pub fn poll_stream(&mut self, low_room: bool, bulk: bool) -> Option<(Lane, u64, Bytes)> {
         if !self.open_send {
             return None;
         }
-        for lane in Lane::ALL.into_iter().filter(|l| low || !matches!(l, Lane::Repair | Lane::Bulk)) {
+        let may = |l: &Lane| match l {
+            Lane::Repair => low_room,
+            Lane::Bulk => low_room && bulk,
+            _ => true,
+        };
+        for lane in Lane::ALL.into_iter().filter(may) {
             if let Some((seq, b)) = self.streams[lane as usize].pop_front() {
                 return Some((lane, seq, b));
             }
@@ -727,7 +733,7 @@ mod tests {
         a.send(Lane::Action, Bytes::from_static(b"act"), MAX).unwrap();
         a.send(Lane::Bulk, Bytes::from_static(b"blob"), MAX).unwrap();
         a.send_control(Control::ClockPing { t1: 7 });
-        assert!(a.poll_stream(true).is_none());
+        assert!(a.poll_stream(true, true).is_none());
         let d = a.poll_datagram(ms(0), MAX, true).unwrap();
         let inc = b.on_datagram(ms(0), &d).unwrap();
         assert_eq!(inc.control, vec![Control::ClockPing { t1: 7 }]);
@@ -743,7 +749,7 @@ mod tests {
             vec![(Lane::Protocol, Bytes::from_static(b"early"))]
         );
         // Once open, a's queued action and blob go out.
-        assert!(a.poll_stream(true).is_some());
+        assert!(a.poll_stream(true, true).is_some());
         b.set_open(true, true);
         let d = a.poll_datagram(ms(1_001), MAX, true).unwrap();
         assert_eq!(b.on_datagram(ms(1_001), &d).unwrap().messages, vec![(Lane::Action, Bytes::from_static(b"act"))]);
@@ -778,8 +784,15 @@ mod tests {
         a.send(Lane::Bulk, Bytes::from(vec![0u8; 10]), MAX).unwrap();
         a.send(Lane::Repair, Bytes::from(vec![0u8; 10]), MAX).unwrap();
         a.send(Lane::Action, Bytes::from(vec![0u8; 900]), MAX).unwrap(); // over half a datagram
-        let order: Vec<Lane> = std::iter::from_fn(|| a.poll_stream(true).map(|x| x.0)).collect();
+        let order: Vec<Lane> = std::iter::from_fn(|| a.poll_stream(true, true).map(|x| x.0)).collect();
         assert_eq!(order, vec![Lane::Action, Lane::Repair, Lane::Bulk]);
+        // The delay guard closed holds Bulk only; no room in the low lanes' stream share holds both (4.3, 3.5).
+        a.send(Lane::Bulk, Bytes::from(vec![0u8; 10]), MAX).unwrap();
+        a.send(Lane::Repair, Bytes::from(vec![0u8; 10]), MAX).unwrap();
+        assert!(a.poll_stream(false, true).is_none(), "no room: neither");
+        assert_eq!(a.poll_stream(true, false).map(|x| x.0), Some(Lane::Repair), "guard closed: Repair goes");
+        assert!(a.poll_stream(true, false).is_none(), "guard closed: Bulk waits");
+        assert_eq!(a.poll_stream(true, true).map(|x| x.0), Some(Lane::Bulk));
         let mut b = Link::new(LaneParams::default());
         assert!(b.on_stream(Lane::Action, 0, Bytes::new()).is_some());
         assert!(b.on_stream(Lane::Action, 0, Bytes::new()).is_none(), "once");
