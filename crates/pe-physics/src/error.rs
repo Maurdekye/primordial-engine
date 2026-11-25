@@ -23,6 +23,15 @@ pub enum PhysicsError {
     InvalidValue(&'static str),
     /// A hull could not be built from the points given.
     BadHull,
+    /// A mesh could not be built from the vertices and triangles given ([`crate::Mesh::new`]). The text says why.
+    BadMesh(&'static str),
+    /// A mesh or hull blob could not be read (world-model.md 3.2's formats). The text says why.
+    BadBlob(&'static str),
+    /// A dynamic body with a mesh shape whose shapes together have no mass (world-model.md 3.2: pe-replica's
+    /// `Unbuildable::Mass`): Box3D would give it no inverse mass, so it would answer no force. `dropped` counts the
+    /// triangles Box3D left out under the minimum area in the meshes they opened (closed as given, open as built);
+    /// 0 when no mesh was opened that way.
+    Massless { dropped: u32 },
     /// The world is stepping (only possible from a callback).
     Locked,
     /// A world image could not be read or does not fit this world.
@@ -47,6 +56,18 @@ impl std::fmt::Display for PhysicsError {
             PhysicsError::SameBody => write!(f, "both ends of the joint are the same body"),
             PhysicsError::InvalidValue(what) => write!(f, "invalid value: {what}"),
             PhysicsError::BadHull => write!(f, "could not build a convex hull from these points"),
+            PhysicsError::BadMesh(why) => write!(f, "could not build the mesh: {why}"),
+            PhysicsError::BadBlob(why) => write!(f, "could not read the blob: {why}"),
+            PhysicsError::Massless { dropped: 0 } => write!(
+                f,
+                "a dynamic body needs mass, and its shapes together have none: close the mesh, or add a primitive or \
+                 a hull with a density"
+            ),
+            PhysicsError::Massless { dropped } => write!(
+                f,
+                "{dropped} of the mesh's triangles are under the minimum area and were left out; without them the \
+                 mesh is open"
+            ),
             PhysicsError::Locked => write!(f, "the physics world is stepping"),
             PhysicsError::BadImage(why) => write!(f, "bad world image: {why}"),
             PhysicsError::Poisoned => write!(f, "a failed restore left the world unusable; restore a good image"),

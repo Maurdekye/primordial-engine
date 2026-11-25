@@ -3,6 +3,9 @@
 //! * [`PhysicsWorld`]: one Box3D world. Bodies are created from engine descriptions
 //!   ([`BodyDesc`], [`ShapeDesc`]) and bound to sim objects ([`ObjectId`]); the binding table is
 //!   sorted, so iteration order is the same on every peer.
+//! * Meshes ([`Mesh`]): built once from vertices and triangles or a mesh v1 blob ([`Mesh::from_blob`]; a hull v1
+//!   blob's points: [`hull_points_from_blob`]), shared by every shape that uses them ([`Geometry::Mesh`]), with
+//!   world-model.md 3.2's mass and an option for both sides.
 //! * Interactions: [`Push`] (impulses, forces, torques) and joints ([`JointDesc`] under
 //!   caller-chosen [`JointKey`]s, including grabs, D72).
 //! * World images ([`WorldImage`]): save and restore in place (rollback). Transfers
@@ -31,6 +34,7 @@ mod desc;
 mod digest;
 mod error;
 mod image;
+mod mesh;
 mod player;
 mod selftest;
 mod world;
@@ -43,6 +47,7 @@ pub use desc::{BodyDesc, BodyKind, Geometry, ShapeDesc, limits};
 pub use digest::BodyDigest;
 pub use error::PhysicsError;
 pub use image::{CheckHash, Transfer, WorldImage};
+pub use mesh::{Mesh, hull_points_from_blob};
 pub use pe_core::ids::ObjectId;
 pub use player::{Ground, MoverInput, PLAYER, PLAYER_CATEGORY, PlayerParams, PlayerState, Walk, walk, walk_axes};
 pub use selftest::{SELF_TEST_DT, SELF_TEST_FRAMES, SelfTestDigest, self_test_digest};

@@ -1707,7 +1707,8 @@ fn swept_shapes(world: &World, body_id: i32) -> bool {
     any
 }
 
-/// A shape this part sweeps: a sphere, capsule or hull. Meshes, height fields and compounds come with part 2.
+/// A shape this part sweeps: a sphere, capsule or hull. A body with a mesh, height field or compound shape is never
+/// swept itself; mesh triangles are its partners (part 2 A).
 fn convex(shape: &Shape) -> bool {
     matches!(shape.geometry, ShapeGeometry::Sphere(_) | ShapeGeometry::Capsule(_) | ShapeGeometry::Hull(_))
 }

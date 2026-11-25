@@ -10,8 +10,8 @@ use box3d_rust::body::{
     body_set_linear_velocity, body_set_target_transform, body_set_transform, create_body, destroy_body,
 };
 use box3d_rust::core::get_length_units_per_meter;
-use box3d_rust::geometry::{Capsule, ShapeType, Sphere};
-use box3d_rust::hull::{create_hull, get_hull_points, make_box_hull};
+use box3d_rust::geometry::{Capsule, ShapeType, Sphere, compute_capsule_mass, compute_sphere_mass};
+use box3d_rust::hull::{compute_hull_mass, create_hull, get_hull_points, make_box_hull};
 use box3d_rust::id::{BodyId, JointId, ShapeId};
 use box3d_rust::joint::{
     JointType, create_distance_joint, create_motor_joint, create_spherical_joint, create_weld_joint, destroy_joint,
@@ -21,12 +21,12 @@ use box3d_rust::joint::{
 };
 use box3d_rust::math_functions::{
     Pos, Quat, Transform as BoxTransform, Vec3, WorldTransform as BoxWorldTransform, inv_rotate_vector,
-    is_normalized_quat, rotate_vector, sub_pos, transform_world_point,
+    is_normalized_quat, mul, rotate_vector, sub_pos, transform_world_point,
 };
 use box3d_rust::recording::hash_world_state;
 use box3d_rust::shape::{
-    create_capsule_shape, create_hull_shape, create_sphere_shape, shape_get_body, shape_get_capsule, shape_get_hull,
-    shape_get_sphere, shape_get_type,
+    create_capsule_shape, create_hull_shape, create_mesh_shape, create_sphere_shape, shape_get_body, shape_get_capsule,
+    shape_get_hull, shape_get_mesh, shape_get_name, shape_get_sphere, shape_get_type,
 };
 use box3d_rust::solver::make_soft;
 use box3d_rust::types::{
@@ -257,33 +257,50 @@ fn mover_of(world: &World, shape: ShapeId) -> Option<(Vec3, Vec3, f32)> {
         }
         ShapeType::Hull => {
             let hull = shape_get_hull(world, shape)?;
-            let c = hull.center;
-            let (lo, hi) = (hull.aabb.lower_bound, hull.aabb.upper_bound);
-            let half = [0.5 * (hi.x - lo.x), 0.5 * (hi.y - lo.y), 0.5 * (hi.z - lo.z)];
-            let axis = (1..3).fold(0, |a, i| if half[i] > half[a] { i } else { a });
-            // Each point's place along the axis from the centre, and its distance from the axis.
-            let parts: Vec<(f32, f32)> = get_hull_points(hull)
-                .iter()
-                .map(|p| {
-                    let d = [p.x - c.x, p.y - c.y, p.z - c.z];
-                    let off: f32 = (0..3).filter(|&i| i != axis).map(|i| d[i] * d[i]).sum();
-                    (d[axis], off.sqrt())
-                })
-                .collect();
-            let radius = parts.iter().map(|&(_, r)| r).fold(0.0_f32, f32::max);
-            if !(radius.is_finite() && radius > 0.0) {
-                return None;
+            capsule_around(hull.center, hull.aabb.lower_bound, hull.aabb.upper_bound, get_hull_points(hull))
+        }
+        // A mesh as a hull: the capsule around its scaled vertices, about the centre of their box (world-model.md
+        // 3.2, "holding"). Every vertex Box3D keeps counts, used by a triangle or not, which only widens it.
+        ShapeType::Mesh => {
+            let (data, scale) = shape_get_mesh(world, shape)?;
+            let points: Vec<Vec3> = data.vertices.iter().map(|&p| mul(scale, p)).collect();
+            let first = *points.first()?;
+            let (mut lo, mut hi) = (first, first);
+            for p in &points {
+                lo = Vec3 { x: lo.x.min(p.x), y: lo.y.min(p.y), z: lo.z.min(p.z) };
+                hi = Vec3 { x: hi.x.max(p.x), y: hi.y.max(p.y), z: hi.z.max(p.z) };
             }
-            // Long enough that every point is within `radius` of the segment.
-            let length =
-                parts.iter().map(|&(t, r)| t.abs() - (radius * radius - r * r).max(0.0).sqrt()).fold(0.0_f32, f32::max);
-            let mut u = [0.0_f32; 3];
-            u[axis] = 1.0;
-            let end = |k: f32| Vec3 { x: c.x + k * u[0], y: c.y + k * u[1], z: c.z + k * u[2] };
-            Some((end(-length), end(length), radius))
+            let c = Vec3 { x: 0.5 * (lo.x + hi.x), y: 0.5 * (lo.y + hi.y), z: 0.5 * (lo.z + hi.z) };
+            capsule_around(c, lo, hi, &points)
         }
         _ => None,
     }
+}
+
+/// The smallest capsule about `c`, along the longest side of the box `lo`..`hi`, that holds every one of `points`.
+fn capsule_around(c: Vec3, lo: Vec3, hi: Vec3, points: &[Vec3]) -> Option<(Vec3, Vec3, f32)> {
+    let half = [0.5 * (hi.x - lo.x), 0.5 * (hi.y - lo.y), 0.5 * (hi.z - lo.z)];
+    let axis = (1..3).fold(0, |a, i| if half[i] > half[a] { i } else { a });
+    // Each point's place along the axis from the centre, and its distance from the axis.
+    let parts: Vec<(f32, f32)> = points
+        .iter()
+        .map(|p| {
+            let d = [p.x - c.x, p.y - c.y, p.z - c.z];
+            let off: f32 = (0..3).filter(|&i| i != axis).map(|i| d[i] * d[i]).sum();
+            (d[axis], off.sqrt())
+        })
+        .collect();
+    let radius = parts.iter().map(|&(_, r)| r).fold(0.0_f32, f32::max);
+    if !(radius.is_finite() && radius > 0.0) {
+        return None;
+    }
+    // Long enough that every point is within `radius` of the segment.
+    let length =
+        parts.iter().map(|&(t, r)| t.abs() - (radius * radius - r * r).max(0.0).sqrt()).fold(0.0_f32, f32::max);
+    let mut u = [0.0_f32; 3];
+    u[axis] = 1.0;
+    let end = |k: f32| Vec3 { x: c.x + k * u[0], y: c.y + k * u[1], z: c.z + k * u[2] };
+    Some((end(-length), end(length), radius))
 }
 
 /// `v` shortened to at most `reach` along its own direction (`v` itself if it is within it).
@@ -295,6 +312,16 @@ fn within(v: Vec3, reach: f32) -> Vec3 {
     } else {
         v
     }
+}
+
+/// The name of a mesh shape's back ([`Geometry::Mesh`]'s `both_sides`): the second Box3D shape, the same triangles
+/// reversed, made right after its front. Box3D keeps shape names in its images (by a hash of the name), so a restored
+/// world knows its backs; a back shares its front's place in [`BodyDesc::shapes`].
+pub(crate) const BACK_NAME: &str = "pe-physics: the back of the mesh shape before this one";
+
+/// Whether `shape` is a mesh shape's back ([`BACK_NAME`]).
+fn is_back(world: &World, shape: ShapeId) -> bool {
+    shape_get_type(world, shape) == ShapeType::Mesh && shape_get_name(world, shape) == BACK_NAME
 }
 
 fn check_length_units() -> Result<(), PhysicsError> {
@@ -363,7 +390,9 @@ impl PhysicsWorld {
     // ---------------------------------------------------------------------------------------
 
     /// Create `id`'s body. Shapes are created in the order given, and the hull of a `Box` is
-    /// shared by every body with the same half extents (Box3D's hull database interns it).
+    /// shared by every body with the same half extents (Box3D's hull database interns it). A mesh shape with both
+    /// sides is two Box3D shapes, its front then its back. A dynamic body with a mesh shape is refused when its shapes
+    /// together have no mass ([`PhysicsError::Massless`]), before anything is created.
     pub fn add_body(&mut self, id: ObjectId, desc: &BodyDesc) -> Result<(), PhysicsError> {
         if id.is_none() {
             return Err(PhysicsError::NoneObject);
@@ -385,6 +414,47 @@ impl PhysicsWorld {
                 _ => None,
             });
         }
+        let has_mesh = desc.shapes.iter().any(|s| matches!(s.geometry, Geometry::Mesh { .. }));
+        for shape in &desc.shapes {
+            if let Geometry::Mesh { mesh, both_sides: true, .. } = &shape.geometry {
+                mesh.back().ok_or(PhysicsError::BadMesh("Box3D could not build the mesh's back"))?;
+            }
+        }
+        // A dynamic body with a mesh needs mass from its shapes together (world-model.md 3.2), as Box3D sums it: a
+        // shape of density 0 adds none, and the sum has mass if any shape has. Bodies without a mesh are built as
+        // before.
+        if desc.kind == BodyKind::Dynamic && has_mesh {
+            let mut mass = false;
+            let mut dropped = 0u32;
+            for (shape, hull) in desc.shapes.iter().zip(&hulls) {
+                let d = shape.density;
+                let m = match (&shape.geometry, hull) {
+                    _ if d == 0.0 => 0.0,
+                    (Geometry::Sphere { center, radius }, _) => {
+                        compute_sphere_mass(&Sphere { center: vec3(*center), radius: *radius }, d).mass
+                    }
+                    (Geometry::Capsule { center1, center2, radius }, _) => {
+                        let capsule = Capsule { center1: vec3(*center1), center2: vec3(*center2), radius: *radius };
+                        compute_capsule_mass(&capsule, d).mass
+                    }
+                    (Geometry::Mesh { mesh, scale, .. }, _) => {
+                        if mesh.is_blob_closed() && !mesh.is_closed() {
+                            dropped += mesh.dropped() as u32;
+                        }
+                        mesh.mass(*scale, d)
+                    }
+                    (_, Some(hull)) => compute_hull_mass(hull, d).mass,
+                    _ => unreachable!("hull built above"),
+                };
+                mass |= m > 0.0;
+            }
+            if !mass {
+                return Err(PhysicsError::Massless { dropped });
+            }
+        }
+        // A body with a mesh has its mass computed once, at its last shape: each update moves the centre of mass, so
+        // a body without one keeps Box3D's update at every shape, bit for bit as before.
+        let last = desc.shapes.len().wrapping_sub(1);
 
         let mut def = default_body_def();
         def.type_ = match desc.kind {
@@ -404,8 +474,9 @@ impl PhysicsWorld {
         def.enable_sleep = desc.enable_sleep;
         let body = create_body(&mut self.world, &def);
 
-        for (shape, hull) in desc.shapes.iter().zip(&hulls) {
+        for (k, (shape, hull)) in desc.shapes.iter().zip(&hulls).enumerate() {
             let mut sd = default_shape_def();
+            sd.update_body_mass = !has_mesh || k == last;
             sd.density = shape.density;
             sd.base_material.friction = shape.friction;
             sd.base_material.restitution = shape.restitution;
@@ -421,6 +492,24 @@ impl PhysicsWorld {
                 (Geometry::Capsule { center1, center2, radius }, _) => {
                     let capsule = Capsule { center1: vec3(*center1), center2: vec3(*center2), radius: *radius };
                     create_capsule_shape(&mut self.world, body, &sd, &capsule);
+                }
+                (Geometry::Mesh { mesh, scale, both_sides }, _) => {
+                    let scale = vec3(*scale);
+                    match mesh.back().filter(|_| *both_sides) {
+                        Some(back) => {
+                            // The front first, without the mass update; the back carries it if it is the last.
+                            let update = sd.update_body_mass;
+                            sd.update_body_mass = false;
+                            create_mesh_shape(&mut self.world, body, &sd, mesh.front(), scale);
+                            sd.update_body_mass = update;
+                            sd.density = 0.0;
+                            sd.name = BACK_NAME.to_string();
+                            create_mesh_shape(&mut self.world, body, &sd, back, scale);
+                        }
+                        None => {
+                            create_mesh_shape(&mut self.world, body, &sd, mesh.front(), scale);
+                        }
+                    }
                 }
                 (_, Some(hull)) => {
                     create_hull_shape(&mut self.world, body, &sd, hull);
@@ -899,7 +988,8 @@ impl PhysicsWorld {
     /// Whether static geometry lies in the way of `object` moving to `to`, for a placement that must not carry a held
     /// object through a wall (world-model.md 8.1). Each of the object's shapes is swept by the move of its own centre,
     /// keeping its rotation, with Box3D's mover cast against static shapes only: a sphere or capsule as itself, a hull
-    /// (a box) as the largest capsule inside it, about the hull's centre along the longest side of its bounding box.
+    /// (a box) or a mesh as the smallest capsule about its centre, along the longest side of its bounding box, that
+    /// holds every one of its points, a mesh's scaled vertices (see `mover_of`); a mesh's back is its front's shape.
     /// The mover cast passes a shape the object already touches or overlaps unless the move goes into it, so an object
     /// resting on the floor may slide along it. The answer is only yes or no, so the order in which Box3D visits shapes
     /// cannot change it.
@@ -915,6 +1005,9 @@ impl PhysicsWorld {
         let world = &self.world;
         let count = usize::try_from(body_get_shape_count(world, body)).unwrap_or(0);
         for shape in body_get_shapes(world, body, count) {
+            if is_back(world, shape) {
+                continue;
+            }
             let Some((c1, c2, radius)) = mover_of(world, shape) else {
                 continue;
             };
@@ -991,10 +1084,14 @@ impl PhysicsWorld {
     fn side(&self, shape: ShapeId) -> Option<(ObjectId, u32)> {
         let body = shape_get_body(&self.world, shape);
         let object = *self.objects.get(&body.index1)?;
-        // Box3D lists a body's shapes newest first.
-        let shapes = body_get_shapes(&self.world, body, crate::desc::limits::MAX_SHAPES_PER_BODY);
+        // Box3D lists a body's shapes newest first. A mesh shape's back (both sides) comes right after its front and
+        // shares its place: the place is how many fronts are older, less one for a back (its own front is older).
+        let count = usize::try_from(body_get_shape_count(&self.world, body)).unwrap_or(0);
+        let shapes = body_get_shapes(&self.world, body, count);
         let at = shapes.iter().position(|&s| s == shape)?;
-        Some((object, (shapes.len() - 1 - at) as u32))
+        let older_fronts = shapes[at + 1..].iter().filter(|&&s| !is_back(&self.world, s)).count();
+        let place = if is_back(&self.world, shape) { older_fronts.checked_sub(1)? } else { older_fronts };
+        Some((object, place as u32))
     }
 
     /// Box3D's state hash: every body's transform and velocities (the C reference's hash,

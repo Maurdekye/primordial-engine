@@ -12,6 +12,7 @@ use super::mesh_cull::{
 };
 use super::mesh_survivors::{collect_survivor_triangles, SurvivorTriangles};
 use super::{contact_flags, ContactCache, ContactGeometry, MeshContact};
+use crate::body::is_static_sim_index;
 use crate::constants::{linear_slop, mesh_rest_offset, MAX_POINTS_PER_TRIANGLE};
 use crate::core::NULL_INDEX;
 use crate::distance::SimplexCache;
@@ -92,8 +93,10 @@ pub(crate) fn compute_mesh_manifolds(
 
     let aabb_b = env.shapes[shape_b.id as usize].aabb;
     {
+        // Primordial Engine fork (CCD part 2 C): shape A's body is the mesh's; one that isn't static moves.
+        let mesh_moves = !is_static_sim_index(contact.encoded_body_sim_a);
         let mesh = mesh_contact_mut(&mut contact.geometry);
-        refresh_cache(mesh, shape_a, xf_a, aabb_b);
+        refresh_cache(mesh, shape_a, xf_a, aabb_b, mesh_moves);
     }
 
     let triangle_count = match &contact.geometry {

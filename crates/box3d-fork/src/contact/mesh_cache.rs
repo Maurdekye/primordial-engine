@@ -53,18 +53,23 @@ fn query_height_field_triangles(
 
 /// Refresh the per-contact triangle cache when the mover leaves query bounds.
 /// (b3RefreshCache)
+///
+/// Primordial Engine fork (CCD part 2 C): `mesh_moves` says the mesh's own body isn't static. The cached query
+/// bounds are in world space, and the triangles in them were found in the mesh's frame as it was then, so a mesh
+/// that moves has them found again each time; a static mesh keeps upstream's rule. See FORK.md.
 pub(crate) fn refresh_cache(
     mesh_contact: &mut MeshContact,
     shape_a: &Shape,
     xf_a: WorldTransform,
     bounds: Aabb,
+    mesh_moves: bool,
 ) {
     debug_assert!(
         shape_a.shape_type() == ShapeType::Mesh || shape_a.shape_type() == ShapeType::Height
     );
 
     // If the dynamic body didn't move out of the cached query bounds we are done!
-    if aabb_contains(mesh_contact.query_bounds, bounds) {
+    if !mesh_moves && aabb_contains(mesh_contact.query_bounds, bounds) {
         if let ShapeGeometry::Mesh { data, .. } = &shape_a.geometry {
             for cache in &mesh_contact.triangle_cache {
                 debug_assert!(
