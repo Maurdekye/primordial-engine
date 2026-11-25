@@ -525,6 +525,9 @@ impl PhysicsWorld {
             return Err(PhysicsError::BadImage("a joint's kind differs from its Box3D type"));
         }
         self.bodies = image.bodies.iter().copied().collect();
+        self.objects = self.bodies.iter().map(|(&id, &body)| (body.index1, id)).collect();
+        // The latest step's hits were of the replaced state.
+        self.world.contact_hit_events.clear();
         self.joints = image.joints.iter().map(|&(k, id, kind)| (k, JointEntry { id, kind })).collect();
         self.anchor = image.anchor;
         Ok(())

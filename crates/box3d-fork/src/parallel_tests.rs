@@ -124,3 +124,51 @@ fn snapshot_restores_across_worker_counts() {
     step(&mut fresh, 90);
     assert_eq!(hash_world_state(&fresh), expected, "fresh world, 3 workers");
 }
+
+/// Hit events with every shape asking for them: the same events, step by step, at every worker count. Each worker flags
+/// hits in its own task context during the store stage, and before every worker's bit set was sized a helper's first
+/// hit bit panicked (pe-physics turns hit events on for every shape).
+#[test]
+fn hit_events_same_for_every_worker_count() {
+    use crate::body::create_body;
+    use crate::hull::make_box_hull;
+    use crate::math_functions::Pos;
+    use crate::shape::create_hull_shape;
+    use crate::types::{default_body_def, default_shape_def, BodyType};
+
+    let events = |workers: i32| {
+        let mut world = world_with(workers);
+        let mut shape = default_shape_def();
+        shape.enable_hit_events = true;
+        let mut def = default_body_def();
+        def.position = Pos { x: 0.0 as _, y: -0.5 as _, z: 0.0 as _ };
+        let ground = create_body(&mut world, &def);
+        create_hull_shape(&mut world, ground, &shape, &make_box_hull(20.0, 0.5, 20.0).base);
+        // 120 boxes dropped from up to 3 m, enough awake bodies for the parallel solve.
+        for i in 0..120 {
+            let mut def = default_body_def();
+            def.type_ = BodyType::Dynamic;
+            def.position = Pos {
+                x: ((i % 12) as f32 * 0.6 - 3.3) as _,
+                y: (0.5 + (i / 12) as f32 * 0.3) as _,
+                z: ((i % 7) as f32 * 0.2) as _,
+            };
+            let id = create_body(&mut world, &def);
+            create_hull_shape(&mut world, id, &shape, &make_box_hull(0.2, 0.2, 0.2).base);
+        }
+        let mut all = Vec::new();
+        for _ in 0..120 {
+            world.step(1.0 / 60.0, 4);
+            for e in &world.contact_hit_events {
+                all.push((e.shape_id_a.index1, e.shape_id_b.index1, e.approach_speed.to_bits(), e.normal.x.to_bits()));
+            }
+            all.push((-1, -1, 0, 0));
+        }
+        all
+    };
+    let one = events(1);
+    assert!(one.iter().any(|e| e.0 >= 0), "the drop should give hits");
+    for &workers in &WORKER_COUNTS[1..] {
+        assert_eq!(events(workers), one, "{workers} workers");
+    }
+}

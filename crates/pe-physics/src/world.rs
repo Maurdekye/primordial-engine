@@ -52,6 +52,12 @@ pub(crate) fn pos(v: [f64; 3]) -> Pos {
     Pos { x: v[0] as _, y: v[1] as _, z: v[2] as _ }
 }
 
+/// [`pos`] the other way. The cast is the identity in the fork's default double-precision mode.
+#[allow(clippy::unnecessary_cast)]
+pub(crate) fn from_pos(p: Pos) -> [f64; 3] {
+    [p.x as f64, p.y as f64, p.z as f64]
+}
+
 /// A pose's position bounded and its rotation exactly as given, which must be unit length as
 /// Box3D judges it (`is_normalized_quat`): the exact setters never renormalize.
 fn exact_rotation(pose: &Pose) -> Result<Quat, PhysicsError> {
@@ -184,6 +190,24 @@ pub(crate) struct JointEntry {
     pub(crate) kind: JointKind,
 }
 
+/// A hard contact in the latest step, for impact sounds and never for play: Box3D's contact hit event, two shapes that
+/// approached along their normal at the world's hit threshold (1 m/s) or faster and took a normal impulse
+/// ([`PhysicsWorld::hits`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Hit {
+    /// The two bodies' objects, in Box3D's order for the contact.
+    pub a: ObjectId,
+    pub b: ObjectId,
+    /// Each shape's place in its body's [`BodyDesc::shapes`], for its material.
+    pub shape_a: u32,
+    pub shape_b: u32,
+    /// Where they met, in the physics world's frame, and the normal from `a` to `b`.
+    pub point: [f64; 3],
+    pub normal: [f32; 3],
+    /// How fast they approached along the normal, m/s.
+    pub speed: f32,
+}
+
 /// A Box3D world whose bodies belong to sim objects.
 ///
 /// * Bodies are created and destroyed only through this type, keyed by [`ObjectId`]. The
@@ -201,6 +225,9 @@ pub struct PhysicsWorld {
     pub(crate) world: World,
     pub(crate) config: PhysicsConfig,
     pub(crate) bodies: BTreeMap<ObjectId, BodyId>,
+    /// The bodies' objects by Box3D body index ([`BodyId::index1`]), for [`PhysicsWorld::hits`]: `bodies` the other
+    /// way, kept where it changes.
+    pub(crate) objects: BTreeMap<i32, ObjectId>,
     pub(crate) joints: BTreeMap<JointKey, JointEntry>,
     /// The static body grabs with no `a` attach to (created on first use).
     pub(crate) anchor: Option<BodyId>,
@@ -283,6 +310,7 @@ impl PhysicsWorld {
             world: World::new(&config.world_def()),
             config,
             bodies: BTreeMap::new(),
+            objects: BTreeMap::new(),
             joints: BTreeMap::new(),
             anchor: None,
             images: crate::image::ImageRegistry::default(),
@@ -378,6 +406,10 @@ impl PhysicsWorld {
             sd.base_material.friction = shape.friction;
             sd.base_material.restitution = shape.restitution;
             sd.base_material.rolling_resistance = shape.rolling_resistance;
+            // Hit events for impact sounds ([`PhysicsWorld::hits`]), on every shape on every machine whatever its
+            // sound setting: a rule of the physics version, since the flag is in the image and so in the check hash
+            // (@coordinator-opus). Reporting them changes no pose or velocity.
+            sd.enable_hit_events = true;
             match (&shape.geometry, hull) {
                 (Geometry::Sphere { center, radius }, _) => {
                     create_sphere_shape(&mut self.world, body, &sd, &Sphere { center: vec3(*center), radius: *radius });
@@ -393,6 +425,7 @@ impl PhysicsWorld {
             }
         }
         self.bodies.insert(id, body);
+        self.objects.insert(body.index1, id);
         Ok(())
     }
 
@@ -400,6 +433,7 @@ impl PhysicsWorld {
     pub fn remove_body(&mut self, id: ObjectId) -> Result<(), PhysicsError> {
         self.usable()?;
         let body = self.bodies.remove(&id).ok_or(PhysicsError::NotBound(id))?;
+        self.objects.remove(&body.index1);
         destroy_body(&mut self.world, body);
         // Box3D destroyed the attached joints; forget their keys.
         let world = &self.world;
@@ -925,6 +959,39 @@ impl PhysicsWorld {
 
     /// Box3D's state hash: every body's transform and velocities (the C reference's hash,
     /// which the spikes' traces record). Refused while poisoned.
+    /// The hard contacts of the latest step ([`Hit`]), in Box3D's order (contact id), so the same on every machine for
+    /// the same step. Empty before the first step and after an image is restored, until the next step. Reading them
+    /// changes nothing.
+    pub fn hits(&self) -> Vec<Hit> {
+        let events = &self.world.contact_hit_events;
+        let mut out = Vec::with_capacity(events.len());
+        for e in events {
+            let (Some((a, shape_a)), Some((b, shape_b))) = (self.side(e.shape_id_a), self.side(e.shape_id_b)) else {
+                continue;
+            };
+            out.push(Hit {
+                a,
+                b,
+                shape_a,
+                shape_b,
+                point: from_pos(e.point),
+                normal: [e.normal.x, e.normal.y, e.normal.z],
+                speed: e.approach_speed,
+            });
+        }
+        out
+    }
+
+    /// A shape's body's object and the shape's place in its body's [`BodyDesc::shapes`].
+    fn side(&self, shape: ShapeId) -> Option<(ObjectId, u32)> {
+        let body = shape_get_body(&self.world, shape);
+        let object = *self.objects.get(&body.index1)?;
+        // Box3D lists a body's shapes newest first.
+        let shapes = body_get_shapes(&self.world, body, crate::desc::limits::MAX_SHAPES_PER_BODY);
+        let at = shapes.iter().position(|&s| s == shape)?;
+        Some((object, (shapes.len() - 1 - at) as u32))
+    }
+
     pub fn box3d_hash(&self) -> Result<u64, PhysicsError> {
         self.usable()?;
         Ok(hash_world_state(&self.world))
