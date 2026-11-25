@@ -1990,7 +1990,8 @@ mod tests {
                 })
             }
         }
-        let CutPair { host, sim, mut notices, cj, me_a, me_b } = cut_pair_on(T_JOIN, pe_world::preset::Preset::Plane);
+        let CutPair { host, sim, mut notices, cj, me_a, me_b, .. } =
+            cut_pair_on(T_JOIN, pe_world::preset::Preset::Plane);
         let e = cj.e.at;
         let walk = Arc::new(Walk(Mutex::new(None)));
         let mut sim = sim.with_moves(walk.clone());
