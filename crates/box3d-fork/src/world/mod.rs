@@ -298,6 +298,13 @@ pub struct World {
     /// Primordial Engine fork: optional replacement for the built-in radius formula. Like the
     /// other callbacks it is not snapshotted; re-register it on a freshly created world.
     pub contact_recycle_radius_fcn: Option<crate::recycle_scale::ContactRecycleRadiusFn>,
+    /// Primordial Engine fork (D3): the ids of the bodies with `SWEPT` set, in increasing order, whatever their set.
+    /// Derived from the flags (a snapshot restore rebuilds it), so it is not snapshotted.
+    pub swept_bodies: Vec<i32>,
+    /// Primordial Engine fork (D3): the most sweep iterations one sub-step may spend (`solver/swept.rs`).
+    pub swept_iteration_budget: i32,
+    /// Primordial Engine fork (D3): what the sweeps did in the latest step. Not snapshotted or hashed.
+    pub swept_counters: crate::solver::SweptCounters,
 
     pub friction_callback: Option<FrictionCallback>,
     pub restitution_callback: Option<RestitutionCallback>,
@@ -514,6 +521,9 @@ impl World {
             contact_recycle_distance: contact_recycle_distance(),
             contact_recycle_scaling: def.contact_recycle_scaling,
             contact_recycle_radius_fcn: None,
+            swept_bodies: Vec::new(),
+            swept_iteration_budget: crate::solver::SWEPT_ITERATION_BUDGET,
+            swept_counters: crate::solver::SweptCounters::default(),
             friction_callback: Some(def.friction_callback.unwrap_or(default_friction_callback)),
             restitution_callback: Some(
                 def.restitution_callback

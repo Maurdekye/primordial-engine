@@ -429,6 +429,32 @@ pub fn body_is_bullet(world: &World, body_id: BodyId) -> bool {
     (world.bodies[body_index as usize].flags & body_flags::IS_BULLET) != 0
 }
 
+/// Primordial Engine fork (D3): sweep this body in every sub-step (`BodyDef::swept`). Not captured as a recording
+/// op, like `world_set_contact_recycle_scaling`; a body definition carries it.
+pub fn body_set_swept(world: &mut World, body_id: BodyId, flag: bool) {
+    debug_assert!(!world.locked);
+    if world.locked {
+        return;
+    }
+
+    let new_flag = if flag { body_flags::SWEPT } else { 0 };
+    let body_index = get_body_full_id(world, body_id);
+    if (world.bodies[body_index as usize].flags & body_flags::SWEPT) == new_flag {
+        return;
+    }
+
+    world.bodies[body_index as usize].flags &= !body_flags::SWEPT;
+    world.bodies[body_index as usize].flags |= new_flag;
+    sync_body_flags(world, body_index);
+    crate::solver::swept::list_swept_body(world, body_index, flag);
+}
+
+/// Primordial Engine fork (D3)
+pub fn body_is_swept(world: &World, body_id: BodyId) -> bool {
+    let body_index = get_body_full_id(world, body_id);
+    (world.bodies[body_index as usize].flags & body_flags::SWEPT) != 0
+}
+
 /// Allow this body to rotate fast. Useful for axially symmetric bodies, such as vehicle
 /// wheels. Normally rotation speed is clamped to improve CCD. However, this clamping is
 /// unnecessary for bodies that only rotate fast around an axis of symmetry.

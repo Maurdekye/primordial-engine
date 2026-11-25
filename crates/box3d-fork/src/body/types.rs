@@ -46,6 +46,9 @@ pub mod body_flags {
     /// The inertia is anisotropic beyond the world isotropic inertia tolerance, so the solver
     /// applies gyroscopic torque.
     pub const ENABLE_GYROSCOPIC_TORQUE: u32 = 0x0001_0000;
+    /// Primordial Engine fork (D3): swept in every sub-step against everything it collides with, moving or not
+    /// (`solver/swept.rs`). Lives on Body and BodySim. Box3D's own bullet (`IS_BULLET`) is separate.
+    pub const SWEPT: u32 = 0x0002_0000;
 
     /// All lock flags
     pub const ALL_LOCKS: u32 = LOCK_LINEAR_X

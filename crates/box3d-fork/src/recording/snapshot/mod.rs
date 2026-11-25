@@ -385,6 +385,9 @@ pub fn deserialize_into_shell(
 
     des_names(&mut r, &mut world.names);
 
+    // Primordial Engine fork (D3): the swept list is derived from the bodies' flags.
+    crate::solver::swept::rebuild_swept_list(world);
+
     // Primordial Engine fork: the image must be consumed exactly, so no bytes ride along that
     // the state does not hold (a joiner's image is confirmed by hashing all of its bytes).
     r.ok && r.cursor() == data.len()

@@ -282,7 +282,12 @@ pub(super) fn finalize_bodies(
                 world.solver_sets[AWAKE_SET as usize].body_states[sim_index] = state;
                 world.solver_sets[AWAKE_SET as usize].body_sims[sim_index] = sim;
 
-                if (sim.flags & body_flags::IS_BULLET) != 0 {
+                if (sim.flags & body_flags::SWEPT) != 0 {
+                    // Primordial Engine fork (D3): swept in every sub-step, so no time of impact after the step.
+                    let sim = &mut world.solver_sets[AWAKE_SET as usize].body_sims[sim_index];
+                    sim.center0 = sim.center;
+                    sim.rotation0 = sim.transform.q;
+                } else if (sim.flags & body_flags::IS_BULLET) != 0 {
                     bullet_bodies.push(sim_index as i32);
                 } else {
                     solve_continuous(world, sim_index as i32, time_step);
@@ -333,7 +338,8 @@ pub(super) fn finalize_bodies(
         // For fast non-bullet bodies the AABB has already been updated in b3SolveContinuous
         // For fast bullet bodies the AABB will be updated at a later stage
         let sim_now = world.solver_sets[AWAKE_SET as usize].body_sims[sim_index];
-        if (sim_now.flags & body_flags::IS_FAST) == 0 {
+        // Primordial Engine fork (D3): a swept body's boxes are updated here, fast or not.
+        if (sim_now.flags & body_flags::IS_FAST) == 0 || (sim_now.flags & body_flags::SWEPT) != 0 {
             let transform = sim_now.transform;
             let mut shape_id = world.bodies[body_id as usize].head_shape_id;
             while shape_id != NULL_INDEX {

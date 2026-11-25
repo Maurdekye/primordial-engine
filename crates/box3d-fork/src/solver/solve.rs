@@ -194,6 +194,8 @@ struct SolveArgs<'a> {
     mesh_wide_constraints: &'a mut Vec<WideContactConstraints>,
     mesh_lanes: &'a [MeshLanes],
     ticks: &'a mut crate::stage_timer::Ticks,
+    /// Primordial Engine fork (D3): the swept bodies' pass, when the world has any.
+    swept: Option<&'a mut super::swept::SweptPass>,
 }
 
 /// The sub-step loop, restitution and impulse storage, on `stages`. Primordial Engine fork
@@ -207,6 +209,7 @@ fn solve_stages(args: SolveArgs<'_>, stages: &dyn Stages) {
         mesh_wide_constraints,
         mesh_lanes,
         ticks,
+        mut swept,
     } = args;
 
     let views = ColorViews {
@@ -374,11 +377,25 @@ fn solve_stages(args: SolveArgs<'_>, stages: &dyn Stages) {
         }
         world.profile.solve_impulses += ticks.lap();
 
+        // Primordial Engine fork (D3): the swept bodies' candidates and start poses, before their motion.
+        if let Some(pass) = swept.as_deref_mut() {
+            // SAFETY: no stage is running.
+            let states = unsafe { all_states(states) };
+            pass.find(world, states);
+        }
+
         // (b3_stageIntegratePositions)
         stages.run(body_count, BODY_BLOCK_SIZE, &|items, _| {
             // SAFETY: a body stage; this block owns these bodies.
             unsafe { integrate_positions_block(states.slice_mut(items), context) };
         });
+
+        // Primordial Engine fork (D3): sweep the motion just integrated, earliest impact first.
+        if let Some(pass) = swept.as_deref_mut() {
+            // SAFETY: no stage is running.
+            let states = unsafe { all_states(states) };
+            pass.resolve(world, states);
+        }
         world.profile.integrate_positions += ticks.lap();
 
         for _ in 0..RELAX_ITERATIONS {
@@ -581,6 +598,8 @@ pub fn solve(world: &mut World, context: &StepContext) {
         );
     }
 
+    // Primordial Engine fork (D3)
+    let mut swept = (!world.swept_bodies.is_empty()).then(|| super::swept::SweptPass::new(world, context));
     let args = SolveArgs {
         world,
         context,
@@ -589,6 +608,7 @@ pub fn solve(world: &mut World, context: &StepContext) {
         mesh_wide_constraints: &mut mesh_wide_constraints,
         mesh_lanes: &mesh_lanes,
         ticks: &mut ticks,
+        swept: swept.as_mut(),
     };
     // Primordial Engine fork (D2): with worker threads the stages run on all of them, worker 0
     // driving; otherwise they run serially here. Same code and same results either way.
@@ -888,4 +908,10 @@ pub fn solve(world: &mut World, context: &StepContext) {
         world.validate_solver_sets();
     }
     world.profile.sleep_islands += ticks.lap();
+
+    // Primordial Engine fork (D3): sleeping bodies a sweep reached wake with their pending velocity, once.
+    match &swept {
+        Some(pass) => super::swept::finish(world, pass),
+        None => world.swept_counters = super::swept::SweptCounters::default(),
+    }
 }
