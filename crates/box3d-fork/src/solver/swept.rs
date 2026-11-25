@@ -418,6 +418,12 @@ pub(super) struct SweptPass {
     culled: Vec<Culled>,
     /// Counts this sub-step's searches, for [`Mover::culled_mark`].
     search_serial: u32,
+    /// The pair the next sub-step's sweep starts at (taken modulo the pairs' count): just after the pair whose sweep
+    /// ran out of budget in the last one, so that an overload lasting through a step holds a different set each
+    /// sub-step, and a pair whose sweep alone needs more than the budget never takes it from the others. A step's first sub-step
+    /// starts at the world's step index, which the snapshot holds, so this needs no state of its own. A `u64`, reduced
+    /// in `u64`, so that every platform starts at the same pair.
+    start: u64,
     budget: i32,
     /// `resolve` is under way: the awake states already hold the sub-step's end.
     resolving: bool,
@@ -443,6 +449,7 @@ impl SweptPass {
             searched: Vec::new(),
             culled: Vec::new(),
             search_serial: 0,
+            start: world.step_index,
             budget: 0,
             resolving: false,
             h: context.h,
@@ -924,12 +931,19 @@ impl SweptPass {
 
         loop {
             let mut exhausted = false;
-            for p in 0..self.pairs.len() {
+            // Swept from `start` round the list. Each pair's sweep reads and writes only its own state, and the event
+            // answered next is chosen by time and then pair index, so the order changes nothing unless the budget
+            // runs out, and then it decides which pairs were proven first.
+            let count = self.pairs.len();
+            let first = if count > 0 { (self.start % count as u64) as usize } else { 0 };
+            for k in 0..count {
+                let p = (first + k) % count;
                 if self.pairs[p].done || self.pairs[p].event.is_some() {
                     continue;
                 }
                 if let Stop::Exhausted = self.sweep(p) {
                     exhausted = true;
+                    self.start = p as u64 + 1;
                     break;
                 }
             }
