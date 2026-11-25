@@ -12,8 +12,8 @@
 //!    of impact along both bodies' pieces of motion, turns included, stepping only by a lower bound on their distance
 //!    (a separating plane's gap; GJK's witness distance is an upper bound). The earliest impact over all pairs is
 //!    handled first: both bodies move to it, take a two-body impulse at the contact point (the pair's mixed friction
-//!    and restitution), and their pairs are swept again on the rest of the sub-step. A swept body deflected out of the
-//!    box its search covered is searched again, and every search again when a body's reach grows.
+//!    and restitution), and their pairs are swept again on the rest of the sub-step. A swept body deflected out of
+//!    every box a search covered is searched again, and every one again when a body's reach grows.
 //! 3. A fixed number of distance queries per sub-step ([`World::swept_iteration_budget`]) bounds the work. When it
 //!    runs out, every body connected through candidate pairs to a pair not yet proven safe is held at the set's last
 //!    time proven safe.
@@ -89,7 +89,7 @@ pub struct SweptCounters {
     pub exhausted: i32,
     /// Impulses on sleeping bodies, applied when their islands wake at the step's end.
     pub deferred: i32,
-    /// Searches run again after a deflection left the box a search covered, or a body's reach grew.
+    /// Searches run again after a deflection left every box a search covered, or a body's reach grew.
     pub researches: i32,
 }
 
@@ -161,8 +161,6 @@ struct Mover {
     held: bool,
     /// Its piece changed this sub-step: the state is written back.
     changed: bool,
-    /// A swept body's searched box (world frame), before the reach.
-    covered: Aabb,
     /// How far its farthest shape point is from its centre of mass.
     radius: f32,
 }
@@ -324,6 +322,10 @@ pub(super) struct SweptPass {
     held_for_step: Vec<i32>,
     /// How far any awake body can have moved from its broad-phase box by the end of the sub-step.
     reach: f32,
+    /// This sub-step's searches since the reach last grew: the swept mover and the box searched (world frame, before
+    /// the reach). Each box was queried whole, so every shape a path inside it can meet is a candidate already; a
+    /// box bounding two of them was not (the corner between two legs of a deflected path).
+    searched: Vec<(usize, Aabb)>,
     budget: i32,
     /// `resolve` is under way: the awake states already hold the sub-step's end.
     resolving: bool,
@@ -346,6 +348,7 @@ impl SweptPass {
             pending: Vec::new(),
             held_for_step: Vec::new(),
             reach: 0.0,
+            searched: Vec::new(),
             budget: 0,
             resolving: false,
             h: context.h,
@@ -366,6 +369,7 @@ impl SweptPass {
         }
         self.movers.clear();
         self.pairs.clear();
+        self.searched.clear();
         self.budget = world.swept_iteration_budget;
         self.resolving = false;
 
@@ -456,7 +460,6 @@ impl SweptPass {
             dw,
             held,
             changed: held && self.resolving,
-            covered: Aabb::default(),
             radius,
         });
         let index = self.movers.len() - 1;
@@ -498,8 +501,7 @@ impl SweptPass {
         let predicted = from.is_none();
         let t = from.unwrap_or(0.0);
         let path = self.path_box(world, m, t, predicted);
-        let covered = self.movers[m].covered;
-        self.movers[m].covered = if predicted { path } else { aabb_union(covered, path) };
+        self.searched.push((m, path));
         let wide = aabb_inflate(path, self.reach);
         let mut found: Vec<i32> = Vec::new();
         for (tree, query) in [(BodyType::Static, path), (BodyType::Kinematic, wide), (BodyType::Dynamic, wide)] {
@@ -666,7 +668,12 @@ impl SweptPass {
             let mut next: Option<(f32, usize)> = None;
             for (p, pair) in self.pairs.iter().enumerate() {
                 if let Some((t, _)) = pair.event {
-                    if next.is_none_or(|(best, _)| t < best) {
+                    // A match, not `Option::is_none_or` (Rust 1.82): the fork's MSRV is 1.77.
+                    let earlier = match next {
+                        None => true,
+                        Some((best, _)) => t < best,
+                    };
+                    if earlier {
                         next = Some((t, p));
                     }
                 }
@@ -1133,8 +1140,9 @@ impl SweptPass {
         }
     }
 
-    /// After mover `m` was deflected at `t`: if a swept body's new path leaves the box its searches covered, it's
-    /// searched again; if any body's new path reaches farther than the reach every search allowed, all are.
+    /// After mover `m` was deflected at `t`: a swept body's new path is searched again unless one box searched since
+    /// the reach last grew contains it. If any body's new path reaches farther than the reach every search allowed,
+    /// the reach grows, the boxes searched within the smaller one stop counting, and every swept body is searched again.
     fn after_deflection(&mut self, world: &World, states: &[BodyState], m: usize, t: f32) {
         let mv = self.movers[m];
         if mv.state_index == NULL_INDEX || mv.held {
@@ -1148,6 +1156,8 @@ impl SweptPass {
         if reach > self.reach {
             self.reach = reach;
             self.counters.researches += 1;
+            // Those boxes' kinematic and dynamic queries reached only as far as the smaller reach.
+            self.searched.clear();
             for s in 0..self.movers.len() {
                 if self.movers[s].swept {
                     self.search(world, states, s, Some(t));
@@ -1157,7 +1167,8 @@ impl SweptPass {
         }
         if mv.swept {
             let path = self.path_box(world, m, t, false);
-            if !crate::math_functions::aabb_contains(mv.covered, path) {
+            let covered = self.searched.iter().any(|&(s, b)| s == m && crate::math_functions::aabb_contains(b, path));
+            if !covered {
                 self.counters.researches += 1;
                 self.search(world, states, m, Some(t));
             }
