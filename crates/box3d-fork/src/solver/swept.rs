@@ -41,10 +41,14 @@ use crate::events::ContactHitEvent;
 use crate::id::{ContactId, ShapeId};
 use crate::hull::{get_hull_planes, get_hull_points};
 use crate::math_functions::{
-    aabb_inflate, aabb_overlaps, aabb_union, add, clamp_float, conjugate, cross, dot, integrate_rotation, inv_mul_transforms,
-    inv_rotate_vector, length, length_squared, lerp, max_float, min_float, mul_add, mul_mv, mul_quat, mul_sv, nlerp,
-    normalize, offset_aabb, offset_pos, rotate_vector, solve3, sub, sub_pos, transform_point, Aabb, Matrix3, Plane, Pos, Quat,
-    Transform, Vec3, MAT3_ZERO, TRANSFORM_IDENTITY, VEC3_ZERO,
+    aabb_inflate, aabb_overlaps, aabb_union, abs_float, add, clamp_float, clamp_int, conjugate, cross, dot,
+    integrate_rotation, inv_mul_transforms, inv_rotate_vector, inv_transform_point, length, length_squared, lerp,
+    max_float, min_float, mul_add, mul_mv, mul_quat, mul_sv, nlerp, normalize, offset_aabb, offset_pos, rotate_vector,
+    solve3, sub, sub_pos, transform_point, Aabb, Matrix3, Plane, Pos, Quat, Transform, Vec3, MAT3_ZERO,
+    TRANSFORM_IDENTITY, VEC3_ZERO,
+};
+use crate::mesh::{
+    get_mesh_material_indices, get_mesh_triangle, query_mesh, Mesh, CONCAVE_EDGE1, CONCAVE_EDGE2, CONCAVE_EDGE3,
 };
 use crate::shape::{
     compute_shape_aabb, compute_shape_min_extent, make_shape_proxy, shape_flags, should_shapes_collide, Shape,
@@ -73,8 +77,12 @@ pub struct SweptCounters {
     pub pairs: i32,
     /// Pieces left to the contact solver unswept: the pair can't close a slop over them.
     pub slow: i32,
-    /// Pieces proven apart without a query: the bodies' bounding spheres never meet over them.
+    /// Pieces proven apart without a query: the bodies' bounding spheres never meet over them (a mesh triangle's own
+    /// sphere for a triangle pair), or the bullet stays in front of a triangle's plane.
     pub culled: i32,
+    /// Pieces of a mesh triangle pair left alone: the bullet's centre is behind the triangle, and Box3D's triangles
+    /// are one-sided, so its contact solver doesn't collide them either.
+    pub behind: i32,
     /// Distance queries: the budget's unit.
     pub iterations: i32,
     /// Impacts answered by an impulse.
@@ -232,10 +240,10 @@ enum Event {
     Separate { normal: Vec3 },
 }
 
-/// A candidate pair: a swept body's shape and a shape it collides with.
+/// A candidate pair: a swept body's shape and a shape it collides with, or one triangle of a mesh it collides with.
 #[derive(Clone)]
 struct Pair {
-    /// Movers; `a`'s body id is below `b`'s.
+    /// Movers; `a`'s body id is below `b`'s, except in a triangle pair, whose `a` is the swept body and `b` the mesh's.
     a: usize,
     b: usize,
     shape_a: i32,
@@ -270,6 +278,55 @@ struct Pair {
     event: Option<(f32, Event)>,
     cache: SimplexCache,
     core_cache: SimplexCache,
+    /// `b` is a mesh triangle (`proxy_b` and `core_b` are the triangle itself).
+    tri: Option<Tri>,
+}
+
+/// A mesh triangle as a pair's partner `b` (CCD part 2). Box3D's triangles are one-sided: its contact solver drops a
+/// sphere, capsule or hull whose centre is behind one (`manifold/triangle.rs`, `triangle_hull.rs`), so the pair is swept
+/// only while the bullet's centre is in front.
+#[derive(Clone, Copy)]
+struct Tri {
+    /// The triangle's index in its mesh, part of the pair's key.
+    index: i32,
+    /// Its front normal (Box3D's `make_plane_from_points` winding), in `b`'s body frame.
+    face: Vec3,
+    /// Box3D's edge flags as `get_mesh_triangle` gives them: an edge concave or flat from the front has no edge normal.
+    flags: i32,
+    /// Its centroid in `b`'s body frame, the radius of its bounding sphere about it, and the centroid's distance from
+    /// `b`'s centre of mass.
+    centroid: Vec3,
+    reach: f32,
+    arm: f32,
+    /// The bullet shape's centre in `a`'s body frame, which Box3D's back-side cull tests, and how far behind the plane
+    /// that cull lets it be (a hull's slop).
+    centre: Vec3,
+    margin: f32,
+}
+
+/// Whether the triangle feature GJK's simplex `cache` ends on (its `b` indices: one vertex, two an edge, three the face)
+/// is smooth from the front: the face, an edge that `flags` mark concave or flat, or a vertex both of whose edges in
+/// this triangle are. There the impact's normal is the face's, as Box3D's contact solver drops an inner edge's contact,
+/// so a bullet sliding across a flat mesh isn't bumped at its triangles' edges.
+fn smooth_feature(cache: &SimplexCache, flags: i32) -> bool {
+    let mut on = [false; 3];
+    for k in 0..(cache.count as usize).min(4) {
+        let i = cache.index_b[k] as usize;
+        if i < 3 {
+            on[i] = true;
+        }
+    }
+    let concave = |edges: i32| (flags & edges) == edges;
+    match on {
+        [true, true, true] => true,
+        [true, true, false] => concave(CONCAVE_EDGE1),
+        [false, true, true] => concave(CONCAVE_EDGE2),
+        [true, false, true] => concave(CONCAVE_EDGE3),
+        [true, false, false] => concave(CONCAVE_EDGE1 | CONCAVE_EDGE3),
+        [false, true, false] => concave(CONCAVE_EDGE1 | CONCAVE_EDGE2),
+        [false, false, true] => concave(CONCAVE_EDGE2 | CONCAVE_EDGE3),
+        [false, false, false] => false,
+    }
 }
 
 /// What a pair's piece is swept on.
@@ -514,6 +571,11 @@ impl SweptPass {
     /// `integrate positions` (`predicted`) the piece isn't known yet: the box takes the state's velocity at full
     /// length, which the speed caps and locks only shorten. A turn adds its chord's bound on every side.
     fn path_box(&self, world: &World, m: usize, from: f32, predicted: bool) -> Aabb {
+        offset_aabb(self.path_box_rel(world, m, from, predicted), self.movers[m].center)
+    }
+
+    /// [`Self::path_box`] relative to the mover's `center`.
+    fn path_box_rel(&self, world: &World, m: usize, from: f32, predicted: bool) -> Aabb {
         let mv = &self.movers[m];
         let (d0, q0) = mv.pose(from);
         let (shift, turn) = if mv.held || mv.state_index == NULL_INDEX {
@@ -535,7 +597,43 @@ impl SweptPass {
             out = Some(out.map_or(b, |o| aabb_union(o, b)));
             shape_id = shape.next_shape_id;
         }
-        offset_aabb(aabb_inflate(out.unwrap_or_default(), turn), mv.center)
+        aabb_inflate(out.unwrap_or_default(), turn)
+    }
+
+    /// A box in mover `n`'s body frame holding every point of `rel` (a box relative to mover `m`'s `center`, fixed in
+    /// the world) as `n` moves over the rest of the sub-step from `from`: the box mapped at `n`'s pose there, widened
+    /// by how far `n`'s centre of mass can go and its turn times the box's farthest point from it. At a later pose a
+    /// point's image moves by at most the translation plus |R(s) - R(from)| times its distance from the centre of mass,
+    /// and the turn bounds that rotation's chord (@astra-deliberator: a 1 m crossing during an 11.25 degree turn strays
+    /// 49 mm from the chord, where the sagitta alone gives 2.4 mm).
+    fn local_box(&self, m: usize, n: usize, rel: Aabb, from: f32, predicted: bool) -> Aabb {
+        let (ma, mb) = (&self.movers[m], &self.movers[n]);
+        let (d0, q0) = mb.pose(from);
+        let (shift, turn) = if mb.held || mb.state_index == NULL_INDEX {
+            (0.0, 0.0)
+        } else if predicted {
+            (self.h * length(mb.v), self.h * length(mb.w))
+        } else {
+            (length(sub(mb.d2, d0)), 2.0 * length(mul_quat(conjugate(q0), mb.q2).v))
+        };
+        // The box relative to `n`'s centre, then about `n`'s centre of mass there.
+        let to_n = sub_pos(ma.center, mb.center);
+        let c = add(mul_sv(0.5, add(rel.lower_bound, rel.upper_bound)), to_n);
+        let e = mul_sv(0.5, sub(rel.upper_bound, rel.lower_bound));
+        let far = length(sub(c, d0)) + length(e);
+        // Into the body frame: the centre exactly, the half-extents through the rotation's absolute matrix.
+        let local_c = add(inv_rotate_vector(q0, sub(c, d0)), mb.local_center);
+        let axes = [Vec3 { x: 1.0, y: 0.0, z: 0.0 }, Vec3 { x: 0.0, y: 1.0, z: 0.0 }, Vec3 { x: 0.0, y: 0.0, z: 1.0 }];
+        let mut local_e = VEC3_ZERO;
+        for (k, axis) in axes.iter().enumerate() {
+            let column = inv_rotate_vector(q0, *axis);
+            let w = [e.x, e.y, e.z][k];
+            local_e.x += abs_float(column.x) * w;
+            local_e.y += abs_float(column.y) * w;
+            local_e.z += abs_float(column.z) * w;
+        }
+        let local = Aabb { lower_bound: sub(local_c, local_e), upper_bound: add(local_c, local_e) };
+        aabb_inflate(local, shift + turn * far + linear_slop())
     }
 
     /// Finds swept mover `m`'s candidate pairs over the rest of the sub-step from `from` (`None`: from its start,
@@ -591,7 +689,8 @@ impl SweptPass {
         let shape = &world.shapes[other as usize];
         let body_id = self.movers[m].body_id;
         let other_body = shape.body_id;
-        if other_body == body_id || shape.sensor_index != NULL_INDEX || !convex(shape) {
+        let mesh = matches!(shape.geometry, ShapeGeometry::Mesh { .. });
+        if other_body == body_id || shape.sensor_index != NULL_INDEX || !(convex(shape) || mesh) {
             return;
         }
         if !should_shapes_collide(own.filter, shape.filter) {
@@ -614,9 +713,13 @@ impl SweptPass {
                 }
             }
         }
+        if mesh {
+            self.consider_mesh(world, states, m, shape_id, other, t, predicted, keep);
+            return;
+        }
         // One pair per shape pair, whichever of its bodies found it.
         let (sa, sb) = if body_id < other_body { (shape_id, other) } else { (other, shape_id) };
-        if self.pairs.iter().any(|p| p.shape_a == sa && p.shape_b == sb) {
+        if self.pairs.iter().any(|p| p.tri.is_none() && p.shape_a == sa && p.shape_b == sb) {
             return;
         }
         let Some(n) = self.mover(world, states, other_body) else { return };
@@ -673,8 +776,130 @@ impl SweptPass {
             event: None,
             cache: SimplexCache::default(),
             core_cache: SimplexCache::default(),
+            tri: None,
         });
         self.counters.pairs += 1;
+    }
+
+    /// [`Self::consider`] for a mesh shape `other` (CCD part 2): one pair per triangle whose box meets swept mover
+    /// `m`'s path from `t`, mapped into the mesh body's frame over the mesh body's own motion ([`Self::local_box`]),
+    /// in triangle order. The triangle, as Box3D's mesh contact takes it (`get_mesh_triangle`: the shape's scale, a
+    /// mirroring scale's winding, the edge flags), is the pair's partner on the mesh body's motion. While the mesh
+    /// body's piece can still change, the search keeps the body pair ([`Culled`]), so a new piece of either body
+    /// queries the triangles again.
+    #[allow(clippy::too_many_arguments)]
+    fn consider_mesh(
+        &mut self,
+        world: &World,
+        states: &[BodyState],
+        m: usize,
+        shape_id: i32,
+        other: i32,
+        t: f32,
+        predicted: bool,
+        keep: bool,
+    ) {
+        let shape = &world.shapes[other as usize];
+        let ShapeGeometry::Mesh { data, scale } = &shape.geometry else { return };
+        let Some(n) = self.mover(world, states, shape.body_id) else { return };
+        if keep {
+            self.keep_culled(m, n);
+        }
+        let own = &world.shapes[shape_id as usize];
+        // Box3D's back-side cull tests the shape's centre: a sphere's, a capsule's midpoint, a hull's centre (which
+        // may sit a slop behind, its hysteresis).
+        let (centre, margin) = match &own.geometry {
+            ShapeGeometry::Sphere(sphere) => (sphere.center, 0.0),
+            ShapeGeometry::Capsule(capsule) => (mul_sv(0.5, add(capsule.center1, capsule.center2)), 0.0),
+            ShapeGeometry::Hull(hull) => (hull.center, linear_slop()),
+            _ => return,
+        };
+        let rel = self.path_box_rel(world, m, t, predicted);
+        let local = self.local_box(m, n, rel, t, predicted);
+        let view = Mesh { data, scale: *scale };
+        let mut found: Vec<i32> = Vec::new();
+        query_mesh(&view, local, |_, _, _, index| {
+            found.push(index);
+            true
+        });
+        found.sort_unstable();
+        found.dedup();
+        if found.is_empty() {
+            return;
+        }
+        let (ma, mb) = (self.movers[m], self.movers[n]);
+        let proxy_a = make_shape_proxy(own);
+        let e_a = compute_shape_min_extent(own, ma.local_center);
+        let core_a = core_proxy(own, e_a);
+        // A triangle has no thickness: the thinner core is the bullet's.
+        let thin = max_float(0.0, e_a - shrink(e_a));
+        let radius_a = proxy_radius(&proxy_a, ma.local_center);
+        let mat_a = own.get_material(0);
+        let indices = get_mesh_material_indices(data);
+        for index in found {
+            if self.pairs.iter().any(|p| p.shape_a == shape_id && p.shape_b == other && p.tri.is_some_and(|x| x.index == index))
+            {
+                continue;
+            }
+            let triangle = get_mesh_triangle(&view, index);
+            let [p1, p2, p3] = triangle.vertices;
+            let face = normalize(cross(sub(p2, p1), sub(p3, p1)));
+            let centroid = mul_sv(1.0 / 3.0, add(add(p1, p2), p3));
+            let reach = max_float(length(sub(p1, centroid)), max_float(length(sub(p2, centroid)), length(sub(p3, centroid))));
+            let proxy_b = make_proxy(&[p1, p2, p3], 0.0);
+            let radius_b = proxy_radius(&proxy_b, mb.local_center);
+            let material = if indices.is_empty() { 0 } else { indices[index as usize] as i32 };
+            let mat_b = shape.get_material(clamp_int(material, 0, shape.material_count() - 1));
+            let friction = world.friction_callback.unwrap_or(crate::world::default_friction_callback)(
+                mat_a.friction,
+                mat_a.user_material_id,
+                mat_b.friction,
+                mat_b.user_material_id,
+            );
+            let restitution = world.restitution_callback.unwrap_or(crate::world::default_restitution_callback)(
+                mat_a.restitution,
+                mat_a.user_material_id,
+                mat_b.restitution,
+                mat_b.user_material_id,
+            );
+            self.pairs.push(Pair {
+                a: m,
+                b: n,
+                shape_a: shape_id,
+                shape_b: other,
+                proxy_a,
+                proxy_b,
+                core_a,
+                core_b: proxy_b,
+                radius_a,
+                radius_b,
+                friction,
+                restitution,
+                proven: t,
+                level: Level::Full,
+                target: 0.0,
+                band: 0.25 * linear_slop(),
+                thin,
+                // Short of the bullet core's centre: the contact solver's one-sided push-out always sees it in front.
+                floor: min_float(1.8 * thin, 0.9 * core_a.radius),
+                fresh: true,
+                done: false,
+                event: None,
+                cache: SimplexCache::default(),
+                core_cache: SimplexCache::default(),
+                tri: Some(Tri {
+                    index,
+                    face,
+                    flags: triangle.flags,
+                    centroid,
+                    reach,
+                    arm: length(sub(centroid, mb.local_center)),
+                    centre,
+                    margin,
+                }),
+            });
+            self.counters.pairs += 1;
+        }
     }
 
     /// After `integrate positions`: the sub-step's motion is in `states`. Sweeps every pair, answers the earliest
@@ -782,30 +1007,74 @@ impl SweptPass {
             self.counters.slow += 1;
             return Stop::Swept;
         }
-        // Within the pieces both centres move linearly, so the bodies' bounding spheres meet only if the segment their
-        // centres' difference traces over the rest of the sub-step comes within the two radii (and a slop) of zero.
-        // If it doesn't, the pair is proven apart without a query: most of a fast bullet's candidates are like this.
-        {
-            let (da, _) = ma.pose(t);
-            let (db, _) = mb.pose(t);
-            let from = add(offset, sub(db, da));
-            let along = mul_sv(1.0 - t, sub(mb.rate(), ma.rate()));
-            let l2 = length_squared(along);
-            let u = if l2 > 0.0 { clamp_float(-dot(from, along) / l2, 0.0, 1.0) } else { 0.0 };
-            let nearest = length(mul_add(from, u, along));
-            if nearest > self.pairs[p].radius_a + self.pairs[p].radius_b + slop {
-                self.pairs[p].proven = 1.0;
-                self.pairs[p].done = true;
-                self.counters.culled += 1;
-                return Stop::Swept;
-            }
-        }
         let at = |t: f32| {
             let xa = ma.transform(t);
             let mut xb = mb.transform(t);
             xb.p = add(xb.p, offset);
             (xa, xb)
         };
+        // Box3D's triangles are one-sided: its contact solver drops a bullet whose centre is behind one. A triangle
+        // pair whose bullet starts the piece there is left alone for the piece, so a bullet arriving from behind
+        // passes, as it does through the contact solver.
+        if let (Some(tri), true) = (self.pairs[p].tri, self.pairs[p].fresh) {
+            let (xa, xb) = at(t);
+            let centre = inv_transform_point(xb, transform_point(xa, tri.centre));
+            if dot(tri.face, sub(centre, self.pairs[p].proxy_b.points[0])) < -tri.margin {
+                self.pairs[p].proven = 1.0;
+                self.pairs[p].done = true;
+                self.counters.behind += 1;
+                return Stop::Swept;
+            }
+        }
+        // A triangle pair whose bullet's point cloud stays in front of the triangle's plane, farther than the shapes'
+        // target, over the rest of the piece never reaches the triangle: proven apart without a query. While the mesh
+        // body doesn't turn, the plane moves with it linearly and so does the bullet's centre of mass, so the ends
+        // of the piece bound the distance; every cloud point is within the cloud's radius of the centre of mass, and
+        // a core's points lie inside the shape's hull. A bullet skimming a mesh floor costs nothing this way.
+        if let (Some(_), true) = (self.pairs[p].tri, mb.turn_rate() == 0.0) {
+            let n = rotate_vector(mb.q1, self.pairs[p].tri.map_or(VEC3_ZERO, |tri| tri.face));
+            let corner = self.pairs[p].proxy_b.points[0];
+            let (_, xb0) = at(t);
+            let (_, xb1) = at(1.0);
+            let d0 = dot(n, sub(ma.pose(t).0, transform_point(xb0, corner)));
+            let d1 = dot(n, sub(ma.pose(1.0).0, transform_point(xb1, corner)));
+            let cloud = self.pairs[p].radius_a - self.pairs[p].proxy_a.radius;
+            if min_float(d0, d1) - cloud > full_target + tol {
+                self.pairs[p].proven = 1.0;
+                self.pairs[p].done = true;
+                self.counters.culled += 1;
+                return Stop::Swept;
+            }
+        }
+        // Within the pieces both centres move linearly, so the bodies' bounding spheres meet only if the segment their
+        // centres' difference traces over the rest of the sub-step comes within the two radii (and a slop) of zero.
+        // If it doesn't, the pair is proven apart without a query: most of a fast bullet's candidates are like this.
+        // A mesh triangle takes its own sphere, about its centroid: the centroid's chord over the rest of the
+        // sub-step, widened by how far the mesh body's turn can carry it off that chord.
+        {
+            let (da, _) = ma.pose(t);
+            let (from, along, radius_b) = match self.pairs[p].tri {
+                Some(tri) => {
+                    let ((_, xb0), (_, xb1)) = (at(t), at(1.0));
+                    let c0 = sub(transform_point(xb0, tri.centroid), da);
+                    let c1 = sub(transform_point(xb1, tri.centroid), ma.pose(1.0).0);
+                    (c0, sub(c1, c0), tri.reach + tri.arm * mb.turn_rate() * (1.0 - t))
+                }
+                None => {
+                    let (db, _) = mb.pose(t);
+                    (add(offset, sub(db, da)), mul_sv(1.0 - t, sub(mb.rate(), ma.rate())), self.pairs[p].radius_b)
+                }
+            };
+            let l2 = length_squared(along);
+            let u = if l2 > 0.0 { clamp_float(-dot(from, along) / l2, 0.0, 1.0) } else { 0.0 };
+            let nearest = length(mul_add(from, u, along));
+            if nearest > self.pairs[p].radius_a + radius_b + slop {
+                self.pairs[p].proven = 1.0;
+                self.pairs[p].done = true;
+                self.counters.culled += 1;
+                return Stop::Swept;
+            }
+        }
 
         if self.pairs[p].fresh {
             self.pairs[p].fresh = false;
@@ -983,7 +1252,22 @@ impl SweptPass {
         let (ma, mb) = (self.movers[a], self.movers[b]);
         let offset = sub_pos(mb.center, ma.center);
         let (da, _) = ma.pose(t);
-        let (db, _) = mb.pose(t);
+        let (db, qb) = mb.pose(t);
+        // At a mesh triangle's smooth feature (its face, or an edge or a vertex the mesh's flags mark concave or flat
+        // from the front), the impulse takes the face's normal, as Box3D's mesh contact drops an inner edge's contact:
+        // a bullet sliding across a flat mesh isn't bumped at its triangles' edges.
+        let normal = match self.pairs[p].tri {
+            Some(tri) => {
+                let pair = &self.pairs[p];
+                let cache = if pair.level == Level::Full { &pair.cache } else { &pair.core_cache };
+                if smooth_feature(cache, tri.flags) {
+                    mul_sv(-1.0, rotate_vector(qb, tri.face))
+                } else {
+                    normal
+                }
+            }
+            None => normal,
+        };
         let ra = sub(point, da);
         let rb = sub(point, add(db, offset));
         let (va, wa) = ma.velocity();
@@ -1068,7 +1352,7 @@ impl SweptPass {
             normal,
             approach_speed,
             user_material_id_a: sa.get_shape_user_material_id(0, 0),
-            user_material_id_b: sb.get_shape_user_material_id(0, 0),
+            user_material_id_b: sb.get_shape_user_material_id(0, self.pairs[p].tri.map_or(0, |tri| tri.index)),
         });
     }
 
