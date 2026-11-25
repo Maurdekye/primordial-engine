@@ -68,6 +68,9 @@ pub struct Tick {
     pub refused: u64,
     pub thinned: u64,
     pub published: u64,
+    /// The run's total of hand poses not sent because the hand was past its body's reach
+    /// (`SimStats::hands_out_of_reach`): a second with no entries but some of these is a hand out of reach, not a hold.
+    pub out_of_reach: u64,
 }
 
 #[derive(Default)]
@@ -85,6 +88,7 @@ struct Second {
     refused: u64,
     thinned: u64,
     unpublished: u64,
+    out_of_reach: u64,
     phases: PhaseTimes,
 }
 
@@ -164,10 +168,13 @@ impl TickTrace {
         }
         self.second = Some(sec);
         let lag = (t.ps.0 + 1).saturating_sub(t.frame.0);
-        let (inputs, refused, thinned, published) =
-            self.last.as_ref().map_or((0, 0, 0, 0), |l| (l.inputs, l.refused, l.thinned, l.published));
+        let (inputs, refused, thinned, published, out_of_reach) = self
+            .last
+            .as_ref()
+            .map_or((0, 0, 0, 0, 0), |l| (l.inputs, l.refused, l.thinned, l.published, l.out_of_reach));
         let s = &mut self.sums;
         s.inputs += t.inputs.saturating_sub(inputs);
+        s.out_of_reach += t.out_of_reach.saturating_sub(out_of_reach);
         s.refused += t.refused.saturating_sub(refused);
         s.thinned += t.thinned.saturating_sub(thinned);
         s.unpublished += u64::from(t.published == published);
@@ -239,7 +246,8 @@ impl TickTrace {
             s.unpublished,
         )?;
         phases_line(&mut self.out, &s.phases)?;
-        writeln!(self.out)?;
+        // Last on the line, so the fields before it keep their places for the readers that match them in order.
+        writeln!(self.out, " out_of_reach={}", s.out_of_reach)?;
         self.out.flush()
     }
 }
@@ -395,6 +403,7 @@ mod tests {
             refused: 0,
             thinned: 0,
             published: p + 1,
+            out_of_reach: 0,
         }
     }
 
@@ -407,7 +416,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let mut t = TickTrace::create(&path, 50, 60).expect("a trace");
         let phases = PhaseTimes::default();
-        let (mut inputs, mut thinned, mut published) = (0, 0, 0);
+        let (mut inputs, mut thinned, mut published, mut out_of_reach) = (0, 0, 0, 0);
         for f in 0..180u64 {
             // Second 0: two entries a frame and a view each tick. Second 1: frames 70-89 publish nothing, and every
             // other frame of 100-119 is thinned to one entry. Second 2: held, no entries at all.
@@ -419,10 +428,14 @@ mod tests {
                     thinned += u64::from(thin);
                     published += u64::from(!(70..90).contains(&f));
                 }
-                _ => published += 1,
+                _ => {
+                    published += 1;
+                    // Frames 120-149: both hands past their body's reach, so no entries but no hold either.
+                    out_of_reach += if f < 150 { 2 } else { 0 };
+                }
             }
             let refused = u64::from(f >= 150);
-            let at = Tick { inputs, refused, thinned, published, ..tick(f, 1, f as i64 * 1000 / 60) };
+            let at = Tick { inputs, refused, thinned, published, out_of_reach, ..tick(f, 1, f as i64 * 1000 / 60) };
             t.record(&Before::take(&phases, 0), &phases, 0, at);
         }
         drop(t);
@@ -434,6 +447,7 @@ mod tests {
         assert!(secs[1].contains("inputs=110 refused=0 thinned=10 unpublished=20"), "{}", secs[1]);
         // One refused entry, at frame 150: the running total goes from 0 to 1 there.
         assert!(secs[2].contains("inputs=0 refused=1 thinned=0 unpublished=0"), "{}", secs[2]);
+        assert!(secs[0].ends_with(" out_of_reach=0") && secs[2].ends_with(" out_of_reach=60"), "{}", secs[2]);
     }
 
     /// A `sec` line per frame-clock second, and a `long` line for each tick over the threshold with its phases and

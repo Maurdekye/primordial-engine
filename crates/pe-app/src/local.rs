@@ -43,6 +43,9 @@ pub struct HandsSent {
     pub refused: u32,
     /// Poses not sent while the stamp stood still.
     pub thinned: u32,
+    /// Poses not sent because the hand was past its body's reach ([`MAX_HAND_OFFSET`] on an axis; [`body_pose`] gave
+    /// none): a tracked hand that makes no entry, and whose grasp's edges wait until it is back (friend-test K4).
+    pub out_of_reach: u32,
     /// Per hand, left then right: `engaged` edges sent, false to true (a close) and true to false (an open).
     pub closes: [u32; 2],
     pub opens: [u32; 2],
@@ -323,7 +326,10 @@ pub fn submit_hands(
         let payload = match body {
             Some(f) => match body_pose(f, &h) {
                 Some(bp) => Input::BodyHand { hand, poses: vec![bp], hold: 0 }.encode(),
-                None => continue,
+                None => {
+                    out.out_of_reach += 1;
+                    continue;
+                }
             },
             None => Input::Hand { hand, poses: vec![pose], hold: 0 }.encode(),
         };

@@ -20,10 +20,18 @@
 //! most [`HAND_SIZED`]) and within [`REACH_SPAN`] of the rig, that isn't a member's hand. In the ball pit those are
 //! the balls. On the friend test's plane they're the spawned shapes, of every kind; the plane's floor is too big, and
 //! its templates are parked 50 m below (friend-test K4). `top` is the highest target, `first` the one with the lowest
-//! id (every member picks the same one, so two members running `share` take hold of one object), and `pile` the
+//! id (every member picks the same one, so two members running `share` reach for one object at once; a hold is one
+//! member's, so the first close in agreed order takes it and the other's takes nothing or a neighbour), and `pile` the
 //! targets' centre across, 0.25 m above the lowest one's centre. A target is chosen from the newest view when its step
 //! starts, and the hand follows it until the step ends. A hand with no steps is absent. After its last step a hand
 //! stays where it ended, as it ended.
+//!
+//! While the view has this member's own body (the plane, locomotion L3), the hands go in the body's frame, and pe-world
+//! takes no hand past 4 m of it on an axis (`player::MAX_HAND_OFFSET`; pe-app sends none and counts it,
+//! `SimStats::hands_out_of_reach`). So a target is then one within [`BODY_REACH`] of the rig's origin across the
+//! floor, which leaves a routine's lift and swing room, and a hand is kept within [`BODY_RANGE`] of it: a reach that
+//! follows a target out of range, one thrown away, stops at the edge (K4's R0' and R4', where a hand that went past
+//! made no entries for seconds).
 //!
 //! The named routines are scripts in this format: [`ROUTINES`]. pe-app plays one from `--hands <routine|file>`, or
 //! when `hands <routine|file>` is typed into its console; `hands stop` hands the hands back to the desktop. Each step
@@ -59,7 +67,9 @@ pub const ROUTINES: &[(&str, &str)] = &[
         "right reach top 1.0\nright wait 0.2\nright close\nright wait 0.3\nright lift 0.4 0.6\nright swing 0 2 -4 0.25\n\
          right open\nright swing 0 2 -4 0.1\nright rest 1.0\n",
     ),
-    // Both members on one ball: the lowest-id ball, taken, lifted 0.3 m and held 4 s. Run it on each member at once.
+    // Both members at one ball: the lowest-id ball, closed on, lifted 0.3 m and held 4 s. Run it on each member at once:
+    // a hold is one member's, so it is a contention test (K4's R0'): one member takes the ball, the other nothing or a
+    // neighbour.
     (
         "share",
         "right reach first 1.5\nright wait 0.2\nright close\nright wait 0.3\nright lift 0.3 1.0\nright wait 4.0\nright open\nright wait 0.5\nright rest 1.0\n",
@@ -88,6 +98,13 @@ pub const HAND_SIZED: f32 = 0.5;
 /// How far from the rig a `reach` looks, in metres: the whole pit or the plane around a player, never the plane's
 /// templates, parked 50 m below its floor.
 pub const REACH_SPAN: f64 = 10.0;
+/// With the member's own body in the view: how far from the rig's origin across the floor a target may be, in metres.
+/// A routine moves a hand at most 1.4 m past its target (`throw`'s swing), so a hand that reached one this far stays
+/// within [`BODY_RANGE`].
+pub const BODY_REACH: f64 = 3.0;
+/// With the member's own body in the view: how far a hand goes from the rig's origin, across the floor and up or down,
+/// in metres. Inside pe-world's 4 m (`player::MAX_HAND_OFFSET`) on every axis, at any heading.
+pub const BODY_RANGE: f32 = 3.9;
 
 /// Which target a `reach` aims at (the balls in the pit; any spawned shape on the plane).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -304,12 +321,13 @@ impl HandFeed for ScriptedHands {
         let view = self.slot.newest();
         let name = play.script.name.clone();
         let (state, velocity) = play.tracks[i].at(i, t.max(0.0), view.as_deref(), &name, &self.bumps)?;
+        let position = if view.as_deref().is_some_and(own_body) { in_range(state.at) } else { state.at };
         state.tracked.then_some(HandInput {
             hand,
             source: HandSource::Desktop,
             sampled_at: at,
             tracked: true,
-            pose: RigPose { position: state.at, orientation: [0.0, 0.0, 0.0, 1.0] },
+            pose: RigPose { position, orientation: [0.0, 0.0, 0.0, 1.0] },
             linear_velocity: Some(velocity),
             angular_velocity: Some([0.0; 3]),
             grip: if state.closed { 1.0 } else { 0.0 },
@@ -415,16 +433,35 @@ fn eval(step: Step, st: &Started, s: f64, view: Option<&FrameView>, side: usize)
 }
 
 /// The view's targets: shared objects with a shape, at most [`HAND_SIZED`] across and within [`REACH_SPAN`] of the
-/// rig, that aren't a member's hand.
+/// rig, that aren't a member's hand; with the member's own body in the view, within [`BODY_REACH`] of the rig's
+/// origin across the floor.
 fn targets(v: &FrameView) -> impl Iterator<Item = &pe_seams::ViewObject> {
     let rig = v.local_rig.pos;
+    let body = own_body(v);
     v.objects.iter().filter(move |o| {
         o.class == ObjectClass::World
             && o.hand_of.is_none()
             && o.shape.is_some()
             && o.radius <= HAND_SIZED
             && o.pos.dist2(&rig) <= REACH_SPAN * REACH_SPAN
+            && (!body || {
+                let [x, _, z] = to_rig(v, (o.pos - Pos::ORIGIN).0).map(f64::from);
+                x * x + z * z <= BODY_REACH * BODY_REACH
+            })
     })
+}
+
+/// Whether `v` has this member's own body (S5 v1.12's own `HeadView`): its hands then go in the body's frame.
+fn own_body(v: &FrameView) -> bool {
+    v.heads.iter().any(|h| h.own)
+}
+
+/// A rig-frame point kept within [`BODY_RANGE`] of the rig's origin across the floor and up or down.
+fn in_range(at: [f32; 3]) -> [f32; 3] {
+    let [x, y, z] = at;
+    let across = (x * x + z * z).sqrt();
+    let k = if across > BODY_RANGE { BODY_RANGE / across } else { 1.0 };
+    [x * k, y.clamp(-BODY_RANGE, BODY_RANGE), z * k]
 }
 
 /// The target `which` names in `v`.
@@ -659,6 +696,44 @@ right swing 0 0 -4 1
         let ball = object(11, [0.0, 0.06, -0.8], Some(Shape::Sphere { radius: 0.06 }), 0.06);
         v.objects = vec![wall, ball];
         assert_eq!(ids(&v), [11], "the ball only");
+    }
+
+    /// With the member's own body in the view (the plane), a reach aims only at shapes within [`BODY_REACH`] across the
+    /// floor, and a hand that follows a target farther stays within [`BODY_RANGE`], inside pe-world's 4 m: K4's R4'a,
+    /// where `share`'s lowest id was a shape thrown 7 m away, and neither member's hand made an entry for 6 s.
+    #[test]
+    fn with_a_body_a_reach_aims_within_reach_and_the_hand_stays_in_range() {
+        use pe_seams::Shape;
+        let clock = crate::clock::LocalClock::new(HostTime(0), pe_seams::SimRate::new(60).expect("a rate"));
+        let mut v = (*crate::standin::view_at(&clock, pe_seams::Frame(0))).clone();
+        let half = |h: f32| Some(Shape::Box { half_extents: [h; 3] });
+        // The lowest id thrown 7 m away; the rest in the spawn row, 2.5 m in front.
+        let thrown = object(5, [0.0, 0.1, -7.0], half(0.1), 0.17);
+        let near = object(7, [0.3, 0.1, -2.5], half(0.1), 0.17);
+        let top = object(8, [-0.3, 0.55, -2.5], half(0.075), 0.13);
+        v.objects = vec![thrown, near, top];
+        let ids = |v: &FrameView| targets(v).map(|o| o.id.to_u128()).collect::<Vec<_>>();
+        assert_eq!(ids(&v), [5, 7, 8], "no body (the ball pit's way): everything within 10 m");
+        v.heads = vec![pe_seams::HeadView {
+            member: pe_seams::MemberKey([1; 32]),
+            body: ObjectId::from_u128(99),
+            pos: Pos::ORIGIN.checked_add(pe_seams::Offset([0.0, 1.6, 0.0])).expect("in range"),
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            own: true,
+        }];
+        assert_eq!(ids(&v), [7, 8], "with a body: within 3 m across the floor");
+        assert_eq!(pick(&v, Ball::First), Some(ObjectId::from_u128(7)), "share's lowest id is one in reach");
+        // A hand sent past the range is kept at its edge, and only with a body.
+        let slot = Arc::new(FrameSlot::new());
+        let h = ScriptedHands::new(slot.clone(), Arc::new(Never));
+        h.start(parse("t", "right move 0 1 -6 0.1\nright wait 5\n").expect("parsed"));
+        let _ = h.hand_at(Hand::Right, secs(0.0));
+        let no_body = h.hand_at(Hand::Right, secs(1.0)).expect("tracked").pose.position;
+        assert!((no_body[2] + 6.0).abs() < 1e-4, "no view: where the script put it, {no_body:?}");
+        slot.publish(Arc::new(v));
+        let p = h.hand_at(Hand::Right, secs(2.0)).expect("tracked").pose.position;
+        assert!((p[0] * p[0] + p[2] * p[2]).sqrt() <= BODY_RANGE + 1e-4 && p[2] < -3.8, "at the edge: {p:?}");
+        assert!((p[1] - 1.0).abs() < 1e-4, "its height kept: {p:?}");
     }
 
     #[test]
