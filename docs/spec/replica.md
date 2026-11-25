@@ -391,6 +391,35 @@ ceil(240 / rate) sub-steps: the user chose the proposal of 13 ("30–120 Hz (rec
     bodies, hands included, a lower rate lets a fast or thin body pass through another (13.2);
   - sleep waits 0.5 s, a duration already (`constants.rs`).
 
+### 3.6 Player bodies (locomotion L3)
+
+world-model.md 8.2 has the rows; the replica's side is `crates/pe-replica/src/players.rs` [V]. Only a world whose
+preset gives members a body (the plane) has any; in the ball pit nothing here runs.
+
+- **A body's player is the replica's own,** as a hand's body is: the body object has no `Body` row, and the replica
+  keeps one pe-physics player (`add_player`, a kinematic capsule from `PLAYER`'s tuning) under its id for each
+  `Player` row (`WorldModel::players`), added at the body's feet when the row appears and removed when it goes
+  (`players::sync`, before the frame's moves). The drawn "Body shape" child has no `Body`, so nothing is built for
+  it. A player has no `BodyState` row (`physics_rows` leaves players out, as it does hand bodies; `physics_global`
+  covers its state), and the hand sync never removes one.
+- **The move**, after the pre-physics logic and before the hands: each body in id order is walked by
+  `PhysicsWorld::move_player`, its input from the row (`players::input`): the stick at up to `PLAYER.max_walk`,
+  turned into world axes by the heading plus the stick's yaw through the fork's trig (`walk_axes`); the room-scale
+  step, the head's move over the floor since the last frame (`head_pos - prev_head`), turned by the heading; and the
+  one-shot jump. The move treats as absent every hand (players pass through each other, the user's 3a) and what the
+  body's owner holds (`players::ignored`).
+- **The hands follow the moved body.** The returned feet are written into the world model at once
+  (`WorldModel::write_poses`), so `hands()` composes each hand's target from the moved body times the hand's place
+  in it, and a hand never trails its body by a frame. The step then carries the body to that pose (within about
+  1e-5 m), and the write-back writes the physics pose again.
+- **Determinism:** the move is serial, in id order, in the fork's arithmetic; the player's state is in the physics
+  image, so a rollback or a replay repeats it. A late entry that changes what a body met (another member's crate
+  where it stands, its own Move voided) re-steps it like any frame: the body ends where every replica has it.
+- Tests: `crates/pe-replica/tests/players.rs` (walking with a hand within 1 cm of its place, one jump, a heavy crate
+  blocks and a light box is shoved, a head walking into a wall pushes body and view out, late moves give the same
+  roots, a leave removes the player, a late crate pushes me out and my rig snaps, a voided Move rolls my walk back,
+  the view's rig and heads).
+
 ## 4. Rollback
 
 ### 4.1 Keyframes
@@ -837,6 +866,13 @@ back in time, and the first view there marks what it corrected (below). The repl
   import drops the unpublished hits below its cut, since the importer never steps those frames again. Equal frames
   give equal hits on every replica, since the physics is deterministic and reports them in contact order. Hits are
   for sounds only: nothing reads them back into the simulation, and no root includes them.
+- **Player bodies** (S5 v1.12; 3.6): `local_rig` follows the local member's body, at its feet less the head's
+  offset over the floor turned by the heading, and turned by the heading (`players::rig`), so the tracked head stands
+  over the feet; before the body exists, and in a world without bodies, it stays the identity. `heads` has one
+  `HeadView` per body, in member order: its member, its body, the head's world pose (over the feet at the head's
+  height, turned by the heading) and `own` on the local member's. `body_of` (pe-world's view objects) is on a body
+  and its non-hand children, and the replica marks the local member's `OWN_BODY` and gives every body part its
+  body's velocities, from its player, so a drawn capsule extrapolates with the body.
 - **Counters,** cumulative over the replica's life: `corrections` (advances that re-simulated), the deepest rollback,
   the frames re-simulated, and the floating-point guard's resets from both callers (3, step 1).
 - **`sim_time`** is the shared clock's host time of the view's frame (`ReplicaConfig::clock`), so every reader shares

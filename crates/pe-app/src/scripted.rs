@@ -617,6 +617,7 @@ right swing 0 0 -4 1
             light: None,
             radius,
             hand_of: None,
+            body_of: None,
             held_by: None,
             flags: pe_seams::ViewFlags::default(),
             version: None,

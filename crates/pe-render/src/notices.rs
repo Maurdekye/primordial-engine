@@ -774,6 +774,7 @@ mod tests {
             activations_retracted: Vec::new(),
             hits: Vec::new(),
             hits_from: None,
+            heads: Vec::new(),
         }
     }
 
@@ -792,6 +793,7 @@ mod tests {
             light: None,
             radius: 0.09,
             hand_of: Some((member, Hand::Right)),
+            body_of: None,
             held_by: None,
             flags: ViewFlags::default(),
             version: None,

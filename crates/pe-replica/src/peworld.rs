@@ -61,7 +61,9 @@ use pe_seams::{
 };
 use pe_sim::transform::rotate;
 use pe_sim::{Component, ComponentId, SimStore, Transform, WorldTransform};
-use pe_world::components::{Appearance, Body, BodyState, Hand, Light, Shape, body_kind, light_kind, shape_kind};
+use pe_world::components::{
+    Appearance, Body, BodyState, Hand, Light, Player, Shape, body_kind, light_kind, shape_kind,
+};
 use pe_world::edit::{AssetTarget, Op};
 use pe_world::script::AssetId;
 use pe_world::{Footprint, FrameEnd, RekeyReport, VoidKind, World, input_phase};
@@ -69,7 +71,7 @@ use pe_world::{Footprint, FrameEnd, RekeyReport, VoidKind, World, input_phase};
 use crate::logic::{ScriptRow, ScriptRunner, StageWorld};
 use crate::world::{
     BodyKind, BodyRow, BodyStateRow, Change, ClaimRow, Effects, HAND_RADIUS, HandRow, LogicFx, Phase, PhysicsSettings,
-    PushFx, ShapePart, ShapeRow, ThrowFx, Unbuildable, WorldModel,
+    PlayerRow, PushFx, ShapePart, ShapeRow, ThrowFx, Unbuildable, WorldModel,
 };
 
 const IDENTITY_ROTATION: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
@@ -152,8 +154,10 @@ impl PeWorld {
         let before = self.world.clone();
         match self.world.leave(entry.entry.author, entry.id()) {
             Ok(report) => {
+                // The leaver's player body goes after its hands (world-model.md 8.2): the replica's player for it goes
+                // at the next frame's player sync, as a hand's body does at the hand sync.
                 let footprint = Footprint {
-                    removed: report.hands,
+                    removed: report.hands.into_iter().chain(report.bodies).collect(),
                     reparented: report.moved.into_iter().map(|id| (id, true)).collect(),
                     ..Footprint::default()
                 };
@@ -497,6 +501,31 @@ impl WorldModel for PeWorld {
         hands
     }
 
+    fn players(&self) -> Vec<PlayerRow> {
+        let store = self.world.store();
+        self.world
+            .players()
+            .into_iter()
+            .filter_map(|r| {
+                let feet = store.world_transform(r.body)?.pos;
+                let p = r.player;
+                Some(PlayerRow {
+                    body: r.body,
+                    owner: r.owner,
+                    feet,
+                    stick: p.stick,
+                    stick_yaw: p.stick_yaw,
+                    heading: p.heading,
+                    jump: p.jump != 0,
+                    head_pos: p.head_pos,
+                    head_rot: p.head_rot,
+                    prev_head: p.prev_head,
+                    tracked: p.tracked != 0,
+                })
+            })
+            .collect()
+    }
+
     fn claims(&self) -> Vec<ClaimRow> {
         self.world
             .claims()
@@ -530,6 +559,10 @@ impl WorldModel for PeWorld {
                 let t = s.world_transform(id)?;
                 // pe-world writes a hand's side as 0 or 1; any other value is a bad row, drawn as no hand.
                 let hand = s.get::<Hand>(id).filter(|h| h.side <= 1);
+                // A player's body (world-model.md 8.2), or a drawn part of it: a child of the body that isn't a hand.
+                let body_of = s.get::<Player>(id).map(|p| p.owner).or_else(|| {
+                    s.parent(id).filter(|_| !s.has::<Hand>(id)).and_then(|b| s.get::<Player>(b)).map(|p| p.owner)
+                });
                 let own = s.get::<Shape>(id).filter(|sh| view_shape(sh).is_some());
                 // A hand without a shape of its own is drawn as the sphere it will push with.
                 let shape =
@@ -554,6 +587,7 @@ impl WorldModel for PeWorld {
                     light: s.get::<Light>(id).and_then(view_light),
                     hand_of: hand
                         .map(|h| (h.owner, if h.side == 0 { pe_seams::Hand::Left } else { pe_seams::Hand::Right })),
+                    body_of,
                     held_by: held.get(&id).cloned(),
                     flags: ViewFlags::default(),
                     // The last edit that changed anything about the object (world-model.md 7.3), or none if no edit

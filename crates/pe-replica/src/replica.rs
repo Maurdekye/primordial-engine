@@ -94,6 +94,7 @@ use pe_seams::{
 use crate::bodies;
 use crate::hands;
 use crate::logic::{ScriptCounts, ScriptEvent, ScriptRunner, event_kind};
+use crate::players;
 use crate::ring::{Policy, Ring};
 use crate::world::{BodyStateRow, HandRow, PhysicsSettings, ShapePart, ShapeRow, WorldModel, apply_order};
 
@@ -719,6 +720,9 @@ impl<W: WorldModel> ReplicaImpl<W> {
         }
         let mut events = Vec::new();
         self.logic(f, Stage::LogicPrePhysics, live, &mut events);
+        // The player bodies (world-model.md 8.2): each walked by the mover before the hands are driven, so a hand's
+        // target is where its moved body puts it.
+        self.faults += self.move_players();
         // The hand bodies for this frame, rebuilt from the world model's hands and the physics state (3.3).
         let hands = self.world.hands();
         let (faults, reaches) = hands::sync(&self.world, &mut self.physics, &hands, self.origin, self.rate, f);
@@ -914,6 +918,33 @@ impl<W: WorldModel> ReplicaImpl<W> {
             .collect()
     }
 
+    /// The frame's player moves (world-model.md 8.2; crate::players), after the pre-physics logic and before the
+    /// hands: the players brought in line with the world model's rows, then each body walked by the mover in id order,
+    /// and its moved feet written into the world model, so each of its hands' targets is the moved body's pose times
+    /// the hand's place in the body. The step then carries each body to that pose, and the write-back writes it again.
+    /// Returns the faults: refused physics calls and poses out of range.
+    fn move_players(&mut self) -> u64 {
+        let rows = self.world.players();
+        let mut faults = players::sync(&mut self.physics, &rows, self.origin);
+        if rows.is_empty() {
+            return faults;
+        }
+        let (hands, claims) = (self.world.hands(), self.world.claims());
+        let mut poses = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let input = players::input(row, &pe_physics::PLAYER);
+            let ignore = players::ignored(row, &hands, &claims);
+            match self.physics.move_player(row.body, &input, &ignore, &pe_physics::PLAYER, self.dt) {
+                Ok(pose) => match self.origin.checked_add(Offset(pose.position)) {
+                    Ok(pos) => poses.push((row.body, pos, pose.rotation)),
+                    Err(_) => faults += 1,
+                },
+                Err(_) => faults += 1,
+            }
+        }
+        faults + self.world.write_poses(&poses).len() as u64
+    }
+
     /// The awake bodies of world objects: hand bodies are the replica's own (3.3).
     fn awake(&self, hands: &[HandRow]) -> Vec<ObjectId> {
         let awake = |id: &ObjectId| self.physics.is_awake(*id).unwrap_or(false);
@@ -991,11 +1022,12 @@ impl<W: WorldModel> ReplicaImpl<W> {
     /// bytes a snapshot of this state takes (5.4).
     fn physics_rows(&mut self) -> Result<PhysicsRows, PhysicsError> {
         let digests = self.physics.body_digests()?;
-        // Hand bodies are the replica's own: the world model has no `Body` for them, so no `BodyState` row either.
-        // `physics_global` still covers them.
+        // Hand bodies and players are the replica's own: the world model has no `Body` for them, so no `BodyState`
+        // row either. `physics_global` still covers them.
         let hands = self.world.hands();
         let mut rows = Vec::with_capacity(digests.len());
-        for (id, digest) in digests.into_iter().filter(|(id, _)| !hands::is_hand(&hands, *id)) {
+        let own = |id: ObjectId| hands::is_hand(&hands, id) || self.physics.is_player(id);
+        for (id, digest) in digests.into_iter().filter(|(id, _)| !own(*id)) {
             let (linear, angular) = self.physics.velocity(id)?;
             let awake = self.physics.is_awake(id)?;
             let sleep_time = self.sleep_time(id);
@@ -1667,9 +1699,12 @@ impl<W: WorldModel> ReplicaImpl<W> {
     fn publish(&mut self) {
         // What the model draws, with what only the replica knows: the velocities and the local member's hands.
         let mut objects = self.world.view_objects();
+        let rows = self.world.players();
         let mut away = BTreeSet::new();
         for o in &mut objects {
-            if let Ok((linear, angular)) = self.physics.velocity(o.id) {
+            // A body's parts move with its player (S5 v1.12): the body's velocities, so they extrapolate with it.
+            let moves_as = o.body_of.and_then(|m| rows.iter().find(|r| r.owner == m)).map_or(o.id, |r| r.body);
+            if let Ok((linear, angular)) = self.physics.velocity(moves_as) {
                 o.linear_velocity = linear;
                 o.angular_velocity = angular;
             }
@@ -1677,6 +1712,10 @@ impl<W: WorldModel> ReplicaImpl<W> {
                 && owner == me
             {
                 o.flags = o.flags.with(ViewFlags::OWN_HAND);
+            }
+            // The local member's own body (S5 v1.12): hidden in the first-person view.
+            if self.config.local.is_some() && o.body_of == self.config.local {
+                o.flags = o.flags.with(ViewFlags::OWN_BODY);
             }
             // Only a hold by one of the local member's own hands: a hand-less hold (an agent's) has no tracked hand
             // to be drawn from, so it stays corrected like any other object.
@@ -1709,6 +1748,11 @@ impl<W: WorldModel> ReplicaImpl<W> {
         view.health = self.repairing_since.map_or(Health::Agreed, |since| Health::Repairing { since });
         view.changes = std::mem::take(&mut self.pending);
         view.objects = objects;
+        // The player bodies' rig and heads (S5 v1.12): the local rig follows the local member's body.
+        if let Some(rig) = rows.iter().find(|r| Some(r.owner) == self.config.local).and_then(players::rig) {
+            view.local_rig = rig;
+        }
+        view.heads = players::heads(&rows, self.config.local);
         (view.effects, view.retracted) = self.frame_effects();
         (view.activations, view.activations_retracted) = self.frame_activations();
         // The frames below the view's. One at or above it was stepped before a rollback and not yet stepped again:
@@ -1748,6 +1792,7 @@ fn empty_view(domain: DomainId) -> FrameView {
         activations_retracted: Vec::new(),
         hits: Vec::new(),
         hits_from: None,
+        heads: Vec::new(),
     }
 }
 

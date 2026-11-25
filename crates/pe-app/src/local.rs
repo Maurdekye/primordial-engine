@@ -10,9 +10,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use pe_seams::{
     Agreement, ChainId, Class, DomainId, Entry, EntryRef, Frame, FrameView, Hand, HandFeed, HandInput, HostTime,
-    LineId, MemberKey, ObjectId, Offset, Pos, RigTransform, SignedEntry,
+    LineId, MemberKey, MoveFeed, MoveInput, ObjectId, Offset, Pos, RigTransform, SignedEntry,
 };
 use pe_world::input::{HandPose, Input};
+use pe_world::{BodyHandPose, MoveSample};
 
 /// What step 2 asks the world when a hand's grasp changes (app.md 3.1, step 2): the object a close grabs, and what an
 /// opening hand holds. pe-app answers from the replica's present world (pe-world's `pick_grab` and claims).
@@ -168,6 +169,98 @@ impl HandFeed for SwitchedHands {
     }
 }
 
+/// The move feed in use (locomotion L4b), switched with [`SwitchedHands`]: VR's while an XR session runs, the
+/// desktop's otherwise. pe-app flips both together.
+pub struct SwitchedMove {
+    vr: Arc<dyn MoveFeed>,
+    desktop: Arc<dyn MoveFeed>,
+    vr_on: AtomicBool,
+}
+
+impl SwitchedMove {
+    pub fn new(vr: Arc<dyn MoveFeed>, desktop: Arc<dyn MoveFeed>) -> SwitchedMove {
+        SwitchedMove { vr, desktop, vr_on: AtomicBool::new(false) }
+    }
+
+    pub fn use_vr(&self, on: bool) {
+        self.vr_on.store(on, Ordering::Release);
+    }
+}
+
+impl MoveFeed for SwitchedMove {
+    fn move_at(&self, at: HostTime) -> Option<MoveInput> {
+        if self.vr_on.load(Ordering::Acquire) { self.vr.move_at(at) } else { self.desktop.move_at(at) }
+    }
+}
+
+/// The frame a body's hand poses are sent in (world-model.md 8.2, `BodyHand`; locomotion L3): the player's body and
+/// the heading and head of the Move sent for the same frame, or of the last one sent. A body never turns, so its frame
+/// is the world's axes at its feet; a hand's place in it is its rig-frame pose less the head's offset over the floor,
+/// turned by the heading.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BodyFrame {
+    pub body: ObjectId,
+    pub heading: u32,
+    pub head: [f32; 3],
+}
+
+/// The most a hand may be from its body's feet on an axis, m (pe-world `player::MAX_HAND_OFFSET`): past it, tracking
+/// went wrong and no pose goes.
+const MAX_HAND_OFFSET: f64 = 4.0;
+/// The most the head may be from the rig's origin on an axis, m (pe-world `player::MAX_HEAD_OFFSET`).
+const MAX_HEAD_OFFSET: f32 = 50.0;
+
+/// A locomotion sample as a `Move` carries it (world-model.md 8.2): the stick quantised by pe-world's own rule, the
+/// stick's yaw turned from radians into the wrapping angle (2^32 one turn), the head clamped into the range pe-world
+/// takes and its rotation normalized (the identity if it is no rotation). The heading and the press count go as they
+/// are: both are cumulative, so a lost or thinned sample heals at the next.
+pub fn move_sample(m: &MoveInput) -> MoveSample {
+    let yaw = if m.stick_yaw.is_finite() {
+        let turns = f64::from(m.stick_yaw) / std::f64::consts::TAU;
+        ((turns - turns.floor()) * 4_294_967_296.0).round() as u64 as u32
+    } else {
+        0
+    };
+    MoveSample {
+        stick: MoveSample::quantise_stick(m.stick),
+        stick_yaw: yaw,
+        heading: m.heading,
+        jumps: m.jumps,
+        head_pos: m.head.position.map(|c| if c.is_finite() { c.clamp(-MAX_HEAD_OFFSET, MAX_HEAD_OFFSET) } else { 0.0 }),
+        head_rot: normalized(m.head.orientation).unwrap_or([0.0, 0.0, 0.0, 1.0]),
+        tracked: m.tracked,
+    }
+}
+
+/// A hand's pose in its body's frame (`BodyHand`): its rig-frame position less the head's offset over the floor,
+/// turned by the heading, and its rotation turned by the heading, with the grip clamped and the grasp as decided.
+/// The turn is pe-replica's ([`pe_replica::players::turned`]), the one the view's rig uses, so the hand pe-world places
+/// and the hand pe-render draws from tracking agree. `None` past [`MAX_HAND_OFFSET`] or for no rotation.
+pub fn body_pose(frame: &BodyFrame, h: &HandInput) -> Option<BodyHandPose> {
+    let [x, y, z] = h.pose.position.map(f64::from);
+    let [hx, _, hz] = frame.head.map(f64::from);
+    let offset = pe_replica::players::turned(frame.heading, [x - hx, y, z - hz]);
+    if !offset.iter().all(|c| c.is_finite() && c.abs() <= MAX_HAND_OFFSET) {
+        return None;
+    }
+    let rot = normalized(mul(pe_replica::players::heading_rotation(frame.heading), h.pose.orientation))?;
+    Some(BodyHandPose { offset: Offset(offset), rot, grip: h.grip.clamp(0.0, 1.0), engaged: h.closed })
+}
+
+/// Sends this frame's `Move` for `frame.body` (locomotion L3): `sample`, held `hold` frames more so a thinned or late
+/// frame doesn't stop the body. Its entry's id if agreement took it.
+pub fn submit_move(
+    chain: &mut Chain,
+    agree: &mut dyn Agreement,
+    domain: DomainId,
+    p: Frame,
+    body: ObjectId,
+    sample: MoveSample,
+    hold: u8,
+) -> Option<EntryRef> {
+    send_input(chain, agree, domain, p, &Input::Move { body, samples: vec![sample], hold })
+}
+
 /// A hand's world pose for pe-world's input: its rig-frame pose through the rig (xr.md 3.2), the grip clamped to
 /// 0..1, and engaged when the author's machine decided the grasp closed. `None` if the pose falls outside the world,
 /// or its rotation is no rotation.
@@ -210,6 +303,8 @@ pub fn submit_hands(
     domain: DomainId,
     agree: &mut dyn Agreement,
     thin: bool,
+    body: Option<&BodyFrame>,
+    before: Option<(HostTime, RigTransform)>,
 ) -> HandsSent {
     let mut out = HandsSent::default();
     for (i, side) in [Hand::Left, Hand::Right].into_iter().enumerate() {
@@ -221,8 +316,17 @@ pub fn submit_hands(
         let Some(hand) = view.objects.iter().find(|o| o.hand_of == Some((chain.me(), side))).map(|o| o.id) else {
             continue;
         };
+        // The world pose through the newest view's rig: what a grab's pick measures its reach from.
         let Some(pose) = world_pose(&view.local_rig, &h) else { continue };
-        let payload = Input::Hand { hand, poses: vec![pose], hold: 0 }.encode();
+        // With a body, the hand goes in the body's frame, from the heading and head of this frame's Move, so it never
+        // trails the body (world-model.md 8.2; locomotion L3).
+        let payload = match body {
+            Some(f) => match body_pose(f, &h) {
+                Some(bp) => Input::BodyHand { hand, poses: vec![bp], hold: 0 }.encode(),
+                None => continue,
+            },
+            None => Input::Hand { hand, poses: vec![pose], hold: 0 }.encode(),
+        };
         match agree.submit(chain.entry(domain, p, Class::Input, payload)) {
             Ok(signed) => {
                 chain.took(&signed);
@@ -265,7 +369,7 @@ pub fn submit_hands(
                     // A throw where the hand's velocity at the real opening is known and finite (world-model.md 8.1):
                     // the grasp goes in at the stamp, after the opening, on a hand that may already be slowing, so
                     // the object takes the velocity it had with the hand when the player opened it. Else a release.
-                    let throw = throw_at(feed, side, view, hand, object, now);
+                    let throw = throw_at(feed, side, view, hand, object, now, before);
                     let input = match throw {
                         Some((linear, angular, _)) => Input::Throw { object, linear, angular },
                         None => Input::Release { object },
@@ -344,6 +448,7 @@ fn throw_at(
     hand: ObjectId,
     object: ObjectId,
     now: HostTime,
+    before: Option<(HostTime, RigTransform)>,
 ) -> Option<([f32; 3], [f32; 3], f32)> {
     // To the object's origin, as the view gives it: its centre of mass for M1's balls. A compound whose centre of mass
     // is off its origin is measured there until pe-app reads the centre (app.md 3, step 2).
@@ -351,12 +456,16 @@ fn throw_at(
     let rig = &view.local_rig;
     let at = |t: HostTime| -> Option<([f32; 3], [f32; 3])> {
         let h = feed.hand_at(side, t)?;
+        // The rig carries the hand (locomotion L3): its own motion at the hand, walking and a smooth turn's swing, is
+        // part of the throw. Not the body's velocity: in room scale the body follows the head while the rig stands
+        // still, and the tracked hand's velocity already holds that step (@design-reviewer's M1).
+        let carried = rig_velocity_at(before, view, h.pose.position);
         let (v, w) = (h.linear_velocity?, h.angular_velocity.unwrap_or([0.0; 3]));
         let v = rotate(rig.rotation, v.map(|c| c * rig.scale));
         let w = rotate(rig.rotation, w);
         let [rx, ry, rz] = r;
         let spin = [w[1] * rz - w[2] * ry, w[2] * rx - w[0] * rz, w[0] * ry - w[1] * rx];
-        Some(([v[0] + spin[0], v[1] + spin[1], v[2] + spin[2]], w))
+        Some(([v[0] + spin[0] + carried[0], v[1] + spin[1] + carried[1], v[2] + spin[2] + carried[2]], w))
     };
     let (linear, angular) = at(now)?;
     if !linear.iter().chain(&angular).all(|c| c.is_finite()) {
@@ -370,6 +479,35 @@ fn throw_at(
         .filter(|s| s.is_finite())
         .fold(0.0, f32::max);
     Some((linear, angular, peak))
+}
+
+/// Views further apart than this, s, give no rig velocity for a throw: a gap, not a frame's motion.
+const RIG_GAP_S: f64 = 0.1;
+/// A rig faster than this at the hand, m/s [I], is a correction between the two views, not a motion a throw carries:
+/// a walk (5 m/s) with a jump or fall and a turn's swing stay below it.
+const RIG_THROW_CAP: f64 = 15.0;
+
+/// The velocity the rig gives a point `p` of the rig frame (a tracked hand) between the view before (`before`, its
+/// time and rig) and `view`, in the world (locomotion L3's throws): zero without the view before, across a gap, or
+/// faster than [`RIG_THROW_CAP`].
+fn rig_velocity_at(before: Option<(HostTime, RigTransform)>, view: &FrameView, p: [f32; 3]) -> [f32; 3] {
+    let Some((t0, r0)) = before else { return [0.0; 3] };
+    let dt = view.sim_time.secs_since(t0);
+    if !(dt > 0.0 && dt <= RIG_GAP_S) {
+        return [0.0; 3];
+    }
+    let (Some(p1), Some(p0)) = (rig_point(&view.local_rig, p), rig_point(&r0, p)) else { return [0.0; 3] };
+    let d = (p1 - p0).0.map(|c| c / dt);
+    if d.iter().map(|c| c * c).sum::<f64>().sqrt() > RIG_THROW_CAP {
+        return [0.0; 3];
+    }
+    d.map(|c| c as f32)
+}
+
+/// Where `rig` puts the rig-frame point `p` in the world.
+fn rig_point(rig: &RigTransform, p: [f32; 3]) -> Option<Pos> {
+    let q = rotate(rig.rotation, p.map(|c| c * rig.scale));
+    rig.pos.checked_add(Offset(q.map(f64::from))).ok()
 }
 
 /// `d` as single-precision metres (offsets inside a held object's reach are small).
@@ -418,6 +556,84 @@ mod tests {
             closed: true,
             discontinuity: 0,
         }
+    }
+
+    /// A view at `ms` with the rig at `x` along +X, holding a hand and an object at the same place (so no spin term).
+    fn throw_view(ms: i64, x: f64) -> FrameView {
+        let at = Pos::ORIGIN.checked_add(Offset([x, 1.0, -0.4])).unwrap();
+        let obj = |n: u128| pe_seams::ViewObject {
+            id: ObjectId::from_u128(n),
+            class: pe_seams::ObjectClass::World,
+            pos: at,
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0; 3],
+            linear_velocity: [0.0; 3],
+            angular_velocity: [0.0; 3],
+            shape: None,
+            appearance: None,
+            light: None,
+            radius: 0.1,
+            hand_of: None,
+            body_of: None,
+            held_by: None,
+            flags: pe_seams::ViewFlags::default(),
+            version: None,
+        };
+        FrameView {
+            frame: Frame(ms as u64),
+            domain: DomainId(0),
+            sim_time: HostTime::from_millis(ms),
+            final_frame: None,
+            health: pe_seams::Health::Agreed,
+            local_rig: RigTransform {
+                pos: Pos::ORIGIN.checked_add(Offset([x, 0.0, 0.0])).unwrap(),
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                scale: 1.0,
+            },
+            objects: vec![obj(1), obj(2)],
+            effects: vec![],
+            retracted: vec![],
+            counters: pe_seams::ViewCounters::default(),
+            changes: vec![],
+            activations: vec![],
+            activations_retracted: vec![],
+            hits: vec![],
+            hits_from: None,
+            heads: vec![],
+        }
+    }
+
+    /// A right hand moving at `v` in the rig frame.
+    struct Moving([f32; 3]);
+    impl HandFeed for Moving {
+        fn hand_at(&self, hand: Hand, at: HostTime) -> Option<HandInput> {
+            let mut h = sample([0.0, 1.0, -0.4], [0.0, 0.0, 0.0, 1.0]);
+            h.hand = hand;
+            h.sampled_at = at;
+            h.linear_velocity = Some(self.0);
+            h.angular_velocity = Some([0.0; 3]);
+            Some(h)
+        }
+    }
+
+    /// @design-reviewer's M1 on L3: in room scale the rig stands still while the body follows the head, so a throw made
+    /// stepping forward at 1 m/s carries the step once (from the tracked hand), never the body's velocity on top. A rig
+    /// walking at 3 m/s with the hand still in it gives the object the walk, and two views far apart give nothing.
+    #[test]
+    fn a_throw_carries_the_rig_s_motion_once() {
+        let (hand, object) = (ObjectId::from_u128(1), ObjectId::from_u128(2));
+        let now = HostTime::from_millis(40);
+        let step = Moving([0.0, 0.0, -1.0]);
+        let still_rig = Some((HostTime::from_millis(16), throw_view(16, 0.0).local_rig));
+        let (linear, _, _) = throw_at(&step, Hand::Right, &throw_view(33, 0.0), hand, object, now, still_rig).unwrap();
+        assert!((linear[2] + 1.0).abs() < 1e-5 && linear[0].abs() < 1e-5, "the step once: {linear:?}");
+        let walked = Some((HostTime::from_millis(16), throw_view(16, 0.0).local_rig));
+        let still = Moving([0.0; 3]);
+        let (linear, _, _) = throw_at(&still, Hand::Right, &throw_view(33, 0.051), hand, object, now, walked).unwrap();
+        assert!((linear[0] - 3.0).abs() < 0.01 && linear[2].abs() < 1e-5, "the walk: {linear:?}");
+        let gap = Some((HostTime::from_millis(-500), throw_view(0, -1.0).local_rig));
+        let (linear, _, _) = throw_at(&still, Hand::Right, &throw_view(33, 0.0), hand, object, now, gap).unwrap();
+        assert_eq!(linear, [0.0; 3], "a gap carries nothing");
     }
 
     /// A rig turned 90 degrees about +Y, scaled 2 and placed at (10, 0, 0): a hand 1 m ahead (-Z) of the player is 2 m

@@ -196,12 +196,16 @@ pub fn sync<W: WorldModel + ?Sized>(
     let physical_hands: Vec<&HandRow> =
         hands.iter().filter(|h| is_physical(h, holding.binary_search(&h.hand).is_ok())).collect();
     // A body the world model lists neither as a physical object nor as a physical hand: a hand that opened, changed
-    // mode or is gone.
+    // mode or is gone. Players are crate::players's, synced before the hands.
     let mut bodies = world.physical();
     bodies.sort_unstable();
     let stale: Vec<ObjectId> = physics
         .objects()
-        .filter(|id| bodies.binary_search(id).is_err() && !physical_hands.iter().any(|h| h.hand == *id))
+        .filter(|id| {
+            bodies.binary_search(id).is_err()
+                && !physical_hands.iter().any(|h| h.hand == *id)
+                && !physics.is_player(*id)
+        })
         .collect();
     let mut faults: u64 = 0;
     for id in stale {

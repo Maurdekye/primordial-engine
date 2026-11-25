@@ -65,7 +65,9 @@ pub const MAX_DISPLAY_DELAY_MS: u32 = 1_000;
 pub const PRESET: &str = "m1-ball-pit";
 pub const PRESET_VERSION: u32 = 1;
 pub const PLANE: &str = "plane";
-pub const PLANE_VERSION: u32 = 1;
+/// 2: each member gets a player body (world-model.md 8.2, locomotion L2), so a version-1 build can't join a version-2
+/// world, nor the other way round.
+pub const PLANE_VERSION: u32 = 2;
 /// Bounds a record keeps: `decode` refuses bytes past them, and `ball_pit` refuses values past them, so a record A
 /// sends is one B can read.
 const MAX_BUILD: usize = 256;
