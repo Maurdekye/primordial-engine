@@ -463,6 +463,21 @@ pub fn shape_get_hull(world: &World, shape_id: ShapeId) -> Option<&HullData> {
     }
 }
 
+/// (b3Shape_GetMesh) — the mesh and its scale; None for non-mesh shapes.
+///
+/// C returns a `b3Mesh` holding the mesh pointer the shape was created with and the scale. The port's shape owns a
+/// copy of the mesh, so this returns that copy and the scale as the shape holds it (raised to `MIN_SCALE` per axis).
+pub fn shape_get_mesh(world: &World, shape_id: ShapeId) -> Option<(&MeshData, Vec3)> {
+    let index = get_shape(world, shape_id);
+    match &world.shapes[index as usize].geometry {
+        ShapeGeometry::Mesh { data, scale } => Some((data, *scale)),
+        _ => {
+            debug_assert!(false, "shape is not a mesh");
+            None
+        }
+    }
+}
+
 /// (b3Shape_GetCompound) — returns None for non-compound shapes.
 ///
 /// C returns the compound pointer the shape was created with. The port's shape owns a copy

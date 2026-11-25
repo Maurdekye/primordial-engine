@@ -48,6 +48,10 @@ Every change is marked in the source with a `Primordial Engine fork` comment.
 | `src/world/mod.rs`, `src/solver/mod.rs`, `src/solver/solve.rs`, `src/solver/integrate.rs` | D3: `World::swept_bodies` (body ids in order, rebuilt from the flags at a snapshot restore), `swept_iteration_budget` (`SWEPT_ITERATION_BUDGET`), `swept_counters`; the pass's two calls in the sub-step loop and its finish after the step; a swept body skips Box3D's post-step continuous solve and has its boxes updated in `finalize_bodies` |
 | `src/recording/snapshot/mod.rs`, `src/recording/writers.rs` | D3: a restore rebuilds the swept list; a body definition's `swept` rides in bit 1 of its bullet byte, so one without it writes the upstream bytes. `body_set_swept` is not captured as a recording op |
 | `src/swept_tests.rs` (new) | D3: thin walls at up to 400 m/s, restitution, balls head-on and off centre, sleeping boxes and stacks, a heavy bullet into a light sleeper, momentum, tumbling capsule and box bullets, resting and sliding bullets that raise no sweep event, a turning kinematic paddle, the budget's hold, worker counts and snapshot replay |
+| `src/mesh/mass.rs` (new), `src/mesh/mod.rs`, `src/shape/dispatch.rs` | CCD part 2 C: a closed mesh's mass (world-model.md 3.2). `compute_shape_mass` gives a mesh shape the mass of the solid it encloses, where upstream gives none. Closedness is judged on the built mesh's positions as given, before the scale: every edge in exactly two triangles, once each way, positions compared bit for bit (−0 as +0, by sorted position ids and sorted 64-bit edges), triangles with two equal positions left out. Then one signed tetrahedron per built triangle, in its order, from the centre of the scaled positions' bounding box, summed in `f64` and rounded to `f32` once, a mirroring scale's winding read back. An open mesh, one wound inward and one enclosing under 10⁻⁹ m³ keep upstream's no mass. `is_closed_mesh` and `compute_closed_mesh_mass` are public. A body without a mesh keeps a bit-identical mass |
+| `src/contact/mesh_cache.rs`, `src/contact/mesh_contact.rs` | CCD part 2 C: a moving mesh's triangles. Upstream's `refresh_cache` finds a mesh contact's triangles again only when the other shape's world bounds leave the cached box, which holds only while the mesh is static. A mesh on a body that isn't static has them found again at every update; static meshes keep upstream's rule. Each triangle's cache carries over, as upstream's refresh does. Without it, a dynamic mesh box whose contact began 0.1 m above a box floor kept an empty list and fell through |
+| `src/shape/lifecycle.rs`, `src/shape/api.rs` | `shape_get_mesh`, C's `b3Shape_GetMesh`, which the port lacked: the shape's mesh and its scale |
+| `src/mesh_tests.rs` | CCD part 2 C: closed-mesh mass (a box against Box3D's box hull, far from its origin, scaled and mirrored; open, inward, shared and tiny meshes; split vertices; two equal positions; a scale that rounds two positions into one) |
 
 ### Release validators: measured effect
 
@@ -72,6 +76,8 @@ opt-level s and target-cpu=native. Debug runs the same code as before.
 ## Invariants
 
 * A world with no swept body steps bit-identically to one built without D3: nothing in `solver/swept.rs` runs.
+* A world with no mesh shape on a moving body steps bit-identically to one built without CCD part 2 C, and a body
+  without a mesh has a bit-identical mass.
 * Results do not depend on `worker_count` (D2). Every parallel stage writes each output from
   exactly one block, and blocks are combined in a fixed order or with order-independent
   operations (sorted pair keys, ORed bit sets, integer sums). See `docs/parallel-physics.md`.

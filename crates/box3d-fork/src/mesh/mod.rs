@@ -20,6 +20,8 @@ mod bvh;
 mod cast;
 mod create;
 mod factory;
+// Primordial Engine fork (CCD part 2 C): a closed mesh's mass.
+mod mass;
 mod query;
 mod types;
 
@@ -29,6 +31,7 @@ pub use factory::{
     create_box_mesh, create_grid_mesh, create_hollow_box_mesh, create_platform_mesh,
     create_torus_mesh, create_wave_mesh,
 };
+pub use mass::{compute_closed_mesh_mass, is_closed_mesh, MIN_MESH_VOLUME};
 pub use query::{collide_mover_and_mesh, get_mesh_triangle, overlap_mesh, query_mesh};
 pub use types::{
     convert_bytes_to_mesh, get_mesh_flags, get_mesh_material_indices, get_mesh_nodes,

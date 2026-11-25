@@ -4,6 +4,7 @@
 use box3d_rust::math_functions::{Quat, Vec3, is_normalized_quat};
 
 use crate::error::PhysicsError;
+use crate::mesh::Mesh;
 
 /// Bounds on what the engine passes to Box3D. Box3D itself only debug-asserts its inputs, and a
 /// finite but huge value (a radius of 1e30, a position of 1e38) overflows to infinity or NaN
@@ -36,6 +37,16 @@ pub mod limits {
     /// shapes on one body: building costs every peer CPU time (review P22R-6).
     pub const MAX_HULL_POINTS: usize = 1024;
     pub const MAX_SHAPES_PER_BODY: usize = 64;
+    /// The largest simulation blob, a mesh's or a hull's, in bytes: 960 KiB, pe-world's carried-blob cap
+    /// (world-model.md 3.4, `MAX_CARRIED_BLOB`). A mesh given as vertices and triangles is held to what such a blob
+    /// holds.
+    pub const MAX_SIM_BLOB_BYTES: usize = 960 * 1024;
+    /// Most points a hull v1 blob holds (world-model.md 3.2).
+    pub const MAX_HULL_BLOB_POINTS: usize = 64;
+    /// Smallest magnitude of a mesh scale axis: Box3D's floor (`MIN_SCALE`), which it would raise a smaller axis to,
+    /// so the mesh would collide and weigh as a solid 1% thick where it is drawn flat. Refused instead
+    /// (@coordinator-opus, after @fable-reviewer; world-model.md 3.2, "the scale floor").
+    pub const MIN_MESH_SCALE: f32 = box3d_rust::math_functions::MIN_SCALE;
 }
 
 use limits::*;
@@ -103,6 +114,19 @@ pub enum Geometry {
     /// are kept).
     Hull {
         points: Vec<[f32; 3]>,
+    },
+    /// A triangle mesh (world-model.md 3.2), built once ([`Mesh`]) and scaled per shape: Box3D multiplies every
+    /// vertex by `scale`, axis by axis, in the body's frame. An axis under [`limits::MIN_MESH_SCALE`] in magnitude is
+    /// refused. Each triangle collides on its front only (Box3D's mesh contact is one-sided), unless `both_sides`:
+    /// then the shape has a back too, the same triangles reversed, as a second Box3D shape with no density, so the
+    /// mass stays the mesh's own. A closed mesh weighs the solid it encloses at the shape's density, an open one
+    /// nothing, and a dynamic body needs mass from its shapes together ([`PhysicsError::Massless`]). A mesh never
+    /// collides with another mesh (Box3D has no mesh-against-mesh contact), and a body with a mesh shape is never
+    /// swept as a bullet, only against.
+    Mesh {
+        mesh: Mesh,
+        scale: [f32; 3],
+        both_sides: bool,
     },
 }
 
@@ -177,6 +201,29 @@ impl ShapeDesc {
                     bounded(p, MAX_SIZE, "hull point")?;
                 }
             }
+            Geometry::Mesh { mesh, scale, .. } => {
+                if !scale.iter().all(|s| s.is_finite()) {
+                    return Err(PhysicsError::InvalidValue("mesh scale"));
+                }
+                const UNDER: [&str; 3] = [
+                    "mesh scale x is under 0.01 in magnitude, Box3D's floor on scale: rescale the mesh at import",
+                    "mesh scale y is under 0.01 in magnitude, Box3D's floor on scale: rescale the mesh at import",
+                    "mesh scale z is under 0.01 in magnitude, Box3D's floor on scale: rescale the mesh at import",
+                ];
+                for (s, why) in scale.iter().zip(UNDER) {
+                    if s.abs() < MIN_MESH_SCALE {
+                        return Err(PhysicsError::InvalidValue(why));
+                    }
+                }
+                // Each vertex scaled, as Box3D scales it, within the size limit: the scaled corners of the box
+                // around every vertex bound them all.
+                let (lo, hi) = mesh.extent();
+                let within =
+                    (0..3).all(|k| (lo[k] * scale[k]).abs() <= MAX_SIZE && (hi[k] * scale[k]).abs() <= MAX_SIZE);
+                if !within {
+                    return Err(PhysicsError::InvalidValue("mesh vertex, scaled, beyond the size limit"));
+                }
+            }
         }
         let non_negative = |v: f32, max: f32, what| {
             if v.is_finite() && (0.0..=max).contains(&v) { Ok(()) } else { Err(PhysicsError::InvalidValue(what)) }
@@ -203,8 +250,9 @@ pub struct BodyDesc {
     pub angular_damping: f32,
     pub gravity_scale: f32,
     /// Swept in every sub-step against everything it collides with, moving or not, so no contact is skipped however
-    /// fast either moves (world-model.md 3.2, box3d-fork D3). It takes effect when every shape is a sphere, capsule or
-    /// box. Off by default.
+    /// fast either moves (world-model.md 3.2, box3d-fork D3). It takes effect when every shape is a sphere, capsule,
+    /// box or hull; a body with a mesh shape is never swept itself (other bullets are swept against it). Off by
+    /// default.
     pub bullet: bool,
     pub enable_sleep: bool,
     pub shapes: Vec<ShapeDesc>,

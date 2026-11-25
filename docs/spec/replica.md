@@ -1244,7 +1244,9 @@ world-model.md 3.2 says what a bullet means; this is the solver's side [V `crate
   body flag in the snapshot, and nothing else crosses a step.
 - **Mesh triangles are partners** (CCD part 2 A,
   @ticket:primordial-engine/ccd-part-2-box3d-fork-sweeps-meshes-and-hulls-pe), on static and kinematic meshes
-  [V swept tests], and dynamic and sleeping ones by the same path [I, untested until C gives meshes mass]:
+  [V swept tests], and dynamic and sleeping ones by the same path: a 5 cm steel bullet at 300 m/s into a 1 m dynamic
+  mesh box, awake or asleep, never gets within 0.5 m of its centre, and one that isn't a bullet passes through it [V
+  pe-physics tests/meshes.rs]:
   - A mesh shape a search finds adds one pair per triangle whose box meets the bullet's path in the mesh body's frame,
     mapped over the mesh body's own motion, translation and turn together (@astra-deliberator's bound). The triangle
     is the one Box3D's mesh contact takes (`get_mesh_triangle`: the shape's scale, a mirroring scale's winding, the
@@ -1268,6 +1270,34 @@ world-model.md 3.2 says what a bullet means; this is the solver's side [V `crate
     queries for its 847 triangle pairs over three steps; without the plane test, 611 in one step [V test].
   - Scenes without meshes are unchanged: the pit's final states and counters equal main's in all five runs, and so
     do the self-test digest and the stack-hit RESULT lines [V scratch/mesh/a-digest.log, a-selftest.lines].
+- **Mesh colliders in pe-physics** (CCD part 2 C; pe-replica builds them from blobs in part D, so 2.1's rule that
+  meshes are not built stands until then). `pe_physics::Mesh` builds a mesh once, Box3D's bounding volume tree with
+  welding off, from vertices and triangles or a mesh v1 blob, and every shape with it shares the build;
+  `Geometry::Mesh` adds a scale and both sides [V tests/meshes.rs]:
+  - Its mass is world-model.md 3.2's, the solid a closed mesh encloses as the fork builds it, in the fork's
+    `compute_shape_mass` (FORK.md). The golden sliver's mass, centre and inertia, and its verdicts with the sliver
+    kept and dropped, are pinned and printed as RESULT lines, the same in debug and release here [V].
+  - A dynamic body with a mesh whose shapes together have no mass is refused before anything is made
+    (`PhysicsError::Massless`, with the dropped count when dropped triangles opened a mesh); part D makes it
+    `Unbuildable::Mass`. A mesh scale axis under 0.01 in magnitude is refused, `InvalidValue` naming the axis
+    (@coordinator-opus).
+  - Both sides: a second Box3D shape, the triangles reversed, with density 0 and a name that rides in the snapshot,
+    so it adds no mass and a hit on it names its front's place among the body's shapes, after a restore and on a
+    joiner too [V].
+  - A body with a mesh shape is swept only as a partner, never as a bullet (the fork sweeps a body whose shapes are
+    all spheres, capsules and hulls). A held mesh is checked against walls by the capsule around its scaled vertices
+    (`static_in_way`, world-model.md 3.2's "holding").
+  - Fixed in the fork: a mesh contact found its triangles again only when the other shape moved, as upstream
+    assumes a static mesh, so a dynamic mesh box whose contact began 0.1 m above a box floor kept an empty list and
+    fell through it [V test]. A mesh on a moving body now has them found at every update; static meshes keep
+    upstream's rule, and scenes without moving meshes are unchanged: the pit's states and counters in all five runs,
+    the self-test digest and the stack-hit RESULT lines equal main's [V scratch/mesh/c2-digest.cmp,
+    c2-selftest.lines].
+  - Cost [V rough: release, medians on a shared machine at idle priority, `examples/mesh_cost.rs`], for a closed mesh
+    of 1,000, 10,000 and 50,000 triangles: built from its blob in 0.45, 5.2 and 22 ms, its back about as much again;
+    a dynamic mesh body rebuilt with its mesh kept (a Scale edit) in 0.16, 2.4 and 8.9 ms; an image saved in 0.009,
+    0.13 and 0.46 ms and restored in 0.009, 0.07 and 0.32 ms. A joiner's transfer carries the built form: 42, 381
+    and 1,819 KiB for blobs of 17, 175 and 878 KiB [V, byte counts], twice that with both sides.
 - **Not yet (part 2):** height fields and compounds are neither swept nor swept against (Q5: pe-physics builds
   neither), and a hull that isn't a box takes a rounded core scaled toward its centre instead of its faces moved in.
 - **Known limit** [V swept tests' trace]: a 12 cm box bullet tumbling into a 1 cm wall at 400 m/s and 200 rad/s

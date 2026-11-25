@@ -157,6 +157,11 @@ pub fn compute_shape_mass(shape: &Shape) -> MassData {
         ShapeGeometry::Capsule(capsule) => compute_capsule_mass(capsule, shape.density),
         ShapeGeometry::Hull(hull) => compute_hull_mass(hull, shape.density),
         ShapeGeometry::Sphere(sphere) => compute_sphere_mass(sphere, shape.density),
+        // Primordial Engine fork (CCD part 2 C): a closed mesh weighs the solid it encloses, as Box3D built it
+        // (world-model.md 3.2); an open one, as in Box3D, nothing.
+        ShapeGeometry::Mesh { data, scale } => {
+            crate::mesh::compute_closed_mesh_mass(&data.vertices, &data.triangles, *scale, shape.density)
+        }
         _ => MassData::default(),
     }
 }
