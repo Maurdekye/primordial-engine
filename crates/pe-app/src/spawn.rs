@@ -78,6 +78,12 @@ pub const SPAWNED: &str = "/Spawned";
 /// Deletes per transaction while clearing, and the most rounds a clear takes.
 const CLEAR_BATCH: usize = 32;
 const CLEAR_ROUNDS: usize = 16;
+/// The longest the worker waits out pe-api's change rate for one change (api.md 9.3: 20 a second, a burst of 40) before
+/// it gives up and says so: a counted spawn queues a hundred at once, and a clear of 500 is 16 changes (K4's R5', where
+/// 43 of 102 stacks were refused `rate_limited`). A quick second press of a button can meet the same limit.
+pub const RATE_PATIENCE: std::time::Duration = std::time::Duration::from_secs(5);
+/// The longest one wait, whatever `retry_after_ms` says.
+const RATE_WAIT_MAX: std::time::Duration = std::time::Duration::from_secs(1);
 /// The in-process caller's connection: far from pe-mcp's, which count up from 1.
 const CONNECTION: ConnectionId = ConnectionId(u64::MAX - 7);
 /// Where the console's `spawn` puts a thing: 1 m in front of the origin, 0.8 m up (a stack on the floor), each one
@@ -354,7 +360,7 @@ fn work(api: &dyn WorldApi, c: &Caller, rx: &Receiver<Job>, state: &Mutex<State>
             "This world has no Spawned folder: spawning needs the plane (--preset plane)".to_string()
         } else {
             match &job {
-                Job::Spawn(k, at) => said(k.template(), api.apply(c, spawn_tx(*k, *at), &ApplyOpts::default())),
+                Job::Spawn(k, at) => said(k.template(), paced(api, c, &spawn_tx(*k, *at), &ApplyOpts::default())),
                 Job::Clear => clear(api, c),
             }
         };
@@ -406,12 +412,12 @@ fn clear_with(api: &dyn WorldApi, c: &Caller, opts: &ApplyOpts, rounds: usize) -
             break;
         }
         for batch in ids.chunks(CLEAR_BATCH) {
-            let r = api.apply(c, clear_tx(batch), opts);
+            let r = paced(api, c, &clear_tx(batch), opts);
             if accepted(&r) {
                 removed += batch.len();
             } else if is_held(&r) {
                 for id in batch {
-                    let one = api.apply(c, clear_tx(std::slice::from_ref(id)), opts);
+                    let one = paced(api, c, &clear_tx(std::slice::from_ref(id)), opts);
                     if accepted(&one) {
                         removed += 1;
                     } else if is_held(&one) {
@@ -429,6 +435,26 @@ fn clear_with(api: &dyn WorldApi, c: &Caller, opts: &ApplyOpts, rounds: usize) -
         (0, 0) => "Nothing to clear".into(),
         (n, 0) => format!("Cleared {n}"),
         (n, k) => format!("Cleared {n}, {k} held"),
+    }
+}
+
+/// `api.apply`, asked again after each `rate_limited` answer once its `retry_after_ms` (at most [`RATE_WAIT_MAX`]) has
+/// passed, for up to [`RATE_PATIENCE`]; any other answer, or the last `rate_limited`, is returned as it came.
+fn paced(
+    api: &dyn WorldApi,
+    c: &Caller,
+    tx: &Transaction,
+    opts: &ApplyOpts,
+) -> Result<Outcome, pe_seams::world_api::ApiError> {
+    let give_up = std::time::Instant::now() + RATE_PATIENCE;
+    loop {
+        match api.apply(c, tx.clone(), opts) {
+            Err(e) if e.code == pe_seams::world_api::ErrorCode::RateLimited && std::time::Instant::now() < give_up => {
+                let ms = e.details.as_ref().and_then(|d| d["retry_after_ms"].as_u64()).unwrap_or(50);
+                std::thread::sleep(std::time::Duration::from_millis(ms.max(1)).min(RATE_WAIT_MAX));
+            }
+            r => return r,
+        }
     }
 }
 
@@ -672,5 +698,23 @@ mod tests {
         let dry = ApplyOpts { mode: pe_seams::world_api::Mode::DryRun, ..Default::default() };
         let o = api.apply(&c, spawn_tx(Kind::Stack, at[101]), &dry).expect("an answer");
         assert_eq!(o.status, Status::Accepted, "{:?}", o.refusal);
+    }
+
+    /// pe-api takes 20 changes a second with a burst of 40 (api.md 9.3), dry runs too: 60 spawns asked back to back,
+    /// as a counted spawn's jobs come, are each taken once the rate allows, never refused `rate_limited` (K4's R5',
+    /// where 43 of 102 were).
+    #[test]
+    fn spawns_asked_faster_than_the_change_rate_wait_their_turn() {
+        let me = MemberKey([1; 32]);
+        let (api, c) = (plane_api(me, true), person(me));
+        let dry = ApplyOpts { mode: pe_seams::world_api::Mode::DryRun, ..Default::default() };
+        let tx = spawn_tx(Kind::Box, grid_at(Kind::Box, 0));
+        for i in 0..60 {
+            let o = paced(&*api, &c, &tx, &dry).unwrap_or_else(|e| panic!("spawn {i}: {e:?}"));
+            assert_eq!(o.status, Status::Accepted, "spawn {i}: {:?}", o.refusal);
+        }
+        // The fixture does limit: with the bucket spent, asking at once is refused.
+        let limited = |r: &Result<Outcome, pe_seams::world_api::ApiError>| matches!(r, Err(e) if e.code == pe_seams::world_api::ErrorCode::RateLimited);
+        assert!((0..10).any(|_| limited(&api.apply(&c, tx.clone(), &dry))), "asked at once, past the burst");
     }
 }
