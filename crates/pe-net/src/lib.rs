@@ -20,4 +20,5 @@ pub mod clock;
 pub mod core;
 pub mod lanes;
 pub mod lifecycle;
+pub mod outage;
 pub mod thread;

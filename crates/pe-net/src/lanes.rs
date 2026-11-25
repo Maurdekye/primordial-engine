@@ -468,8 +468,17 @@ impl Link {
             })
             .map(|(s, _)| *s)
             .collect();
+        if acked.is_empty() {
+            return;
+        }
         for s in acked {
             pend.remove(&s);
+        }
+        // The peer is answering again: every message still pending goes back to the base RTO, as QUIC's probe count
+        // resets on an ACK (3.3). Without it a message lost in an outage waits out its doubled timer, up to 64 RTOs,
+        // after the link is back.
+        for p in self.pending.iter_mut().flat_map(|m| m.values_mut()) {
+            p.backoff = 0;
         }
     }
 

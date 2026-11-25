@@ -57,8 +57,9 @@ type Extra = Box<dyn Fn(HostTime, SocketAddr, SocketAddr, &[u8]) -> i64>;
 struct Net {
     nodes: Vec<Node>,
     now: HostTime,
-    /// Addresses that swallow everything sent to them.
+    /// Addresses that swallow everything sent to them, and the bytes they swallowed.
     dead: Vec<SocketAddr>,
+    swallowed: usize,
     /// One-way delay, in milliseconds, and the packets on their way: (arrival, from, to, bytes).
     delay_ms: i64,
     flight: Vec<(HostTime, SocketAddr, SocketAddr, Vec<u8>)>,
@@ -76,6 +77,7 @@ impl Net {
             nodes: Vec::new(),
             now: HostTime(1_000_000_000),
             dead: Vec::new(),
+            swallowed: 0,
             delay_ms: 10,
             flight: Vec::new(),
             hold: Vec::new(),
@@ -85,9 +87,15 @@ impl Net {
     }
 
     fn add(&mut self, seed: u8, addr: &str, member: bool, build: &str) -> usize {
+        self.add_with(seed, addr, member, build, |_| {})
+    }
+
+    fn add_with(&mut self, seed: u8, addr: &str, member: bool, build: &str, tweak: impl Fn(&mut Config)) -> usize {
         let id = Identity::from_seed(&[seed; 32]);
         let key = pe_seams::MemberKey(id.public());
-        let core = Core::new(Config::new(hello(build), member), id, [seed; 32]).unwrap();
+        let mut cfg = Config::new(hello(build), member);
+        tweak(&mut cfg);
+        let core = Core::new(cfg, id, [seed; 32]).unwrap();
         self.nodes.push(Node {
             core,
             skew: 0,
@@ -133,7 +141,9 @@ impl Net {
             let arrive = now.plus_nanos(self.delay_ms * 1_000_000);
             for i in 0..self.nodes.len() {
                 while let Some(tx) = self.nodes[i].core.poll_transmit() {
-                    if !self.dead.contains(&tx.to) {
+                    if self.dead.contains(&tx.to) {
+                        self.swallowed += tx.bytes.len();
+                    } else {
                         let from = self.nodes[i].addr;
                         let mut at = self.hold.iter().filter(|h| h.0 == from).map(|h| h.1).fold(arrive, HostTime::max);
                         if let Some(f) = &self.extra {
@@ -188,9 +198,14 @@ fn refused(n: &Node) -> Option<&Refusal> {
 
 /// A (member) and B (joiner), with B joined from A's invite.
 fn joined() -> (Net, usize, usize) {
+    joined_with(|_| {})
+}
+
+/// As [`joined`], with both configs tweaked.
+fn joined_with(tweak: impl Fn(&mut Config)) -> (Net, usize, usize) {
     let mut net = Net::new();
-    let a = net.add(1, "10.0.0.1:4433", true, "pe 0.1");
-    let b = net.add(2, "10.0.0.2:4433", false, "pe 0.1");
+    let a = net.add_with(1, "10.0.0.1:4433", true, "pe 0.1", &tweak);
+    let b = net.add_with(2, "10.0.0.2:4433", false, "pe 0.1", &tweak);
     let inv = net.invite(a);
     let now = net.now;
     net.nodes[b].core.dial(now, &inv);
@@ -844,4 +859,198 @@ fn a_repair_message_arrives_about_one_delay_after_the_link_slows() {
     }
     // One way is 45 ms; the traffic loop steps 16 ms at a time, and a lost-and-resent stream packet would cost an RTO.
     assert!(waits.iter().all(|w| *w <= 45 + 2 * 16), "Repair waits after the delay rose, ms: {waits:?}");
+}
+
+// The outage probe (transport.md 6.5, pe_net::outage). An outage of L leaves a link dark for up to about 2L under
+// quinn's plain Cubic, since its probe wait doubles and resets only on an ACK, and each direction waits for its own
+// probe (@engine-architect's K8 on two machines; @fable-reviewer's reading of quinn-proto 0.11.19).
+
+/// One 16 ms tick: with `moving`, each side sends the other an Action message and a Pose, as a session's hands do.
+fn tick(net: &mut Net, a: usize, b: usize, moving: bool) {
+    if moving {
+        let (ka, kb) = (net.nodes[a].key, net.nodes[b].key);
+        net.nodes[a].core.send(kb, Lane::Action, Bytes::from_static(b"entry from a"));
+        net.nodes[a].core.send(kb, Lane::Pose, Bytes::from_static(b"pose from a"));
+        net.nodes[b].core.send(ka, Lane::Action, Bytes::from_static(b"entry from b"));
+        net.nodes[b].core.send(ka, Lane::Pose, Bytes::from_static(b"pose from b"));
+    }
+    net.run(16);
+}
+
+/// When each side, A then B, first hears the other after an outage, and (moving) when it holds every Action the
+/// other sent before the link came back: in ms after the link's return.
+#[derive(Debug)]
+struct Tail {
+    heard: [Option<i64>; 2],
+    caught_up: [Option<i64>; 2],
+}
+
+/// Both ways dark for `outage_ms`, after 2 s of ticks, then up to 40 s more. Anything received counts as heard,
+/// a Received or a LinkUp.
+fn dark_tail(tweak: impl Fn(&mut Config), outage_ms: u32, moving: bool) -> (Option<i64>, Option<i64>) {
+    let t = tail(tweak, outage_ms, moving);
+    (t.heard[0], t.heard[1])
+}
+
+fn tail(tweak: impl Fn(&mut Config), outage_ms: u32, moving: bool) -> Tail {
+    let (mut net, a, b) = joined_with(tweak);
+    for _ in 0..125 {
+        tick(&mut net, a, b, moving);
+    }
+    net.dead = vec![net.nodes[a].addr, net.nodes[b].addr];
+    for _ in 0..outage_ms / 16 {
+        tick(&mut net, a, b, moving);
+    }
+    net.dead.clear();
+    let back = net.now;
+    // Every tick so far sent one Action each way: 125 before the outage and outage_ms / 16 in it.
+    let owed = if moving { 125 + outage_ms as usize / 16 } else { 0 };
+    let actions = |n: &Node| n.got.iter().filter(|r| r.lane == Lane::Action).count();
+    let had: Vec<usize> = net.nodes.iter().map(actions).collect();
+    for n in &mut net.nodes {
+        n.got.clear();
+        n.events.clear();
+    }
+    let mut heard = [None, None];
+    let mut caught_up = [None, None];
+    for _ in 0..40_000 / 16 {
+        tick(&mut net, a, b, moving);
+        for (k, i) in [a, b].into_iter().enumerate() {
+            let n = &net.nodes[i];
+            if heard[k].is_none() {
+                let got = n.got.first().map(|r| r.at);
+                let up = n.events.iter().any(|e| matches!(e, NetEvent::LinkUp { .. }));
+                if got.is_some() || up {
+                    heard[k] = Some((got.unwrap_or(net.now).0 - back.0) / 1_000_000);
+                }
+            }
+            // The Actions sent after the return arrive first; caught up once all the earlier ones are in too.
+            let after = (net.now.0 - back.0) / 16_000_000;
+            if caught_up[k].is_none() && had[i] + actions(n) >= owed + after as usize {
+                caught_up[k] = Some((net.now.0 - back.0) / 1_000_000);
+            }
+        }
+        if heard.iter().all(Option::is_some) && caught_up.iter().all(Option::is_some) {
+            break;
+        }
+    }
+    for i in [a, b] {
+        assert!(
+            !net.nodes[i].events.iter().any(|e| matches!(e, NetEvent::LinkDown { .. })),
+            "the link stays open: {:?}",
+            net.nodes[i].events
+        );
+    }
+    Tail { heard, caught_up }
+}
+
+#[test]
+fn quinn_s_plain_backoff_leaves_a_dark_tail_after_an_outage() {
+    // The problem, kept as a measurement: with the probe off, a 10 s outage leaves at least one side dark for
+    // seconds after the link is back.
+    let (ta, tb) = dark_tail(|c| c.t_trip = None, 10_000, true);
+    let worst = ta.unwrap_or(i64::MAX).max(tb.unwrap_or(i64::MAX));
+    eprintln!("plain Cubic, 10 s outage, moving: dark tail A {ta:?} ms, B {tb:?} ms");
+    assert!(worst >= 2_000, "expected a tail of seconds: A {ta:?} ms, B {tb:?} ms");
+}
+
+#[test]
+fn after_an_outage_both_sides_hear_each_other_within_a_second() {
+    // The acceptance of @ticket pe-net-recover-within-1-s-after-a-link-outage-qu, on the default config: dark time
+    // within about 1 s of the outage, both ways, for K8's cases (0.5 s and 10 s, hands still and moving) and a
+    // 2-3 s drop.
+    for (outage, moving) in [(500, true), (2_500, true), (10_000, true), (2_500, false), (10_000, false)] {
+        let (ta, tb) = dark_tail(|_| {}, outage, moving);
+        eprintln!("outage probe, {outage} ms outage, moving {moving}: dark tail A {ta:?} ms, B {tb:?} ms");
+        for t in [ta, tb] {
+            assert!(t.is_some_and(|t| t <= 1_000), "{outage} ms, moving {moving}: A {ta:?} ms, B {tb:?} ms");
+        }
+    }
+}
+
+/// The bytes A puts into a 5 s outage over its last 4 s, with ticks both ways, and with `repair` bytes of Repair
+/// queued 1 s in; and whether B has the Repair 4 s after the link is back.
+fn into_outage(repair: usize) -> (usize, bool) {
+    let (mut net, a, b) = joined();
+    let kb = net.nodes[b].key;
+    for _ in 0..125 {
+        tick(&mut net, a, b, true);
+    }
+    net.dead = vec![net.nodes[a].addr, net.nodes[b].addr];
+    for _ in 0..60 {
+        tick(&mut net, a, b, true);
+    }
+    let before = net.swallowed;
+    if repair > 0 {
+        net.nodes[a].core.send(kb, Lane::Repair, Bytes::from(vec![7u8; repair]));
+    }
+    for _ in 0..250 {
+        tick(&mut net, a, b, true);
+    }
+    let during = net.swallowed - before;
+    net.dead.clear();
+    for _ in 0..250 {
+        tick(&mut net, a, b, true);
+    }
+    let arrived = net.nodes[b].got.iter().any(|r| r.lane == Lane::Repair && r.bytes.len() == repair);
+    (during, arrived)
+}
+
+#[test]
+fn an_open_window_carries_no_repair_into_an_outage() {
+    // @fable-reviewer's rule (via @coordinator-opus): while a link has heard nothing for `T_trip`, it
+    // sends no Repair or Bulk, so the probe's open window doesn't pour them into a dead link. 256 KiB of Repair
+    // queued 1 s into a 5 s outage add next to nothing to what the ticks put into it, and arrive once it's back.
+    let (ticks, _) = into_outage(0);
+    let (with, arrived) = into_outage(256 * 1024);
+    eprintln!("4 s into a 5 s outage: {ticks} B from the ticks alone, {with} B with 256 KiB of Repair queued");
+    assert!(with <= ticks + 4 * 1024, "the Repair went into the outage: {with} B against {ticks} B");
+    assert!(arrived, "the Repair arrives once the link is back");
+}
+
+#[test]
+fn after_an_outage_the_missed_actions_arrive_within_a_second() {
+    // The Actions sent into the outage are pe-net's own retransmissions (3.3), each on a timer that doubled through
+    // it; an acknowledgement of anything newer sends them back to the base RTO, so they follow the link's return
+    // within about a round trip, not up to 64 RTOs later.
+    for outage in [2_500, 10_000] {
+        let t = tail(|_| {}, outage, true);
+        eprintln!("outage probe, {outage} ms outage: {t:?}");
+        for c in t.caught_up {
+            assert!(c.is_some_and(|c| c <= 1_000), "{outage} ms: {t:?}");
+        }
+    }
+}
+
+#[test]
+fn an_idle_link_on_a_long_path_is_never_silent() {
+    // @design-reviewer's L1: the silence rule waits `T_trip` = max(0.3 s, 3 x srtt), as the outage probe does. Here
+    // 120 ms one way, and the path bunches B's packets to A so they land only on 400 ms boundaries (a jittery
+    // internet path): A hears B every 0.4 s, well inside 3 x srtt. With a fixed 0.3 s, A went silent for the last
+    // 0.1 s of each cycle and held Repair until the next bunch. Repair sent at staggered times arrives one delay later.
+    let (mut net, a, b) = joined();
+    let (ka, kb) = (net.nodes[a].addr, net.nodes[b].key);
+    net.delay_ms = 120;
+    net.extra = Some(Box::new(move |now, _from, to, _bytes| {
+        if to == ka {
+            let ms = now.0 / 1_000_000 + 120;
+            (400 - ms % 400) % 400
+        } else {
+            0
+        }
+    }));
+    net.run(5_000);
+    let mut waits = Vec::new();
+    for i in 0..20u32 {
+        let before = net.nodes[b].got.iter().filter(|r| r.lane == Lane::Repair).count();
+        net.nodes[a].core.send(kb, Lane::Repair, Bytes::from(vec![3u8; 200]));
+        let mut waited = 0;
+        while net.nodes[b].got.iter().filter(|r| r.lane == Lane::Repair).count() == before && waited < 5_000 {
+            net.run(1);
+            waited += 1;
+        }
+        waits.push(waited);
+        net.run(400 + 37 * i);
+    }
+    assert!(waits.iter().all(|w| *w <= 120 + 16), "Repair waits on an idle 120 ms link, ms: {waits:?}");
 }
