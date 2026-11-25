@@ -276,6 +276,9 @@ pub struct SimStats {
     pub longest_drain: u64,
     /// Hand poses not sent because the frame's stamp stood still while the lead shed (app.md 3.2).
     pub poses_thinned: u64,
+    /// Hand poses not sent because the hand was past its body's reach (`local::body_pose`, 4 m on an axis): seconds of
+    /// a tracked hand with no entry that aren't a hold (friend-test K4; the trace's `out_of_reach=`).
+    pub hands_out_of_reach: u64,
     /// Frames stamp-ahead's speed test found a hand moving, so the lead shed at most one frame in 11 (app.md 3.2).
     pub moving_frames: u64,
     /// B's shown present (app.md 3, [`crate::shown`]): how far ahead of the present it ran at the latest tick, and the
@@ -1670,6 +1673,7 @@ impl Sim {
                 self.stats.inputs += u64::from(sent.took);
                 self.stats.inputs_refused += u64::from(sent.refused);
                 self.stats.poses_thinned += u64::from(sent.thinned);
+                self.stats.hands_out_of_reach += u64::from(sent.out_of_reach);
                 for (i, h) in self.stats.hands.iter_mut().enumerate() {
                     h.closes += u64::from(sent.closes[i]);
                     h.opens += u64::from(sent.opens[i]);
@@ -1902,6 +1906,7 @@ impl Sim {
                 refused: self.stats.inputs_refused,
                 thinned: self.stats.hands_floor_thinned,
                 published: self.stats.published,
+                out_of_reach: self.stats.hands_out_of_reach,
             };
             t.record(&before, &self.stats.phases, self.stats.received, at_end);
         }

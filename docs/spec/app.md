@@ -840,10 +840,14 @@ never replace VR's ring while an XR session runs. A script is one step per line 
 `reach` picks its target from the newest view when it starts and follows it. A target is a shared object with a
 shape, hand-sized (a bounding radius up to 0.5 m) and within 10 m of the rig, that isn't a hand: the balls in the
 pit, and on the friend test's plane every spawned shape, but not the floor or the templates parked 50 m below
-(friend-test K4). The routines: `idle`, `sweep` (through the pile, side to side), `grab` (the top target, lifted
-0.6 m, held 2 s, let go), `throw` (the top target, thrown forward and up at about 4.5 m/s) and `share` (the lowest-id
-target, so two members playing it at once take hold of the same object). Each step logs its start, and a `reach`
-logs the object it chose. The script's hands go through step 2 like
+(friend-test K4). With the member's own body in the view (the plane), a target must also be within 3 m of the rig's
+origin across the floor, and a hand is kept within 3.9 m of it: a body-frame hand past 4 m on an axis is never sent
+(`local::body_pose`; counted in `SimStats::hands_out_of_reach`, the trace's `out_of_reach=`), so a reach following a
+thrown shape stops at the edge. The routines: `idle`, `sweep` (through the pile, side to side), `grab` (the top
+target, lifted 0.6 m, held 2 s, let go), `throw` (the top target, thrown forward and up at about 4.5 m/s) and `share`
+(the lowest-id target, which two members playing it at once both reach for: a hold is one member's, so one takes it
+and the other's close takes nothing or a neighbour, a contention test). Each step logs its start, and a `reach` logs
+the object it chose. The script's hands go through step 2 like
 any other: its edges send the grab and the release, and a fast opening a throw. [V, sim.rs's
 `the_scripted_routines_grab_lift_and_throw_a_ball`: each routine closes, grabs and opens once; `throw` throws once.]
 
