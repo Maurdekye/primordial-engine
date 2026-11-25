@@ -1148,3 +1148,39 @@ fn a_bullet_skimming_a_dense_mesh_floor_costs_few_queries() {
         assert!(p.y as f32 > height - 2e-3 && (p.y as f32) < 0.01 + 2.0 * linear_slop(), "the bullet left its line: at {p:?}");
     }
 }
+
+/// CCD part 2 B: under an overload that lasts, the sweep's start rotates, so every body gets its turn. Twelve
+/// bullets slide at 200 m/s, each on its own floor strip (0.5 mm in, frictionless, no gravity): every pair is swept
+/// by the touching rule at a query or two a sub-step and never hits, and a budget of 8 covers only some of them.
+/// Each sub-step's sweep starts just after the pair whose sweep ran out of budget, so every bullet moves; one that
+/// always started at the first pair held the same bullets where they were.
+#[test]
+fn under_a_lasting_overload_every_bullet_gets_its_turn() {
+    let mut world = World::new(&no_gravity());
+    world.swept_iteration_budget = 8;
+    let mut ids = Vec::new();
+    for k in 0..12 {
+        let z = 0.5 * k as f32;
+        let mut def = default_body_def();
+        def.position = pos(10.0, -0.05, z);
+        let strip = create_body(&mut world, &def);
+        create_hull_shape(&mut world, strip, &default_shape_def(), &make_box_hull(12.0, 0.05, 0.1).base);
+        ids.push(elastic_ball(&mut world, pos(0.0, 0.0095, z), 0.01, 1.0, v3(200.0, 0.0, 0.0)));
+    }
+    let mut moved = vec![false; ids.len()];
+    let mut exhausted = 0;
+    for _ in 0..3 {
+        let before: Vec<f32> = ids.iter().map(|&id| x_of(&world, id)).collect();
+        world.step(DT, SUB_STEPS);
+        exhausted += world.swept_counters.exhausted;
+        for (k, &id) in ids.iter().enumerate() {
+            // A held bullet stays exactly where it was.
+            if x_of(&world, id) != before[k] {
+                moved[k] = true;
+            }
+        }
+    }
+    eprintln!("RESULT overload: {exhausted} of 12 sub-steps ran out; moved {moved:?}");
+    assert!(exhausted > 0, "the budget never ran out");
+    assert!(moved.iter().all(|&m| m), "bullets held where they were throughout: {moved:?}");
+}
