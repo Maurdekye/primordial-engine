@@ -9,30 +9,32 @@
 //! |---|---|
 //! | `rest <s>` | moves to its rest pose, a little in front of the rig, over `s` seconds |
 //! | `move <x> <y> <z> <s>` | moves to a rig-frame point (metres, +Y up, -Z forward) over `s` seconds |
-//! | `reach <top\|first\|pile> <s>` | moves to a ball's centre over `s` seconds, following the ball as it moves |
+//! | `reach <top\|first\|pile> <s>` | moves to a target's centre over `s` seconds, following it as it moves |
 //! | `lift <dy> <s>` | rises `dy` metres over `s` seconds |
 //! | `swing <vx> <vy> <vz> <s>` | moves at that rig-frame velocity for `s` seconds |
 //! | `wait <s>` | holds still |
 //! | `close`, `open` | the grasp: a close grabs what is in reach, an open lets go (app.md 3.1, step 2) |
 //! | `drop` | the hand stops being tracked (an absent hand sends nothing, xr.md 5.5), through any `wait`s after it; the next other step brings it back where it was |
 //!
-//! The balls: `top` is the highest ball, `first` the one with the lowest id (every member picks the same ball, so two
-//! members running `share` take hold of one ball), and `pile` the balls' centre across, 0.25 m above the lowest ball's centre. A
-//! target is chosen from the newest view when its step starts, and the hand follows it until the step ends. A hand
-//! with no steps is absent. After its last step a hand stays where it ended, as it ended.
+//! The targets are the shared objects a hand could take: each one with a shape, hand-sized (a bounding radius of at
+//! most [`HAND_SIZED`]) and within [`REACH_SPAN`] of the rig, that isn't a member's hand. In the ball pit those are
+//! the balls. On the friend test's plane they're the spawned shapes, of every kind; the plane's floor is too big, and
+//! its templates are parked 50 m below (friend-test K4). `top` is the highest target, `first` the one with the lowest
+//! id (every member picks the same one, so two members running `share` take hold of one object), and `pile` the
+//! targets' centre across, 0.25 m above the lowest one's centre. A target is chosen from the newest view when its step
+//! starts, and the hand follows it until the step ends. A hand with no steps is absent. After its last step a hand
+//! stays where it ended, as it ended.
 //!
 //! The named routines are scripts in this format: [`ROUTINES`]. pe-app plays one from `--hands <routine|file>`, or
 //! when `hands <routine|file>` is typed into its console; `hands stop` hands the hands back to the desktop. Each step
-//! that starts says so in the log (`hands: right reach top: ball 0x.. at ...`), so a checker can tie the world's grabs
-//! and throws to the script.
+//! that starts says so in the log (`hands: right reach top: object 0x.. at ...`), so a checker can tie the world's
+//! grabs and throws to the script.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use pe_render::present::FrameSlot;
-use pe_seams::{
-    FrameView, Hand, HandFeed, HandInput, HandSource, HostTime, ObjectClass, ObjectId, Pos, RigPose, Shape,
-};
+use pe_seams::{FrameView, Hand, HandFeed, HandInput, HandSource, HostTime, ObjectClass, ObjectId, Pos, RigPose};
 
 /// The routines `--hands` and the console's `hands` know by name.
 pub const ROUTINES: &[(&str, &str)] = &[
@@ -80,7 +82,14 @@ pub fn installed() -> Option<Arc<ScriptedHands>> {
 /// Where a hand rests: in front of the rig, a little to its side, at about chest height (rig frame).
 pub const REST: [[f32; 3]; 2] = [[-0.25, 1.1, -0.35], [0.25, 1.1, -0.35]];
 
-/// A ball a `reach` aims at.
+/// The largest bounding radius a `reach` aims at, in metres: a ball (0.06 m) or a spawned shape (up to 0.17 m), never
+/// a floor or a wall (about 1.4 m and up).
+pub const HAND_SIZED: f32 = 0.5;
+/// How far from the rig a `reach` looks, in metres: the whole pit or the plane around a player, never the plane's
+/// templates, parked 50 m below its floor.
+pub const REACH_SPAN: f64 = 10.0;
+
+/// Which target a `reach` aims at (the balls in the pit; any spawned shape on the plane).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Ball {
     Top,
@@ -405,27 +414,33 @@ fn eval(step: Step, st: &Started, s: f64, view: Option<&FrameView>, side: usize)
     }
 }
 
-/// The view's balls: shared spheres that aren't a member's hand.
-fn balls(v: &FrameView) -> impl Iterator<Item = &pe_seams::ViewObject> {
-    v.objects.iter().filter(|o| {
-        o.class == ObjectClass::World && o.hand_of.is_none() && matches!(o.shape, Some(Shape::Sphere { .. }))
+/// The view's targets: shared objects with a shape, at most [`HAND_SIZED`] across and within [`REACH_SPAN`] of the
+/// rig, that aren't a member's hand.
+fn targets(v: &FrameView) -> impl Iterator<Item = &pe_seams::ViewObject> {
+    let rig = v.local_rig.pos;
+    v.objects.iter().filter(move |o| {
+        o.class == ObjectClass::World
+            && o.hand_of.is_none()
+            && o.shape.is_some()
+            && o.radius <= HAND_SIZED
+            && o.pos.dist2(&rig) <= REACH_SPAN * REACH_SPAN
     })
 }
 
-/// The ball `which` names in `v`.
+/// The target `which` names in `v`.
 fn pick(v: &FrameView, which: Ball) -> Option<ObjectId> {
     let height = |o: &pe_seams::ViewObject| (o.pos - Pos::ORIGIN).0[1];
     match which {
-        Ball::Top => balls(v).max_by(|a, b| height(a).total_cmp(&height(b))).map(|o| o.id),
-        Ball::First => balls(v).min_by_key(|o| o.id.to_u128()).map(|o| o.id),
+        Ball::Top => targets(v).max_by(|a, b| height(a).total_cmp(&height(b))).map(|o| o.id),
+        Ball::First => targets(v).min_by_key(|o| o.id.to_u128()).map(|o| o.id),
         Ball::Pile => None,
     }
 }
 
-/// The balls' centre in the rig frame, 0.25 m above the lowest ball's centre.
+/// The targets' centre in the rig frame, 0.25 m above the lowest one's centre.
 fn pile(v: &FrameView) -> Option<[f32; 3]> {
     let (mut sum, mut low, mut n) = ([0.0f64; 3], f64::INFINITY, 0usize);
-    for o in balls(v) {
+    for o in targets(v) {
         let p = (o.pos - Pos::ORIGIN).0;
         (0..3).for_each(|i| sum[i] += p[i]);
         low = low.min(p[1]);
@@ -460,11 +475,11 @@ fn log_start(script: &str, side: usize, step: Step, st: &Started, view: Option<&
     let target = match step {
         Step::Reach(Ball::Pile, _) => match st.point {
             Some(p) => format!(": the pile at {:.2?} (rig)", p),
-            None => ": no balls in view, so the hand stays".to_string(),
+            None => ": no targets in view, so the hand stays".to_string(),
         },
         Step::Reach(_, _) => match (st.ball, st.ball.and_then(|b| view.and_then(|v| rig_of(v, b)))) {
-            (Some(b), Some(p)) => format!(": ball {:#034x} at {:.2?} (rig)", b.to_u128(), p),
-            _ => ": no ball in view, so the hand stays".to_string(),
+            (Some(b), Some(p)) => format!(": object {:#034x} at {:.2?} (rig)", b.to_u128(), p),
+            _ => ": no target in view, so the hand stays".to_string(),
         },
         _ => String::new(),
     };
@@ -585,6 +600,64 @@ right swing 0 0 -4 1
         assert_eq!(at_start, REST[1]);
         assert!((later[2] - (REST[1][2] - 2.0)).abs() < 1e-4);
         assert_eq!(earlier, REST[1], "no extrapolation backwards");
+    }
+
+    /// A shared object at `at` (metres from the origin) with `shape` and bounding radius `radius`.
+    fn object(id: u128, at: [f64; 3], shape: Option<pe_seams::Shape>, radius: f32) -> pe_seams::ViewObject {
+        pe_seams::ViewObject {
+            id: ObjectId::from_u128(id),
+            class: ObjectClass::World,
+            pos: Pos::ORIGIN.checked_add(pe_seams::Offset(at)).expect("in range"),
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0; 3],
+            linear_velocity: [0.0; 3],
+            angular_velocity: [0.0; 3],
+            shape,
+            appearance: None,
+            light: None,
+            radius,
+            hand_of: None,
+            held_by: None,
+            flags: pe_seams::ViewFlags::default(),
+            version: None,
+        }
+    }
+
+    /// The friend test's plane (pe-world `plane_on`): `reach` aims at the spawned shapes of every kind, never at the
+    /// floor, the lamp, a member's hand or the templates parked 50 m below; and in the ball pit, at the balls only.
+    #[test]
+    fn a_reach_aims_at_any_spawned_shape_on_the_plane_and_at_the_balls_in_the_pit() {
+        use pe_seams::Shape;
+        let clock = crate::clock::LocalClock::new(HostTime(0), pe_seams::SimRate::new(60).expect("a rate"));
+        let mut v = (*crate::standin::view_at(&clock, pe_seams::Frame(0))).clone();
+        let half = |h: f32| Some(Shape::Box { half_extents: [h; 3] });
+        let mut hand = object(1, [0.2, 1.1, -0.3], Some(Shape::Sphere { radius: 0.05 }), 0.05);
+        hand.hand_of = Some((pe_seams::MemberKey::LOGIC, Hand::Right));
+        let lamp = object(2, [0.0, 3.0, 0.0], None, 0.0);
+        let floor = object(3, [0.0, -0.5, 0.0], Some(Shape::Box { half_extents: [10.0, 0.5, 10.0] }), 14.2);
+        // The templates, 50 m below, each as small as what is spawned from it.
+        let template_box = object(4, [-1.5, -49.9, 0.0], half(0.1), 0.17);
+        let template_sphere = object(5, [-0.5, -49.9, 0.0], Some(Shape::Sphere { radius: 0.1 }), 0.1);
+        // Spawned in front of the rig: a box, a capsule (the lowest id of the spawned shapes) and a stack's top box.
+        let spawned_box = object(9, [0.0, 0.1, -1.0], half(0.1), 0.17);
+        let capsule = object(7, [0.3, 0.17, -1.0], Some(Shape::Capsule { radius: 0.07, half_height: 0.1 }), 0.17);
+        let stack_top = object(8, [-0.3, 0.55, -1.0], half(0.075), 0.13);
+        v.objects = vec![hand, lamp, floor, template_box, template_sphere, capsule, stack_top, spawned_box];
+        v.objects.sort_by_key(|o| o.id);
+        let ids = |v: &FrameView| targets(v).map(|o| o.id.to_u128()).collect::<Vec<_>>();
+        assert_eq!(ids(&v), [7, 8, 9], "the spawned shapes only");
+        assert_eq!(pick(&v, Ball::First), Some(ObjectId::from_u128(7)), "the lowest id: the capsule");
+        assert_eq!(pick(&v, Ball::Top), Some(ObjectId::from_u128(8)), "the highest: the stack's top box");
+        let p = pile(&v).expect("a pile");
+        assert!((p[1] - (0.1 + 0.25) as f32).abs() < 1e-4 && (p[2] + 1.0).abs() < 1e-4, "above the lowest: {p:?}");
+        // Nothing spawned yet: no target, so a reach holds still (never the templates).
+        v.objects.retain(|o| o.id.to_u128() < 6);
+        assert_eq!((ids(&v), pick(&v, Ball::Top), pile(&v)), (vec![], None, None));
+        // The ball pit: the balls, never its walls (about 1.4 m across) or its floor.
+        let wall = object(10, [1.25, 0.6, 0.0], Some(Shape::Box { half_extents: [0.05, 0.6, 1.25] }), 1.38);
+        let ball = object(11, [0.0, 0.06, -0.8], Some(Shape::Sphere { radius: 0.06 }), 0.06);
+        v.objects = vec![wall, ball];
+        assert_eq!(ids(&v), [11], "the ball only");
     }
 
     #[test]
