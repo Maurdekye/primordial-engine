@@ -89,6 +89,9 @@ pub struct Config {
     /// resumes on the same connection; a longer one closes the link, and in M1 nothing redials.
     pub t_keepalive: Duration,
     pub t_idle: Duration,
+    /// `T_trip`'s floor (6.5, [`crate::outage`]): the outage probe opens the window after this long with no ACK.
+    /// `None`: quinn's plain Cubic, whose probe backoff keeps a link dark for up to twice an outage.
+    pub t_trip: Option<Duration>,
     /// `N_streams_in`: incoming streams open at once per peer.
     pub n_streams_in: u32,
     /// `N_dgram_buf`: quinn's datagram send buffer, in datagrams.
@@ -112,10 +115,12 @@ impl Config {
             member,
             t_welcome: Duration::from_secs(10),
             t_stagger: Duration::from_millis(250),
-            t_keepalive: Duration::from_millis(500),
+            // 250 ms: during an outage it is the probe of a link with nothing else to send (6.5).
+            t_keepalive: Duration::from_millis(250),
             // M1 (@coordinator-opus): 30 s, so Wi-Fi or Tailscale hiccups don't end a session while
             // pe-agree has no return. Shorter again once a member can return (model v1).
             t_idle: T_IDLE_M1,
+            t_trip: Some(Duration::from_millis(300)),
             n_streams_in: 64,
             n_dgram_buf: 4,
             w_send: 64 * 1024,
@@ -284,6 +289,10 @@ impl Core {
             .datagram_receive_buffer_size(Some(64 * MIN_DGRAM))
             .datagram_send_buffer_size(cfg.n_dgram_buf * MIN_DGRAM)
             .send_window(cfg.w_send);
+        if let Some(quiet) = cfg.t_trip {
+            let inner = Arc::new(quinn_proto::congestion::CubicConfig::default());
+            t.congestion_controller_factory(Arc::new(crate::outage::OutageConfig { inner, quiet }));
+        }
         let transport = Arc::new(t);
         let p = pe_net_crypto::provider_with(rng);
         let ck = identity.certified_key(&p).map_err(tls)?;
@@ -742,11 +751,18 @@ impl Core {
             close(c, t, &refusal);
             self.lifecycle.push_back(Lifecycle::Refused { peer, refusal, by_me: true });
         }
-        // The budget reads quinn's path (4.1), and the lanes its RTT.
+        // The budget reads quinn's path (4.1), and the lanes its RTT. The window is the congestion controller's own
+        // (its metrics): the outage probe's open window lifts only quinn's gate (6.5).
         let st = c.q.stats().path;
-        c.budget.observe(now, st.rtt, st.rtt, st.cwnd);
+        let cwnd = c.q.congestion_state().metrics().congestion_window;
+        c.budget.observe(now, st.rtt, st.rtt, cwnd);
         c.link.set_rtt(st.rtt, st.rtt.saturating_sub(st.min_rtt).max(st.rtt / 8));
-        let low = c.budget.low_lanes_may_send();
+        // A link that has heard nothing for `T_trip` = max(t_trip, 3 x srtt), the outage probe's own wait, may be out
+        // (6.5): it sends no Repair, Bulk or rides, whatever the budget says, so an outage probe's open window carries
+        // only Protocol, Action, Pose and PINGs into it.
+        let silent = self.cfg.t_trip.is_some_and(|t| now >= c.heard_at.plus(t.max(st.rtt * 3)));
+        // The delay guard (4.3), for Bulk.
+        let low = c.budget.low_lanes_may_send() && !silent;
         // Streams that waited for the peer's credit first (3.5).
         open_waiting(c);
         // Lanes out: datagrams while quinn has room (4.2), then streams.
@@ -758,7 +774,7 @@ impl Core {
                 if max < 64 {
                     break;
                 }
-                let rides = c.budget.rides_on(now);
+                let rides = c.budget.rides_on(now) && !silent;
                 let Some(d) = c.link.poll_datagram(now, max, rides) else { break };
                 let first = c.link.first_sent_wire - c.first_sent_seen;
                 if first > 0 {
@@ -778,7 +794,7 @@ impl Core {
             let low_cap = (self.cfg.n_streams_in / 2).max(1) as usize; // at least 1, or a limit of 0-1 never sends low
             while c.unopened.is_empty()
                 && let Some((lane, seq, bytes)) =
-                    c.link.poll_stream(c.outbound.iter().filter(|o| o.2 < 2).count() < low_cap, low)
+                    c.link.poll_stream(!silent && c.outbound.iter().filter(|o| o.2 < 2).count() < low_cap, low)
             {
                 let mut b = vec![lane as u8];
                 put_varint(&mut b, seq);
@@ -788,7 +804,7 @@ impl Core {
         } else if let Some(d) = c.link.poll_datagram(now, MIN_DGRAM, false) {
             let _ = c.q.datagrams().send(Bytes::from(d), false); // control records only (6.4)
         }
-        flush_streams(c, low);
+        flush_streams(c, low, silent);
         // Packets out.
         loop {
             let mut buf = Vec::new();
@@ -1181,12 +1197,12 @@ fn open_waiting(c: &mut Conn) {
 }
 
 /// Hand quinn what it takes now; finish each stream when its bytes are all in. Bulk streams wait while the delay
-/// guard is closed (`low` false), even halfway through; Repair's don't (4.3).
-fn flush_streams(c: &mut Conn, low: bool) {
+/// guard is closed (`low` false), even halfway through; Repair's don't (4.3). Both wait on a silent link (6.5).
+fn flush_streams(c: &mut Conn, low: bool, silent: bool) {
     let mut i = 0;
     while i < c.outbound.len() {
         let (id, rest, priority) = &mut c.outbound[i];
-        if *priority < 1 && !low {
+        if (*priority < 1 && !low) || (*priority < 2 && silent) {
             i += 1;
             continue;
         }

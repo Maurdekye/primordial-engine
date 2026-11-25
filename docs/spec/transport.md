@@ -1,6 +1,6 @@
 # pe-net: the transport
 
-Status: draft 1.13, 2026-11-25, by @shader-lang (WS-net). Built so far: pe-net-crypto (2, 8; landed). pe-net's
+Status: draft 1.14, 2026-11-25, by @shader-lang (WS-net). Built so far: pe-net-crypto (2, 8; landed). pe-net's
 clock and lanes are in progress on branch `net/pe-net`. Draft 1.3 limits redundant rides to spare space on a link
 with room (3.3, 4.2, 9, 10), found while building the lanes; 1.4 gates them on the delay guard as well as the
 budget, and 1.5 fixes the cell that tests them (@design-reviewer's reviews of 1.3 and 1.4). Draft 1.6 records
@@ -15,7 +15,12 @@ where it was dropped (3.5, @engine-architect's finding). Draft 1.12 follows pe-a
 draft 7): the joiner's clock converges on the welcome's member list, which the invite pins, not on the start
 cut's (5.4, 6.4). Draft 1.13 (by @diverge-eng, coordinator) takes Repair out from under the
 delay guard, which now holds Bulk and rides only (3.5, 4.3, 9, 10): K4 R4' found the guard holding every repair
-at n = 2 for up to `W_base` after the link's delay rose. Draft 1.11 fixes what the first two-machine run found: only
+at n = 2 for up to `W_base` after the link's delay rose. Draft 1.14 keeps a link probing through an outage, so it
+recovers within about a round trip of the link's return instead of after up to the outage's length again (6.5:
+the outage probe, `T_trip`, `T_keepalive` 0.25 s; @engine-architect's K8, @fable-reviewer's reading of
+quinn-proto): the budget reads the controller's own window (4.1), a silent link sends no Repair, Bulk or rides
+(6.5), and the lanes' backoff resets on an acknowledgement (3.3). Draft 1.11 fixes what the first two-machine run
+found: only
 a ready clock answers a sample (5.2), a clock counts its own offset only once it runs (5.3), and a stopping
 endpoint closes its connections (6.5). Draft 1.2 records the user's ruling on the firewall default (2.4, 9, 11); draft 1.1 answered @design-reviewer's review of draft 1.
 - **Draft 0.1** (landed, main 25e1a29, approved by @design-reviewer) holds section 2: the rules M0's QUIC
@@ -270,7 +275,12 @@ R18's failure again [@design-reviewer's High].
   Without these two rules, the lanes test's 16 kbit/s cell failed: rides took a thin link's capacity, as the
   repeats did in draft 1.
 - **Retransmission:** a message still unacknowledged after `RTO = srtt + max(4 * rttvar, T_rto_min)` goes again
-  in the next datagram, and the timer doubles on each further loss (as QUIC's PTO, RFC 9002).
+  in the next datagram, and the timer doubles on each further loss, up to 64 RTOs (as QUIC's PTO, RFC 9002).
+  As QUIC's probe count does, the doubling resets when an acknowledgement covers a message not yet acknowledged:
+  every message still pending goes back to the base RTO. Without it, a message lost in an outage waits out its
+  doubled timer after the link is back: 1.3 s after a 2.5 s outage and 2.6 s after a 10 s one at a 20 ms RTT,
+  128 ms and 48 ms with the reset [V `pe-net/tests/core.rs` `after_an_outage_the_missed_actions_arrive_within_a_second`;
+  up to 64 RTOs in general, over 10 s at a 100 ms RTT [I]].
   - New messages and retransmissions share their lane's queue, oldest first.
   - Every byte counts against the budget (4).
 - **Acknowledgement-only datagrams:** a peer with nothing to send sends one within `T_ack` of receiving.
@@ -347,11 +357,14 @@ It replaces R18's level ladder (D56) and its delay-gradient estimator, which wer
 
 Only what a real endpoint observes [the plan's rule against oracles]: QUIC's congestion window and its
 smoothed and minimum round-trip times, lost packets and congestion events, all from quinn-proto's path
-statistics. The harness reports nothing else to it.
+statistics. The harness reports nothing else to it. The window is the congestion controller's own, read from its
+metrics: the outage probe (6.5) opens quinn's send gate during an outage, but never the budget [S quinn-proto
+0.11.19: `PathStats::cwnd` is the gate's `window()`].
 
 ### 4.2 The budget and the queue
 
-- **The congestion controller is QUIC's:** quinn's Cubic by default. It handles pacing, loss recovery and
+- **The congestion controller is QUIC's:** quinn's Cubic, inside pe-net's outage probe (6.5), which changes
+  nothing while acknowledgements arrive. It handles pacing, loss recovery and
   congestion response, with loss as a signal as well as delay, so fq_codel and CAKE routers are covered
   (defect 10's gap) [S quinn-proto; I].
 - **pe-net's own queue, per link:** on every wake-up, pe-net hands quinn only what the controller lets out now,
@@ -407,7 +420,8 @@ statistics. The harness reports nothing else to it.
   Redundant rides follow the same guard, with a band (4.2). This is LEDBAT's idea, applied to Bulk and rides
   only [I].
 - **Repair is not under the guard** (coordinator, @fable-reviewer). It sends whenever
-  its share of the stream credit allows (3.5), below datagram traffic and above Bulk. Under the guard, a delay
+  its share of the stream credit allows (3.5) and the link isn't silent (6.5), below datagram traffic and above
+  Bulk. Under the guard, a delay
   that rose mid-session held it until `base_rtt`'s window rolled over: a Repair message sent just after a link
   slowed from 10 to 45 ms one way arrived 30.6 s later [V `pe-net/tests/core.rs`
   `a_repair_message_arrives_about_one_delay_after_the_link_slows`, red before 1.13]. At `n = 2` that failed every
@@ -695,10 +709,47 @@ its frame this way (seam S3).
 
 - **The states:** Connecting, Confirmed (handshake confirmed), Welcomed, Up, Degraded (nothing heard for
   `T_degraded`), Down (idle for `T_idle`, or closed).
-- **Keep-alive:** QUIC PING every `T_keepalive` when idle.
+- **Keep-alive:** a QUIC PING after `T_keepalive` with nothing received [S quinn-proto: the timer restarts on
+  each packet received, not sent]. In an outage it is the probe of a link with nothing else to send.
+- **The outage probe** (@ticket:primordial-engine/pe-net-recover-within-1-s-after-a-link-outage-qu,
+  `pe_net::outage`): quinn's probe timeout doubles with each probe and resets only when an ACK of its own packets
+  arrives, and while nothing is acknowledged the bytes in flight stay at the congestion window, which holds every
+  packet but those probes [S quinn-proto 0.11.19, @fable-reviewer]. So after an outage of L a side could wait up
+  to about L more for its next probe, and each direction waits for its own: a 10 s outage left one side dark for
+  11.2 s after the link's return and the other for 2.7 s [V `pe-net/tests/core.rs`
+  `quinn_s_plain_backoff_leaves_a_dark_tail_after_an_outage`; on two machines @engine-architect's K8 saw 14.9 s
+  dark with hands still and 23.7 s moving]. pe-net therefore installs its own congestion controller, Cubic
+  wrapped:
+  - **the trip:** with packets in flight and no acknowledgement for `T_trip` = max(0.3 s, 3 × srtt), the window
+    opens until the next acknowledgement, so every packet goes out as it is written. The per-tick traffic and the
+    keep-alive PINGs are then the probes, and the first one across the returned link is acknowledged, which
+    closes the window again and resets quinn's backoff. The trip is decided on each send, from the `now` quinn
+    passes in (deterministic in the harness, 8): the first send after `T_trip` is one of quinn's probes, which go
+    out whatever the window;
+  - **what it gives:** both sides hear each other again within one network delay of the link's return, after
+    0.5, 2.5 and 10 s outages, with hands moving (10 ms on a 10 ms one-way link) or still (32-128 ms, through the
+    PINGs) [V `pe-net/tests/core.rs` `after_an_outage_both_sides_hear_each_other_within_a_second`]. The missed
+    Actions follow within about a round trip once the lanes' backoff resets (3.3);
+  - **a silent link sends no Repair, Bulk or rides:** while nothing has been heard for `T_trip`, whatever the
+    budget says, so the open window carries only Protocol, Action, Pose and PINGs into a link that may be gone
+    (@fable-reviewer's rule). It waits the same `T_trip` as the trip, so an idle link on a long path, which hears
+    the other side only every keep-alive or so, isn't silent between them [V `pe-net/tests/core.rs`
+    `an_idle_link_on_a_long_path_is_never_silent`]. A 256 KiB Repair queued 1 s into a 5 s outage adds nothing to
+    the bytes sent into it, and arrives once the link is back; without the rule it added 67 KB in 4 s [V
+    `pe-net/tests/core.rs` `an_open_window_carries_no_repair_into_an_outage`]. After an outage quinn's window
+    collapses to its minimum and Repair regrows with it;
+  - **the costs:** a real stall with no acknowledgement for `T_trip` (a queue deeper than about 3 RTTs) trips it
+    too, and the link sends into that queue until an acknowledgement comes back; the budget (4.2) still bounds
+    what pe-net hands quinn, since it reads the inner window. Stream bytes already inside quinn when the silence
+    began (Repair or Bulk written before it) can still go out into the outage when the window opens, at most
+    `W_send` (64 KiB) once per outage (@design-reviewer's N1). And an outage longer than `T_idle` sends the
+    per-tick traffic into a dead path all the way to the close: about 25 kB/s per peer at 60 Hz with hands
+    moving [V, the test above: 98 kB in 4 s];
+  - **the fallback**, if two machines show the probe isn't enough: a vendored quinn-proto with the probe wait
+    capped (a `TransportConfig` setting, off by default), not a redial (@coordinator-opus's ruling).
 - **Outages** (@coordinator-opus): a link silent for less than `T_idle` resumes on the same
-  connection, and the reliable lanes resend what it missed (3.2; their backoff caps at 64 RTOs, so the resend
-  comes within about one capped RTO of the link's return). A longer silence closes it, and in M1 nothing dials
+  connection, and the reliable lanes resend what it missed (3.2), within about a round trip of the link's return:
+  the outage probe keeps both sides probing (below), and the first acknowledgement resets the lanes' backoff (3.3). A longer silence closes it, and in M1 nothing dials
   again: the session is over for that pair, and a new invite starts another. So M1 sets `T_idle` to 30 s, a
   stated setting (`T_IDLE_M1`) rather than QUIC's usual few seconds. Once pe-agree lets a member return (model
   v1), a redial replaces this, and `T_idle` can shrink. Nothing else in pe-net gives up sooner: `T_degraded`
@@ -884,7 +935,11 @@ Gated, unless marked:
    - the joiner refuses an inviter whose hello differs (6.3);
    - a joiner is not clock-ready on the inviter's word alone at four members (5.4);
    - a welcome whose member list doesn't match the invite's pin is caught, and ends the join (6.4);
-   - an address change survives, and a forged source address doesn't redirect a link.
+   - an address change survives, and a forged source address doesn't redirect a link;
+   - after an outage, both sides hear each other within 1 s of the link's return, and the Actions missed in it
+     arrive within 1 s too; a silent link sends no Repair into the outage (6.5, 3.3) [V `pe-net/tests/core.rs`].
+     On the two machines, @engine-architect's K8 blackouts (0.5 s, 10 s with hands still and moving) and a 2-3 s
+     drop: dark time within about 1 s of the outage, both ways.
 5. **The security code:** 2.5's list.
 6. **No panic** on any bytes from a peer: structured fuzzing, `crates/pe-net/tests/fuzz.rs` (the coordinator's
    ruling, with @fable-reviewer's conditions and @design-reviewer's requirements).
@@ -965,7 +1020,8 @@ Every one is a starting value to measure against [I], in seconds or bytes.
 | `R_rdv` / `T_rdv` | 64 / 10 s | Most rendezvous records from one peer per window (6.7) |
 | `N_rdv_dials` | 64 | Most mesh and rendezvous dials queued or under way (6.7) |
 | `T_reply` | 3 s | No answer before the joiner shows a reply code |
-| `T_keepalive` | 0.5 s | QUIC PING when idle |
+| `T_keepalive` | 0.25 s | QUIC PING after this long with nothing received; an outage's probe (6.5) |
+| `T_trip` | max(0.3 s, 3 × srtt) | No acknowledgement with packets in flight before the outage probe opens the window (6.5) |
 | `T_degraded` | 1 s | Nothing heard before Degraded |
 | `T_idle` | 30 s (M1) | QUIC idle timeout: Down. The longest outage a session survives (6.5) |
 | `T_queue` | 1 s | Outgoing queue capacity, in traffic time |
