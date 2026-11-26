@@ -452,8 +452,8 @@ preset gives members a body (the plane) has any; in the ball pit nothing here ru
   `PhysicsWorld::move_player`, its input from the row (`players::input`): the stick at up to `PLAYER.max_walk`,
   turned into world axes by the heading plus the stick's yaw through the fork's trig (`walk_axes`); the room-scale
   step, the head's move over the floor since the last frame (`head_pos - prev_head`), turned by the heading; and the
-  one-shot jump. The move treats as absent every hand (players pass through each other, the user's 3a) and what the
-  body's owner holds (`players::ignored`).
+  one-shot jump. The move treats as absent every hand and what the body's owner holds (`players::ignored`), and is
+  given the owner's own hands' targets (`players::own_hands`), by which it shoves nothing (below).
 - **The hands follow the moved body.** The returned feet are written into the world model at once
   (`WorldModel::write_poses`), so `hands()` composes each hand's target from the moved body times the hand's place
   in it, and a hand never trails its body by a frame. The step then carries the body to that pose (within about
@@ -1138,7 +1138,21 @@ body object, the `Player` row and the Move input) is walked over the world once 
 [V `crates/pe-physics/src/player.rs`, `tests/players.rs`; rulings: the user's card answers, @coordinator-opus, @fable-reviewer].
 - **The body** is kinematic, its origin at the feet, so a spawn point is on the floor and the rig's y is the body's.
   Its one shape is the mover's capsule, from the ride (0.3 m) to the top of the body (1.7 m), in the player category
-  with an empty mask: it touches nothing in the solver and no query sees it. Players pass through each other (3a).
+  with an empty mask: it touches nothing in the solver and no query sees it.
+- **Players are walls to each other** (the friend test of 11-27, the user's, superseding 3a's
+  pass-through): after its slide, a move steps the capsule out of every other player's it overlaps across the floor
+  (`PhysicsWorld::apart`: along the line between the feet, along +x for two on one spot, for capsules whose heights
+  meet), then slides that step too, so a wall still holds. Each move sees the others where they stood at the frame's
+  start; moves stay in id order, so of two walking into each other the later one steps back. A player is never
+  ground: one that lands on a head slides off it. The solver never pairs players with anything (a filter bit can't do
+  it: Box3D's default category is every bit, so any mask bit pairs a player with every shape). Under network delay
+  each machine predicts the other player and corrects it by rollback: measured in pe-replica `tests/players.rs`,
+  `bumping_under_lag_is_measured`.
+- **No shove by the player's own hands** (the friend test of 11-27 point 3: leaning down carries the
+  capsule forward under the head, over what the hand reaches for): a light body whose centre, or whose touch with
+  the push volume, is within `hand_clear` (0.35 m [I, to tune]) of either of the player's own hands
+  (`MoverInput::hands`) is not shoved. The hand's own body still pushes it while the hand is physical, so it stays
+  reachable. A follow by the hips instead of the head would need the rig apart from the feet: not now.
   The capsule never turns; the heading and the head pose stay in pe-world.
 - **The input** (`MoverInput`): a walk velocity in world x and z, this frame's room-scale step (at most 0.25 m), and
   a jump press. The drive turns the `Player` row's stick and yaw into world axes with `walk_axes`, the fork's

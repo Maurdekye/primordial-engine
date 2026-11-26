@@ -155,7 +155,8 @@ fn the_plane_has_its_floor_an_empty_spawned_root_and_inert_templates() {
     assert!(boxes.windows(2).all(|p| y(p[1]) - y(p[0]) > 2.0 * f64::from(pe_world::preset::STACK_HALF)));
     // The folder is parked below the floor; the floor's shape, the templates' and each member's drawn body (8.2).
     assert!(y(folder) < -40.0);
-    assert_eq!(w.store().count(ids::SHAPE), 1 + 3 + n::STACK_BOXES + w.players().len());
+    let heavy = pe_world::preset::HEAVY.len();
+    assert_eq!(w.store().count(ids::SHAPE), 1 + 3 + n::STACK_BOXES + heavy + w.players().len());
 }
 
 #[test]

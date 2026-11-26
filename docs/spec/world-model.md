@@ -2738,7 +2738,9 @@ its input; pe-physics moves it (L1's `move_player`, @vdw-physics); pe-replica's 
   root whose `Transform` is at the feet (the spawn slot's feet, on the floor), with a `Player` row and a `SimSize`.
   It is 3.5's avatar root: the hands are its children, at the same offsets from the feet as M1's root hands. It has
   no `Shape` or `Body` row: pe-physics builds the player's capsule from its own tuning when it sees a `Player` row
-  (`add_player`), and players pass through each other there.
+  (`add_player`). Players are walls to each other there (the friend test of 11-27, the user's,
+  superseding 3a's pass-through; replica.md 9's mover), and a player's own hands keep it from shoving what they
+  reach for (point 3).
 - **Its drawn shape** (@engine-architect) is the body's one other child,
   `ObjectId::body(line, member, 1, frame)`: a `Transform` 0.85 m above the feet, a capsule `Shape` (r 0.25 m,
   half-height 0.6 m) and an `Appearance`, with no `Body`, so it is never physical. It is what the view draws of

@@ -492,3 +492,101 @@ fn a_recentre_s_head_jump_moves_the_rig_not_the_body() {
     assert!((moved[0] + 2.0).abs() < 1e-6 && moved[2].abs() < 1e-6, "the rig took the jump: {moved:?}");
     assert_eq!(r.faults(), 0);
 }
+
+/// The friend test of 11-27: players are walls to each other. Member 0 walks right into member 1, who
+/// stands in the next slot; it stops at member 1's body and member 1 stays.
+#[test]
+fn a_body_walking_into_another_stops_at_it() {
+    let world = plane();
+    let (b0, b1) = (body_of(&world, 0), body_of(&world, 1));
+    let (start0, start1) = (feet(&world, b0), feet(&world, b1));
+    let mut e0 = EntryBuilder::on_line(&keys(), 0, LINE);
+    let mut s = Source::default();
+    s.add(input(&mut e0, 2, &walk(b0, [127, 0], 0, 80)));
+    let mut r = replica_of(world, None);
+    r.advance(Frame(90), &mut s);
+    let w = r.world().world();
+    let (a, b) = (feet(w, b0), feet(w, b1));
+    let gap = 2.0 * f64::from(pe_physics::PLAYER.radius);
+    assert!(start1[0] - start0[0] > gap, "the slots start apart: {start0:?} {start1:?}");
+    assert!(b[0] - a[0] > gap - 0.01 && b[0] - a[0] < gap + 0.05, "member 0 stopped at member 1: {a:?} {b:?}");
+    assert!((b[0] - start1[0]).abs() < 1e-3 && (b[2] - start1[2]).abs() < 1e-3, "member 1 stayed: {b:?}");
+    assert_eq!(r.faults(), 0);
+}
+
+/// The two walkers' frames for [`bumping_under_lag`]: member 0 walks right from frame 2, member 1 walks left from
+/// frame 3, both sending a Move every 4 frames held 8 (so each bridges the next), for 60 frames.
+fn bumpers(b0: ObjectId, b1: ObjectId) -> (Vec<SignedEntry>, Vec<SignedEntry>) {
+    let mut e0 = EntryBuilder::on_line(&keys(), 0, LINE);
+    let mut e1 = EntryBuilder::on_line(&keys(), 1, LINE);
+    let mine = (0..15).map(|k| input(&mut e0, 2 + 4 * k, &walk(b0, [127, 0], 0, 8))).collect();
+    let theirs = (0..15).map(|k| input(&mut e1, 3 + 4 * k, &walk(b1, [-127, 0], 0, 8))).collect();
+    (mine, theirs)
+}
+
+/// A measurement for the friend test of 11-27 (the coordinator asked for it before landing player-player collisions):
+/// two members walk into each other while the other's Moves reach this machine `late` frames after their stamps
+/// (one-way network delay; 3 frames is 50 ms at 60 Hz). Returns, for this machine's own body and the other's, the
+/// largest correction a rollback made to where it was shown (shown at frame f, against the same frame once every
+/// Move is in), and the number of frames shown more than 5 cm off.
+fn bumping_under_lag(late: u64) -> ([f64; 2], [u32; 2]) {
+    const TO: u64 = 90;
+    let world = plane();
+    let (b0, b1) = (body_of(&world, 0), body_of(&world, 1));
+    let (mine, theirs) = bumpers(b0, b1);
+    let mut all = Source::default();
+    mine.iter().chain(&theirs).cloned().for_each(|e| all.add(e));
+    let mut truth = replica_of(world.clone(), Some(member(0)));
+    let mut final_at = Vec::new();
+    for f in 1..=TO {
+        truth.advance(Frame(f), &mut all);
+        let w = truth.world().world();
+        final_at.push([feet(w, b0), feet(w, b1)]);
+    }
+    let mut s = Source::default();
+    mine.iter().cloned().for_each(|e| s.add(e));
+    let mut r = replica_of(world, Some(member(0)));
+    let (mut worst, mut off) = ([0.0f64; 2], [0u32; 2]);
+    for f in 1..=TO {
+        theirs.iter().filter(|e| e.entry.stamp.0 + late == f).cloned().for_each(|e| s.add(e));
+        r.advance(Frame(f), &mut s);
+        let w = r.world().world();
+        for (k, body) in [b0, b1].into_iter().enumerate() {
+            let (shown, real) = (feet(w, body), final_at[(f - 1) as usize][k]);
+            let d = ((shown[0] - real[0]).powi(2) + (shown[2] - real[2]).powi(2)).sqrt();
+            worst[k] = worst[k].max(d);
+            off[k] += u32::from(d > 0.05);
+        }
+    }
+    let w = r.world().world();
+    let (a, b) = (feet(w, b0), feet(w, b1));
+    assert!(b[0] - a[0] > 2.0 * f64::from(pe_physics::PLAYER.radius) - 0.01, "never through each other: {a:?} {b:?}");
+    assert_eq!(roots(&r, TO), roots(&truth, TO), "the late machine ends where the on-time one does");
+    (worst, off)
+}
+
+/// Prints the measurement (run with `--ignored --nocapture`): the largest correction to my own body and to the
+/// other's, and the frames shown more than 5 cm off, at 0, 50, 100 and 133 ms of one-way delay.
+#[test]
+#[ignore = "a measurement; prints its numbers"]
+fn bumping_under_lag_is_measured() {
+    for late in [0, 3, 6, 8] {
+        let (worst, off) = bumping_under_lag(late);
+        println!(
+            "late {late} frames ({} ms): my body worst {:.3} m, {} frames > 5 cm; theirs worst {:.3} m, {} frames > 5 cm",
+            late * 1000 / 60,
+            worst[0],
+            off[0],
+            worst[1],
+            off[1]
+        );
+    }
+}
+
+/// With no delay nothing is ever corrected, and under delay the late machine still ends exactly where the on-time one
+/// does, the two bodies never through each other.
+#[test]
+fn bumping_under_lag_converges() {
+    assert_eq!(bumping_under_lag(0), ([0.0, 0.0], [0, 0]));
+    let _ = bumping_under_lag(6);
+}
