@@ -438,7 +438,8 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
     voids nothing. Both together void nothing in either. The mutants `NoAbstention` and
     `NoBacklogCap` turn each side off. Since the outage mark keeps the cut lag low after the return, the voter side
     alone voids at n = 4 on fewer seeds: 4-8 entries on seeds 86, 94 and 99 of 81-100, and none on the others [V,
-    main dd765d0a]; the control runs on those three. The sim is deterministic per seed since pe-agree's maps became BTreeMaps (@design-reviewer); sim figures measured before that carried run-to-run noise from HashMap order, so their ranges
+    main dd765d0a]. F3 S2's `Progress` moved those races: `NoBacklogCap` now voids on 10 of 81-100, 4-232 entries each,
+    and the control runs on seeds 90, 95 and 97 (92-232) [V, agree/s2-progress]. The sim is deterministic per seed since pe-agree's maps became BTreeMaps (@design-reviewer); sim figures measured before that carried run-to-run noise from HashMap order, so their ranges
     hold but don't reproduce exactly by seed.
   - *Residual:* an edit can still be void as late, for example when a member at n >= 4 is cut off while the others
     finalize past its stamps. Edits get a re-send backstop in pe-api (rule 3 of the ruling, placed by @api-eng and
@@ -446,6 +447,31 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
     order, with preconditions checked, backing off up to the one-minute bound, with one notice of the outcome. Hand
     entries are never re-sent.
 
+- **Cuts follow what a quorum has stepped** (F3 S2, diverge-eng/slow-member-design.md S2). A member whose replica
+  steps behind the present can root, and so vote, a cut only once it has stepped to the cut's frame. At n = 2 a leader
+  naming cuts near the present then got no votes from a member stepping 8 s or more behind, and finality stopped (the
+  M1 recording, 2026-11-20).
+  - **`Progress`.** Once a cadence, each member sends every other member of its epoch `Wire::Progress`: its stepped
+    frame and its linked chain heads beyond its final cut. It is unsigned; the link authenticates the sender, and a
+    member that misreports can only slow cuts it could already stall by not voting. The stepped frame comes from the
+    driver through S3's `Agreement::stepped(frame)` each tick (pe-app's Sim passes its replica's next frame); a driver
+    that never calls it counts as keeping up, so the present stands in. A stepped frame never moves back.
+  - **The leader's progress cap.** A cut's frame is at most the q-th highest stepped frame among the members, this
+    one's included, once q have reported. That is the q-th member, not the slowest, so a healthy quorum never waits on
+    its slowest member. The cap joins the backlog cap: the lower of the two applies, rounded down to the grid, and a
+    view it keeps empty is spared like the backlog cap's.
+  - **The frame only.** The design also capped the heads at what the q-th member reports holding. Built as a frame
+    bound (below the stamp of each chain's first entry fewer than q hold), it stalled a slow link: B's `Progress`
+    reaches A a one-way delay late, so A's cuts fell below the B-led parent and A's views timed out (9.1 s stand-still
+    on B -> A +1.2 s, against the 8 s bound [V]). A voter that lacks an entry a cut names fetches it as before, and a
+    solicited fetch is exempt from the pending cap.
+  - **The backlog's acks** also come from `Progress`: a member's head on this member's chain counts as a vote's
+    heads do (section 2, pacing at the author).
+  - Tests (node_tests.rs): `at_n_2_finality_follows_a_member_stepping_behind` and
+    `at_n_4_one_member_stepping_behind_leaves_the_others_final_lag_unchanged`. The no-lag controls, and the no-lead
+    stand-still's pending-cap control, run with the mutant `NoProgressCap`: the stepped frame reaches the leader a link
+    delay late, which is itself a lag.
+  - The consensus hash is v9: no new setting, but a new message.
 - **A second vote in a view is a self-test report** (coordinator; S3 v1.3 shape by
   @engine-architect). A member votes once per view. The driver's `vote` after a repair returns
   `AlreadyVotedThisView` when this member's latest vote went to that cut and the cut isn't final, even if that vote's
@@ -583,8 +609,8 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
 ## 6. Mutations (feature `mutants`, never in production state)
 
 Named as the model's controls: `VoteWithoutChainValidation` (d1), `AcceptProposalUnchecked`, `QuorumOneTooSmall`,
-`NoLockRule`, `NoSignatureCheck`, `NoTimeouts`, `VoteWithoutRoot`; plus `RateLimitRemoved` and `HorizonRuleOff`,
-which the model does not cover. Each is inert unless the node's configuration names it.
+`NoLockRule`, `NoSignatureCheck`, `NoTimeouts`, `VoteWithoutRoot`; plus `RateLimitRemoved`, `HorizonRuleOff`,
+`NoAbstention`, `NoBacklogCap` and `NoProgressCap` (section 3), which the model does not cover. Each is inert unless the node's configuration names it.
 
 ## 7. Where pe-agree differs from the model
 
