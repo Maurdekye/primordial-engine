@@ -438,8 +438,9 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
     voids nothing. Both together void nothing in either. The mutants `NoAbstention` and
     `NoBacklogCap` turn each side off. Since the outage mark keeps the cut lag low after the return, the voter side
     alone voids at n = 4 on fewer seeds: 4-8 entries on seeds 86, 94 and 99 of 81-100, and none on the others [V,
-    main dd765d0a]. F3 S2's `Progress` moved those races: `NoBacklogCap` now voids on 10 of 81-100, 4-232 entries each,
-    and the control runs on seeds 90, 95 and 97 (92-232) [V, agree/s2-progress]. The sim is deterministic per seed since pe-agree's maps became BTreeMaps (@design-reviewer); sim figures measured before that carried run-to-run noise from HashMap order, so their ranges
+    main dd765d0a]. F3 S2's `Progress` and K8's outage allowance moved those races: `NoBacklogCap` now voids on 6 of
+    81-100 (82, 84, 86, 87, 91, 98), 4-232 entries each, and the control runs on seeds 84, 86 and 87 (28-232) [V, S2
+    merged with main e4df3b28]. The sim is deterministic per seed since pe-agree's maps became BTreeMaps (@design-reviewer); sim figures measured before that carried run-to-run noise from HashMap order, so their ranges
     hold but don't reproduce exactly by seed.
   - *Residual:* an edit can still be void as late, for example when a member at n >= 4 is cut off while the others
     finalize past its stamps. Edits get a re-send backstop in pe-api (rule 3 of the ruling, placed by @api-eng and

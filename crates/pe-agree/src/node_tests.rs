@@ -2484,10 +2484,11 @@ fn at_four_members_the_outage_rule_without_its_cap_voids_the_backlog() {
     // The control: without the leader's cap, an omitted backlog can be voided. Which seeds bite depends on races
     // after the return; the sim is deterministic per seed (BTreeMaps throughout, @design-reviewer; it
     // used to bite on HashMap order). Measured [V, main dd765d0a + the BTreeMaps]: 4 voids on seed 86, 8 on 94, 8 on
-    // 99, none on the other 17 of 81-100. F3 S2's `Progress` (acks and the progress cap) moved the races: re-picked
-    // [V, sweep on agree/s2-progress]: 92 voids on seed 90, 192 on 95, 232 on 97; 10 of 81-100 bite, 4-232 each. If a
-    // timing change stops these three biting, pick again with `outage_control_seed_sweep` rather than guessing.
-    let v = outage_control(crate::core::Mutation::NoBacklogCap, [90, 95, 97]);
+    // 99, none on the other 17 of 81-100. F3 S2's `Progress` (acks and the progress cap) and K8's outage allowance
+    // moved the races: re-picked [V, sweep on S2 merged with main e4df3b28]: 28 voids on seed 84, 48 on 86, 232 on 87;
+    // 6 of 81-100 bite (82, 84, 86, 87, 91, 98), 4-232 each. If a timing change stops these three biting, pick again
+    // with `outage_control_seed_sweep` rather than guessing.
+    let v = outage_control(crate::core::Mutation::NoBacklogCap, [84, 86, 87]);
     eprintln!("n = 4 NoBacklogCap: Late voids per seed {v:?}");
     assert!(v.iter().map(|(_, n)| n).sum::<usize>() > 0, "the control didn't bite: without the cap nothing was voided");
 }
