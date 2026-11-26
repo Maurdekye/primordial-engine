@@ -1435,8 +1435,8 @@ fn a_flooding_member_cannot_starve_two_hands_per_frame() {
 
 #[test]
 fn a_flood_split_over_two_chains_cannot_starve_two_hands_per_frame() {
-    // @design-reviewer's M1 on a3ee509d: the budget is the author's, across its chains. Each chain alone within the
-    // author's rate must not let a leader's cap hold cuts back for the flood (R3' (c), `Node::queued_within_rate`).
+    // @design-reviewer's M1 on a3ee509d: the budget is the author's, across its chains. A flood split over two chains,
+    // each within the author's rate alone, must not hold finality back (a guard kept from R3' (c), reverted).
     flood_run(true);
 }
 
@@ -2068,9 +2068,8 @@ fn a_receivers_own_deferral_is_no_lateness_of_the_author() {
     // The sample is taken at the frame the entry arrived in (`Node::frame_of` of the time pe-net handed to receive),
     // not at the present when it is taken in from the author's queue: the outage-backlog bug again, reached through
     // the pending cap (A's stamp-ahead lead reached its 3 s clamp in R3').
-    // [V, seed 81, 12 s behind] Member 1 deferred up to 528 of member 0's entries. Sampled at admission, it reported
-    // them up to 236 frames (3.9 s) late (164 on main, where it deferred 336); sampled at arrival, at most 1 frame,
-    // the network's 5-30 ms.
+    // [V, seed 81, 12 s behind] Member 1 deferred up to 336 of member 0's entries. Sampled at admission, it reported
+    // them up to 164 frames (2.7 s) late; sampled at arrival, at most 1 frame, the network's 5-30 ms.
     let (s, lead, deferred) = deferral_run(12_000, 81);
     let counts = s.nodes[1].lateness_counts();
     eprintln!(
@@ -2090,26 +2089,33 @@ fn a_receivers_own_deferral_is_no_lateness_of_the_author() {
 }
 
 #[test]
-fn a_slow_leaders_return_voids_none_of_the_healthy_members_entries() {
-    // R3' (c), coordinator. The slow member leads cuts whose heads name member 0's chain only up to the
-    // entries it has admitted; the rest wait in its queue for member 0's pending cap. The outage rule's leader cap
-    // waited only the claimed backlog at the author's rate plus a second, sized for a network backlog, so it gave up
-    // while the entries were already here: a cut past their stamps took them out of the view (a change at the first of
-    // them with nothing held there and nothing voided, A's `changed=4561 at=[]` in R3'), and the next one voided them
-    // as late. The cap now holds while the chain has entries in the leader's own queue.
-    // [V, seed 81, 12 s behind] Before: 252 of member 0's entries void as Late at each member on main, 353 with only the
-    // arrival-time sampling. After: none.
-    let (s, _, deferred) = deferral_run(12_000, 81);
-    assert!(deferred > 0, "member 1 never deferred member 0's entries: the run doesn't reach the pending cap");
-    for i in 0..2 {
-        let late = s.voids(i).iter().filter(|v| v.1 == VoidReason::Late && s.submitted[0].contains(&v.0)).count();
-        assert_eq!(late, 0, "member {i}: {late} of member 0's entries void as late");
-    }
+fn finality_recovers_when_a_slow_member_returns_and_both_sides_defer() {
+    // R3' rerun on main 01c77bfa (@engine-architect, coordinator): with (c)'s cap hold,
+    // finality never came back after B caught up. Both leaders capped their cuts at the first stamp waiting in their own
+    // queue, below a block the core had already certified, so no proposal could extend it, and a capped leader spares
+    // its view rather than failing it. Here both members defer each other's entries at the pending cap (member 1 sends
+    // at full rate, member 0 at the 30 Hz floor) while member 1 is 20 s behind, then member 1 returns.
+    // [V, release, seed 81] With the hold: final frame 162 for good. Without it: within 600 frames of the present
+    // about 8 s after the return (cuts void the deferred entries as late: agreement.md's known limit).
+    let mut s = Sim::new(2, 81);
+    s.per_frame = vec![Some((2, 0)); 2];
+    s.floored = Some(0);
+    s.unpaced = Some(1);
+    s.run(3_000);
+    s.behind[1] = 20 * s.clock.0 as u64;
+    s.run(33_000);
     assert!(
-        s.final_frame(0).0 > 2_000,
-        "finality didn't resume after the slow member returned: {:?}",
-        s.final_frame(0)
+        s.nodes[0].deferred_entries() > 0 && s.nodes[1].deferred_entries() > 0,
+        "both sides should defer: {} {}",
+        s.nodes[0].deferred_entries(),
+        s.nodes[1].deferred_entries()
     );
+    s.behind[1] = 0;
+    s.run(48_000);
+    let p = s.clock.frame_at(HostTime(s.now)).unwrap().0;
+    for i in 0..2 {
+        assert!(s.final_frame(i).0 + 600 > p, "member {i}: final frame {:?} at present {p}", s.final_frame(i));
+    }
     s.assert_same_final_log();
 }
 

@@ -107,9 +107,10 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
     - **Known prototype limit: a long stall voids the overflow** (@coordinator-opus, ruling (a)). Past
       the pending cap and the queue (about 2,040 of one author's entries beyond the final cut at 60 Hz), the
       author's further entries are dropped, come back only after the cuts have passed their stamps, and end void as
-      `Late`. Entries still in the queue are kept: the leader's cap holds for them (section 3, "The leader caps its
-      cut"). Until R3' (coordinator) the cap's wait ran out after a few seconds, so a slow leader's cuts
-      voided them as well, from about the pending cap on. That
+      `Late`. Entries still in the queue are lost too, sooner: the leader's cap waits for a chain's claimed backlog
+      only for that backlog at the author's rate plus 1 s, so once a stall passes the pending cap (about 17 s at the
+      30 Hz floor at 60 Hz), a slow leader's cuts pass the queued entries' stamps and void them as late (R3',
+      coordinator; a fix that holds the cap for them deadlocked and was reverted, section 3). That
       takes a finality stall of about 17 s at 60 Hz with hands at full rate, or about 26-34 s at 60-90 Hz with F3 S1's
       30 Hz floor. Old hand poses are harmless to lose. A grip is not: **a grab made during such a stall can be undone**
       when the final order replaces the prediction. The fix, a leader that caps its cut below an author's entries it
@@ -424,25 +425,11 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
     entries and never sends them holds cuts back once (measured: 5.5 s at 120 Hz). "Once" is per chain and claimant
     (@design-reviewer's L3): when a claim's asks run out unanswered it is dropped with its wait, and another member's
     claim on the chain starts a fresh one; a claimant whose claim went unanswered is ignored on that chain until the
-    chain reaches it, so a chain is waited for at most f + 1 times. **The wait doesn't run out for entries the leader holds back
-    itself** (coordinator, from R3'; @design-reviewer's M1 and L1 on a3ee509d). The wait is sized for a
-    backlog still on the network; a cut past entries waiting in the leader's own queue would void them as late. So
-    past the wait the cap is the stamp of the chain's first queued entry above the final frame, while the hold is
-    engaged for the author: its held entries beyond the final cut came within a burst of its pending cap (its queue
-    waits for finality, as in a stall, not for tokens, as a flood's does), and afterwards for as long as its queue
-    takes to drain at its rate, plus 1 s (observed every tick, not only past the wait; @design-reviewer's L2 on
-    8fd00794). An entry missing between the chain's last admitted one and that first queued one, in flight or
-    dropped, isn't covered: past the wait it is taken as lost on the network, and the range refetch brings it back
-    `Late`, as the known limit below says (N1). Its whole queue, over all its chains, must also pass a full queue's rate test
-    (section 2). That test alone misses a flood split over two chains, since a full queue keeps one chain's entries
-    and so shows one chain's rate; the engagement catches it, because a flood's admitted entries become final within
-    the cut lag, far below the pending cap. The hold can't stall finality: its cap is above the final frame by at least
-    a grid step, or it doesn't apply (entries at or below the final frame void whatever the cap does), so every cut it
-    allows moves finality on and frees the pending slots the queue drains into. [V, pe-agree sim, n = 2, member 1 12 s
-    behind and then back (`a_slow_leaders_return_voids_none_of_the_healthy_members_entries`): 252 of the healthy
-    member's entries void as `Late` on main, none after; the flood tests on one and two chains finalize as before.]
-    *Residual:* an author already at its pending cap through a stall, and flooding too, keeps the hold while it stays
-    there; cuts then move at its admitted stamps. Only members' claims count (a
+    chain reaches it, so a chain is waited for at most f + 1 times. Past the wait the cap no longer holds for that chain, even for entries
+    waiting in the leader's own queue: those then void as late (the known limit in section 2). R3' (coordinator) tried holding the cap at the first queued stamp past the wait; it deadlocked finality once a slow
+    member returned (@engine-architect): each leader's cap fell below a block the core had already
+    certified, so no proposal could extend it, and a capped leader spares its view rather than failing it. Reverted
+    (coordinator; `finality_recovers_when_a_slow_member_returns_and_both_sides_defer`). Only members' claims count (a
     removed member's don't, once membership changes, section 8). Entries on a chain claimed beyond them are left
     out of the adaptive lag, as fetched ones are.
   - **Which side does the work** (measured, sim): at n = 2 (seeds 61-64) the cap alone voids nothing and the voter
