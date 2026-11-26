@@ -37,8 +37,8 @@ someone else's session). Any other pe-app option passes through.
 
 ## Known limits
 
-- **The world freezes for several seconds after a long drop:** about 4 s on real machines with few objects, longer
-  with many.
+- **After a network drop,** the other player comes back within about a second of the link returning, and the
+  world keeps moving.
 - **A drop longer than about 30 s ends the session:** start or join again.
 - **If one machine runs slower than real time,** the game agrees on the shared world later on that machine, by
   however far behind it is. Nothing stops, and the other player keeps moving. A short hitch adds about 1.5 s and
