@@ -168,6 +168,9 @@ struct Sim {
     /// Per member: its replica steps this many frames behind its present, so it roots (and votes) a cut only once its
     /// present is that far past the cut's frame (a member that can't simulate in real time; default path only).
     behind: Vec<u64>,
+    /// (member, chain, last seq, last entry): that member's odd per-frame entries go on this second chain under its key
+    /// (as after a restart), signed here and sent straight to every peer, since its own node keeps one chain.
+    second_chain: Option<(usize, pe_seams::ChainId, u64, Option<EntryRef>)>,
 }
 
 impl Sim {
@@ -249,6 +252,7 @@ impl Sim {
             base: cfg,
             receive_cost: None,
             behind: vec![0; n as usize],
+            second_chain: None,
             seq: 0,
             now: 0,
             rng: Rng(seed),
@@ -397,6 +401,37 @@ impl Sim {
                 let stamp = Frame(present.0 + self.stamp_lead[i]);
                 for k in 0..hands + edits {
                     let class = if k < hands { Class::Input } else { Class::Edit };
+                    if let Some((m, chain, seq, prev)) = &mut self.second_chain
+                        && *m == i
+                        && k % 2 == 1
+                    {
+                        *seq += 1;
+                        let e = pe_seams::Entry {
+                            line: LineId::origin(),
+                            author: self.keys.key(i),
+                            chain: *chain,
+                            seq: *seq,
+                            prev: *prev,
+                            nonce: (*seq == 1).then(|| self.keys.nonce(i, 1)),
+                            domain: pe_seams::DomainId(0),
+                            stamp,
+                            class,
+                            payload: Bytes::from(vec![i as u8; 24]),
+                        };
+                        *prev = Some(e.id());
+                        let e = self.builders[i].sign(e);
+                        let bytes = Bytes::from(crate::codec::encode(&crate::codec::Wire::Entries(vec![e])));
+                        let out = (0..self.nodes.len())
+                            .filter(|&j| j != i)
+                            .map(|j| pe_seams::agree::Outgoing {
+                                to: self.keys.key(j),
+                                lane: Lane::Action,
+                                bytes: bytes.clone(),
+                            })
+                            .collect();
+                        self.deliver_out(i, out);
+                        continue;
+                    }
                     let e = self.builders[i].next_unsigned(class, stamp, Bytes::from(vec![i as u8; 24]));
                     let s = self.nodes[i].submit(e).expect("own per-frame entry refused");
                     self.submitted[i].push(s.id());
@@ -1395,6 +1430,17 @@ fn a_flooder_at_twice_the_budget_is_held_to_it() {
 
 #[test]
 fn a_flooding_member_cannot_starve_two_hands_per_frame() {
+    flood_run(false);
+}
+
+#[test]
+fn a_flood_split_over_two_chains_cannot_starve_two_hands_per_frame() {
+    // @design-reviewer's M1 on a3ee509d: the budget is the author's, across its chains. Each chain alone within the
+    // author's rate must not let a leader's cap hold cuts back for the flood (R3' (c), `Node::queued_within_rate`).
+    flood_run(true);
+}
+
+fn flood_run(two_chains: bool) {
     // Member 3 submits twice its budget every frame at 120 Hz (8 entries a frame); the others send two hands each.
     // Peers refuse the flood beyond the budget, never an honest entry, and the honest entries all become final.
     let rate = 120;
@@ -1404,8 +1450,20 @@ fn a_flooding_member_cannot_starve_two_hands_per_frame() {
     s.clock = Clock(rate);
     s.per_frame = vec![Some((2, 0)), Some((2, 0)), Some((2, 0)), Some((flood, 0))];
     s.flooder = Some(3);
+    if two_chains {
+        let chain = pe_seams::ChainId::new(LineId::origin(), s.keys.key(3), s.keys.nonce(3, 1));
+        s.second_chain = Some((3, chain, 0, None));
+    }
     s.run(10_000);
     let k3 = s.keys.key(3);
+    eprintln!(
+        "two chains {two_chains}: final frames {:?}; refused at 0..3 {:?}; deferred {:?}",
+        (0..4).map(|i| s.final_frame(i).0).collect::<Vec<_>>(),
+        (0..3)
+            .map(|i| s.events[i].iter().filter(|e| matches!(e, AgreeEvent::Refused { .. })).count())
+            .collect::<Vec<_>>(),
+        (0..3).map(|i| s.nodes[i].deferred_entries()).collect::<Vec<_>>()
+    );
     for i in 0..3 {
         let mut refused = 0;
         for e in &s.events[i] {
@@ -1979,6 +2037,79 @@ fn a_25_second_outage_at_the_hand_floor_voids_nothing_and_blames_no_one() {
         }
     }
     assert_eq!(late, 0, "member 0's entries voided as late");
+    s.assert_same_final_log();
+}
+
+/// R3' (@engine-architect, coordinator): at n = 2, one member that can't simulate in real
+/// time (`behind`) votes each cut late, so finality stalls and the other's entries pile up at it past the pending cap.
+/// It defers them and takes them in as finality frees slots, seconds after they arrived. Returns the sim, the largest
+/// lateness member 1 reported on member 0's chain while it was behind, in frames, and the most entries it deferred.
+fn deferral_run(behind_ms: i64, seed: u64) -> (Sim, i64, usize) {
+    let mut s = Sim::new(2, seed);
+    s.per_frame = vec![Some((2, 0)); 2];
+    // pe-app's pacing: while backlogged, hands go on at the 30 Hz floor, never stop (F3 S1).
+    s.floored = Some(0);
+    s.run(3_000);
+    s.behind[1] = (behind_ms * s.clock.0 as i64 / 1_000) as u64;
+    let (mut lead, mut deferred) = (0, 0);
+    for t in (3_100..=3_000 + 2 * behind_ms).step_by(100) {
+        s.run(t);
+        deferred = deferred.max(s.nodes[1].deferred_entries());
+        let r = Agreement::own_lateness(&s.nodes[0]);
+        lead = lead.max(r.iter().map(|l| l.frames).max().unwrap_or(0));
+    }
+    s.behind[1] = 0;
+    s.run(3_000 + 2 * behind_ms + 10_000);
+    (s, lead, deferred)
+}
+
+#[test]
+fn a_receivers_own_deferral_is_no_lateness_of_the_author() {
+    // The sample is taken at the frame the entry arrived in (`Node::frame_of` of the time pe-net handed to receive),
+    // not at the present when it is taken in from the author's queue: the outage-backlog bug again, reached through
+    // the pending cap (A's stamp-ahead lead reached its 3 s clamp in R3').
+    // [V, seed 81, 12 s behind] Member 1 deferred up to 528 of member 0's entries. Sampled at admission, it reported
+    // them up to 236 frames (3.9 s) late (164 on main, where it deferred 336); sampled at arrival, at most 1 frame,
+    // the network's 5-30 ms.
+    let (s, lead, deferred) = deferral_run(12_000, 81);
+    let counts = s.nodes[1].lateness_counts();
+    eprintln!(
+        "member 1 deferred up to {deferred} of member 0's entries; largest lateness report {lead} frames; counts {:?}; final {:?} {:?}",
+        counts.get(&s.keys.key(0)),
+        s.final_frame(0),
+        s.final_frame(1)
+    );
+    assert!(deferred > 0, "member 1 never deferred member 0's entries: the run doesn't reach the pending cap");
+    assert!(lead <= 3, "member 1 reported member 0's entries {lead} frames late: its own deferral counted");
+    for i in 0..2 {
+        for e in &s.events[i] {
+            assert!(!matches!(e, AgreeEvent::Refused { .. } | AgreeEvent::Fault(_)), "member {i}: {e:?}");
+        }
+    }
+    s.assert_same_final_log();
+}
+
+#[test]
+fn a_slow_leaders_return_voids_none_of_the_healthy_members_entries() {
+    // R3' (c), coordinator. The slow member leads cuts whose heads name member 0's chain only up to the
+    // entries it has admitted; the rest wait in its queue for member 0's pending cap. The outage rule's leader cap
+    // waited only the claimed backlog at the author's rate plus a second, sized for a network backlog, so it gave up
+    // while the entries were already here: a cut past their stamps took them out of the view (a change at the first of
+    // them with nothing held there and nothing voided, A's `changed=4561 at=[]` in R3'), and the next one voided them
+    // as late. The cap now holds while the chain has entries in the leader's own queue.
+    // [V, seed 81, 12 s behind] Before: 252 of member 0's entries void as Late at each member on main, 353 with only the
+    // arrival-time sampling. After: none.
+    let (s, _, deferred) = deferral_run(12_000, 81);
+    assert!(deferred > 0, "member 1 never deferred member 0's entries: the run doesn't reach the pending cap");
+    for i in 0..2 {
+        let late = s.voids(i).iter().filter(|v| v.1 == VoidReason::Late && s.submitted[0].contains(&v.0)).count();
+        assert_eq!(late, 0, "member {i}: {late} of member 0's entries void as late");
+    }
+    assert!(
+        s.final_frame(0).0 > 2_000,
+        "finality didn't resume after the slow member returned: {:?}",
+        s.final_frame(0)
+    );
     s.assert_same_final_log();
 }
 
