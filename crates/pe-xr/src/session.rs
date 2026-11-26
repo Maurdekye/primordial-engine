@@ -489,12 +489,18 @@ impl<B: Backend> XrSession<B> {
             self.locomotion.turn_by(applied.yaw);
         }
         if applied.unmeasured {
-            // Not measurable: the jump goes through, so the hands say so.
+            // Not measurable, and the head jumped: the jump goes through, so the hands say so.
             for h in &mut self.hands {
                 h.recentre();
             }
         }
         self.counters.recentre = self.space.counters;
+        if let Some(note) = applied.first {
+            let c = self.counters.recentre;
+            if let Some(line) = self.diag.space_change(c.by_pose + c.by_head + c.unmeasured, &note) {
+                diag::emit(&line);
+            }
+        }
 
         // Step 3: actions and hands, whether or not this frame is drawn.
         let focused = self.state == SessionState::Focused;

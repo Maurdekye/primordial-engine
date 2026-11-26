@@ -193,8 +193,15 @@ FOCUSED, STOPPING, LOSS_PENDING and EXITING. What each state means for the engin
     measures nothing (@chunks-reviewer's L1). Recentres are about gravity: `J` keeps only its yaw.
   - **Each reading takes the correction of its own locate time:** a hand read at `now`, before the change time,
     keeps the old one (@chunks-reviewer's L2).
-  - **Unmeasurable** (no valid pose and no head on one side): the jump goes through, and pe-xr bumps the
-    discontinuity counter in every hand sample (section 5.1), so it is never taken as a throw.
+  - **Unmeasurable** (no valid pose and no head on one side): the jump goes through. If the raw head jumped at it,
+    pe-xr bumps the discontinuity counter in every hand sample (section 5.1), so it is never taken as a throw.
+    A jump means it moved more than 5 cm or turned more than 3° between this frame and the one before, per 90 Hz
+    frame between them [I]. A head missing on either side, or more than 0.5 s old, counts as a jump.
+    Otherwise nothing moved and nothing is marked (`unmeasured_still`). WiVRn sends a STAGE change about 3.7 times
+    a second with no valid pose. In the friend test's first WiVRn run, all 486 changes in 132 s were unmeasured,
+    and each one marked the hands (@coordinator-opus).
+    [I] With a display lead longer than a frame, the last head's display time is usually past a change time that
+    is close to now, so the head rarely measures such a change. That leaves the event's pose and this test.
 
 ### 3.3 Desktop mode, VR mode, and the switch
 
@@ -765,7 +772,9 @@ pe-xr reports, per second and as distributions over a run:
 - frames skipped for an invalid head pose, frames closed after an error short of a loss, degraded runs, and lost
   events;
 - the hand sample's age at each read: its maximum and p99.9 (section 6.2);
-- recentres, and how each was measured: by the runtime's pose, by the head, or not at all (section 3.2).
+- recentres, and how each was measured: by the runtime's pose, by the head, or not at all, and of those, how many
+  had no head jump (section 3.2). Under `PE_XR_LOG`, a line for the first five changes and every hundredth after
+  them: how long after its change time it applied, and how it was measured.
 
 ## 10. Tests
 

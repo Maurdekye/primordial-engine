@@ -16,6 +16,11 @@
 //! stays continuous across the change. Recentres are about gravity, so `J` keeps only its yaw.
 //!
 //! The layer's views stay the runtime's own: the compositor needs them in its space. Only the drawn world moves.
+//!
+//! A change measured neither way goes through uncorrected. The hands then mark the frame discontinuous, but only
+//! if the raw head actually jumped between that frame and the one before it ([`head_jumped`]). WiVRn sends a STAGE
+//! change about 3.7 times a second with no valid pose, which the head can't measure; without that test, every one
+//! of them marked the hands (the friend test's first WiVRn run: 486 in 132 s, all unmeasured, @coordinator-opus).
 
 use std::collections::VecDeque;
 
@@ -43,6 +48,13 @@ pub const RECENTRE_YAW: RecentreYaw = RecentreYaw::Heading;
 /// How far from a change's time the heads that measure it may be [I]: a head moves little in half a second.
 pub const MAX_HEAD_GAP_NS: i64 = 500_000_000;
 
+/// The most a raw head moves in one 90 Hz frame without a jump [I]: 5 cm (4.5 m/s) and 3° (270°/s). Between heads
+/// further apart, the bound grows with the frames between them ([`head_jumped`]).
+pub const HEAD_STEP_M: f32 = 0.05;
+pub const HEAD_STEP_RAD: f32 = 3.0 * std::f32::consts::PI / 180.0;
+/// One frame at 90 Hz, the unit of [`HEAD_STEP_M`] and [`HEAD_STEP_RAD`].
+pub const HEAD_STEP_NS: i64 = 11_111_111;
+
 /// One reference-space change, as the runtime announced it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SpaceChange {
@@ -57,9 +69,31 @@ pub struct SpaceChange {
 pub struct Applied {
     /// Radians to add to the heading (positive turning left, as [`yaw_of`]).
     pub yaw: f64,
-    /// A change came due that could be measured neither from the event nor from the head: its jump goes through
-    /// uncorrected.
+    /// A change came due that could be measured neither from the event nor from the head, and the raw head jumped
+    /// at it: the jump goes through uncorrected, so the hands mark it.
     pub unmeasured: bool,
+    /// The first change applied in this frame, for the log.
+    pub first: Option<ChangeNote>,
+}
+
+/// How a change was measured.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Measured {
+    ByPose,
+    ByHead,
+    /// Not measured. `head_jumped`: whether the raw head jumped at it ([`head_jumped`]).
+    Unmeasured {
+        head_jumped: bool,
+    },
+}
+
+/// One applied change, for `PE_XR_LOG`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChangeNote {
+    /// The frame's display time minus the change time, ns: how late the change applied. A change time the runtime's
+    /// clock couldn't convert is 0, so this is then the display time itself.
+    pub due_before_ns: i64,
+    pub measured: Measured,
 }
 
 /// How each change was measured.
@@ -68,6 +102,8 @@ pub struct SpaceCounters {
     pub by_pose: u64,
     pub by_head: u64,
     pub unmeasured: u64,
+    /// Of `unmeasured`, those where the raw head didn't jump: nothing moved, and the hands weren't marked.
+    pub unmeasured_still: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -138,11 +174,20 @@ impl SpaceCorrection {
                     _ => None,
                 },
             };
+            let note = |measured| ChangeNote { due_before_ns: at.0 - ch.change_time.0, measured };
             let Some(jump) = jump else {
                 self.counters.unmeasured += 1;
-                out.unmeasured = true;
+                let jumped = head_jumped(self.last_head, at, raw_head);
+                if jumped {
+                    out.unmeasured = true;
+                } else {
+                    self.counters.unmeasured_still += 1;
+                }
+                out.first = out.first.or(Some(note(Measured::Unmeasured { head_jumped: jumped })));
                 continue;
             };
+            let how = if ch.previous.is_some() { Measured::ByPose } else { Measured::ByHead };
+            out.first = out.first.or(Some(note(how)));
             self.before = Some((ch.change_time, self.c));
             let cj = compose(self.c, jump);
             match self.mode {
@@ -245,6 +290,23 @@ impl SpaceCorrection {
     }
 }
 
+/// Whether the raw head jumped between `last` (the head and the display time of an earlier frame) and `now`, located
+/// at `at`: it moved more than [`HEAD_STEP_M`] or turned more than [`HEAD_STEP_RAD`] per [`HEAD_STEP_NS`] between them
+/// (at least one frame's worth). A head missing on either side, or older than [`MAX_HEAD_GAP_NS`], counts as a jump:
+/// with nothing to compare, the hands are marked, as before this test.
+pub fn head_jumped(last: Option<(HostTime, RigPose)>, at: HostTime, now: Option<RigPose>) -> bool {
+    let (Some((t0, a)), Some(b)) = (last, now) else { return true };
+    let gap = at.0 - t0.0;
+    if gap <= 0 || gap > MAX_HEAD_GAP_NS {
+        return true;
+    }
+    let frames = (gap as f32 / HEAD_STEP_NS as f32).max(1.0);
+    let moved = crate::math::len(sub(b.position, a.position));
+    let d: f32 = a.orientation.iter().zip(b.orientation).map(|(x, y)| x * y).sum();
+    let turned = 2.0 * d.abs().min(1.0).acos();
+    moved > HEAD_STEP_M * frames || turned > HEAD_STEP_RAD * frames
+}
+
 /// A rotation of `psi` radians about +Y (positive turning left).
 pub fn yaw_quat(psi: f64) -> Quat {
     let h = psi / 2.0;
@@ -326,7 +388,7 @@ mod tests {
         // The corrected head itself is continuous in the rig frame: only its yaw moved into the heading.
         assert!(close(c.pose(head_new).position, head_old.position));
         assert!((yaw_deg(c.pose(head_new)) - (20.0 - 90.0)).abs() < 1e-2);
-        assert_eq!(c.counters, SpaceCounters { by_pose: 1, by_head: 0, unmeasured: 0 });
+        assert_eq!(c.counters, SpaceCounters { by_pose: 1, by_head: 0, unmeasured: 0, unmeasured_still: 0 });
     }
 
     #[test]
@@ -351,7 +413,8 @@ mod tests {
         c.frame(HostTime(100), Some(pose([0.0, 1.6, 0.0], 0.0)));
         c.on_change(SpaceChange { change_time: HostTime(100), previous: Some(jump()) });
         let a = c.frame(HostTime(110), None);
-        assert_eq!(a, Applied { yaw: 0.0, unmeasured: false });
+        let first = Some(ChangeNote { due_before_ns: 10, measured: Measured::ByPose });
+        assert_eq!(a, Applied { yaw: 0.0, unmeasured: false, first });
         let back = c.pose(compose(inverse(jump()), hand_old));
         assert!(close(back.position, hand_old.position));
         assert!((yaw_deg(back) - (-10.0)).abs() < 1e-2);
@@ -366,6 +429,60 @@ mod tests {
         assert!(a.unmeasured);
         assert_eq!(c.correction(), RigPose::IDENTITY);
         assert_eq!(c.counters.unmeasured, 1);
+    }
+
+    /// WiVRn's STAGE changes (no valid pose, a change time the head can't measure): with the head still, nothing is
+    /// marked; with the head jumping at the change, the hands are, as before.
+    #[test]
+    fn an_unmeasured_change_marks_the_hands_only_if_the_head_jumped() {
+        let head = pose([0.3, 1.6, 0.2], 20.0);
+        let walked = pose([0.32, 1.6, 0.2], 21.0); // 2 cm and 1° in a frame: motion
+        let mut still = SpaceCorrection::default();
+        still.frame(HostTime(0), Some(head));
+        still.on_change(SpaceChange { change_time: HostTime(0), previous: None });
+        let a = still.frame(HostTime(HEAD_STEP_NS), Some(walked));
+        assert!(!a.unmeasured);
+        let note = ChangeNote { due_before_ns: HEAD_STEP_NS, measured: Measured::Unmeasured { head_jumped: false } };
+        assert_eq!(a.first, Some(note));
+        assert_eq!(still.counters, SpaceCounters { by_pose: 0, by_head: 0, unmeasured: 1, unmeasured_still: 1 });
+        assert_eq!(still.correction(), RigPose::IDENTITY);
+
+        let mut jumped = SpaceCorrection::default();
+        jumped.frame(HostTime(0), Some(head));
+        jumped.on_change(SpaceChange { change_time: HostTime(0), previous: None });
+        let b = jumped.frame(HostTime(HEAD_STEP_NS), Some(compose(inverse(jump()), head)));
+        assert!(b.unmeasured);
+        assert_eq!(b.first.map(|n| n.measured), Some(Measured::Unmeasured { head_jumped: true }));
+        assert_eq!((jumped.counters.unmeasured, jumped.counters.unmeasured_still), (1, 0));
+    }
+
+    #[test]
+    fn a_head_jump_is_judged_per_frame_between_the_two_heads() {
+        let h = pose([0.0, 1.6, 0.0], 0.0);
+        let t = |frames: i64| HostTime(frames * HEAD_STEP_NS);
+        let at = |x: f32, yaw: f64| Some(pose([x, 1.6, 0.0], yaw));
+        // One frame: 4 cm is motion, 6 cm a jump; 2° is motion, 4° a jump.
+        assert!(!head_jumped(Some((t(0), h)), t(1), at(0.04, 0.0)));
+        assert!(head_jumped(Some((t(0), h)), t(1), at(0.06, 0.0)));
+        assert!(!head_jumped(Some((t(0), h)), t(1), at(0.0, 2.0)));
+        assert!(head_jumped(Some((t(0), h)), t(1), at(0.0, 4.0)));
+        // Three frames apart (two missed): the bound is three frames' worth.
+        assert!(!head_jumped(Some((t(0), h)), t(3), at(0.12, 8.0)));
+        assert!(head_jumped(Some((t(0), h)), t(3), at(0.2, 0.0)));
+        // Nothing to compare, or too old: a jump, as before the test.
+        assert!(head_jumped(None, t(1), at(0.0, 0.0)));
+        assert!(head_jumped(Some((t(0), h)), t(1), None));
+        assert!(head_jumped(Some((t(0), h)), HostTime(MAX_HEAD_GAP_NS + 1), at(0.0, 0.0)));
+        assert!(head_jumped(Some((t(1), h)), t(1), at(0.0, 0.0)), "no time between them");
+    }
+
+    #[test]
+    fn a_measured_change_notes_how() {
+        let mut c = SpaceCorrection::new(RecentreYaw::Keep);
+        c.on_change(SpaceChange { change_time: HostTime(10), previous: Some(jump()) });
+        let note = ChangeNote { due_before_ns: 5, measured: Measured::ByPose };
+        assert_eq!(c.frame(HostTime(15), None).first, Some(note));
+        assert_eq!(c.frame(HostTime(25), None).first, None, "no change applied this frame");
     }
 
     #[test]
@@ -390,7 +507,9 @@ mod tests {
         let mut late = SpaceCorrection::default();
         late.frame(HostTime(1_000), Some(head_new));
         late.on_change(SpaceChange { change_time: HostTime(1_000), previous: None });
-        assert!(late.frame(HostTime(2_000), Some(head_new)).unmeasured, "no head before the change time");
+        // Measured neither way; the head didn't jump between the two frames (it already had), so no hand is marked.
+        assert!(!late.frame(HostTime(2_000), Some(head_new)).unmeasured, "no head before the change time");
+        assert_eq!((late.counters.unmeasured, late.counters.unmeasured_still), (1, 1));
         // The headset was off for a second: the player may have walked.
         let mut stale = SpaceCorrection::default();
         stale.frame(HostTime(0), Some(head_old));
