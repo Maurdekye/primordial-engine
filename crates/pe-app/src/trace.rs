@@ -21,9 +21,13 @@
 //!   entry admitted later is applied by a rollback and never counted. An author whose entries this machine defers
 //!   drops to 0 here while its own `inputs` go on. `pending` is agreement's entries pending finality at the second's
 //!   end. `others_late_max_ms` is the largest receive lateness among the entries counted that second: how long after
-//!   its stamp's time an entry reached this machine's agreement (negative: before it, stamped ahead), `-` for none.
-//!   It leaves out the author's stamp-ahead lead, which this machine doesn't know, so an action's latency is it plus
-//!   that lead (@diverge-eng, for transport.md 9's action-latency figure).
+//!   its stamp's time an entry reached this machine (pe-net's receive time; negative: before it, stamped ahead), `-`
+//!   for none. It leaves out the author's stamp-ahead lead, which this machine doesn't know, so an action's latency is
+//!   it plus that lead, and it carries the two machines' clock-sync error (@diverge-eng, for
+//!   transport.md 9's action-latency figure). It counts refetched and backlog entries too, so after a loss a second's
+//!   largest is the refetch's: quote it over seconds without one. An entry agreement deferred at its pending cap
+//!   carries the arrival pe-agree keeps for it, its admission until @diverge-eng's arrival-time fix and its network
+//!   arrival after (@design-reviewer on d7c8e33f).
 //! - `long`: one per tick longer than `PE_TICK_TRACE_MS` (default 50), with its every phase. `cpu_ms` against
 //!   `tick_ms` says whether the thread ran or waited: descheduled, or blocked on the console, a lock or the disk.
 //!   Windows counts thread time in clock ticks (about 15.6 ms), so `cpu_ms` is coarse below that.
@@ -89,8 +93,8 @@ pub struct Tick {
     pub others: [u64; 4],
     /// Agreement's entries pending finality at the tick's end (`AgreeStats::pending_entries`).
     pub pending: usize,
-    /// The largest receive lateness among the entries in `others`, in ns: arrival (`EntrySource::arrived_at`) less its
-    /// stamp's host time; `None` when none was counted or none has an arrival time.
+    /// The largest receive lateness among the entries in `others`, in ns: arrival (`EntrySource::arrived_at`, pe-net's
+    /// receive time) less its stamp's host time; `None` when none was counted or none has an arrival time.
     pub others_late_max_ns: Option<i64>,
 }
 
