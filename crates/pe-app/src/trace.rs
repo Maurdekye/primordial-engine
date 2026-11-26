@@ -522,7 +522,10 @@ mod tests {
         // One refused entry, at frame 150: the running total goes from 0 to 1 there.
         assert!(secs[2].contains("inputs=0 refused=1 thinned=0 unpublished=0"), "{}", secs[2]);
         assert!(secs[0].contains(" out_of_reach=0 ") && secs[2].contains(" out_of_reach=60 "), "{}", secs[2]);
-        assert!(secs[0].ends_with(" others_input=0 others_edit=0 others_other=0 pending=59 others_late_max_ms=- lead_max=0"));
+        assert!(
+            secs[0]
+                .ends_with(" others_input=0 others_edit=0 others_other=0 pending=59 others_late_max_ms=- lead_max=0")
+        );
         let s1 = " others_input=60 others_edit=0 others_other=0 pending=119 others_late_max_ms=5.0 lead_max=49";
         assert!(secs[1].ends_with(s1), "{}", secs[1]);
         let s2 = " others_input=0 others_edit=1 others_other=0 pending=179 others_late_max_ms=30.0 lead_max=0";
