@@ -469,18 +469,17 @@ fn shared_sim(
             if o.preset.is_some() {
                 pe_app::out!("--preset is ignored when joining: the world is the one the opener's record names");
             }
+            // Invite-only (the user's ruling): the invite lets this machine in. The reply code is the
+            // fallback, for an opener on a build without it: saved, and printed once.
             let reply = ep.reply(invite).encode();
-            pe_app::out!("reply code for the opener: {reply}");
-            // The joiner's code exchange is a desktop step (@coordinator-opus): the reply is copied and
-            // saved now, before the join waits for it.
-            if let Err(e) = pe_app::menu::copy_out(&files, "reply", &reply) {
-                pe_app::err!("pe-app: the reply code couldn't be saved ({e}); copy it from the line above");
+            if let Err(e) = pe_app::menu::save(&files, "reply", &reply) {
+                pe_app::err!("pe-app: the reply code couldn't be saved ({e})");
             }
             pe_app::out!(
-                "waiting for {} to let you in. Send them the reply code above, put the headset on, then tell them \
-                 you're ready: they paste it, and VR starts once you're in. Type quit to stop waiting.",
+                "joining {}'s session with the invite: VR starts once you're in. Type quit to stop.",
                 short(MemberKey(invite.key))
             );
+            pe_app::out!("(the reply code above is a fallback: send it only if they ask for it)");
             // The console from now (@coordinator-opus): `quit` ends a joiner that is still waiting.
             read_console(None, false, console.clone());
             let seed = MenuSeed { role: pe_app::menu::Role::Joiner { reply }, replies: None, files };

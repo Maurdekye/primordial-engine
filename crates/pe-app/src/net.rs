@@ -1209,18 +1209,23 @@ impl MemberHook {
 impl NetHook for MemberHook {
     fn on_event(&mut self, event: &NetEvent, agree: &mut dyn Agreement, world: &dyn WorldFacts) {
         match event {
-            NetEvent::JoinRequest { peer, .. } => {
+            NetEvent::JoinRequest { peer, hello } => {
                 let (peer, members, now) = (*peer, agree.members(), self.now);
+                // Its token: pe-net's dial puts the invite's id there (invite-only). Its addresses, for the welcome's
+                // members once it is one: a join by invite has no reply to take them from.
+                let hello = Hello::decode(hello).ok();
+                let token = hello.as_ref().map_or(&[][..], |h| &h.token[..]);
                 if members.contains(&peer) && peer != DEV_MEMBER {
                     // A member reconnecting after a drop isn't a join: pe-net admits a known member's new connection
                     // the same way, so a member gets the session's welcome again.
                     let welcome = self.welcome_for(&members);
                     self.command(Command::Admit { peer, welcome });
-                } else if self
-                    .inviter
-                    .as_mut()
-                    .is_some_and(|i| i.on_join_request(peer, &members, agree.epoch(), world.holds_scripts(), now))
-                {
+                } else if self.inviter.as_mut().is_some_and(|i| {
+                    i.on_join_request(peer, token, &members, agree.epoch(), world.holds_scripts(), now)
+                }) {
+                    if let Some(h) = &hello {
+                        self.book.entry(peer).or_insert_with(|| h.addrs.clone());
+                    }
                     self.act(&members);
                 } else {
                     self.refused += 1;
@@ -2170,7 +2175,9 @@ mod tests {
         let t_welcome = Duration::from_millis(300);
         let short = |c: &mut Config| c.t_welcome = t_welcome;
         let a = Endpoint::bind_with([21; 32], loopback(), Vec::new(), true, host.clone(), None, short).unwrap();
-        let mut b = Endpoint::bind_with([22; 32], loopback(), Vec::new(), false, host.clone(), None, short).unwrap();
+        // B keeps the product's `T_welcome`: A's short one closes B's first dial, and B's redial then waits for A's
+        // decision as long as it would on the day (a short one on B too closes the redial under a loaded run).
+        let mut b = Endpoint::bind([22; 32], loopback(), Vec::new(), false, host.clone(), None).unwrap();
         let invite = a.invite(Duration::from_secs(600), None).unwrap();
         let mut reply = b.reply(&invite);
         reply.addrs = vec![SocketAddr::from((Ipv4Addr::LOCALHOST, 9))];
@@ -2181,11 +2188,77 @@ mod tests {
         std::thread::sleep(Duration::from_secs(1));
         let started = Instant::now();
         let sa = a
-            .open_session(&invite, &reply, &params(), REDIAL_GAP * 2, runner())
+            .open_session(&invite, &reply, &params(), REDIAL_GAP * 3, runner())
             .expect("A's session, on B's second dial");
         let sb = joiner.join().unwrap().expect("B's session");
         assert_eq!(sa.members, sb.members);
         println!("opened {:?} after the paste", started.elapsed());
+    }
+
+    /// Invite-only (the user's ruling): B joins A's running session with the invite alone, no reply
+    /// pasted. Then a third machine with the same invite is refused (single-use: the players changed), and an invite
+    /// past its expiry is refused before any dial.
+    #[test]
+    fn the_invite_alone_joins_once_and_a_second_or_expired_invite_is_refused() {
+        use crate::join::{T_JOIN, joining_by_invite};
+        let host = crate::clock::shared();
+        let a = Endpoint::bind([21; 32], loopback(), Vec::new(), true, host.clone(), None).unwrap();
+        let mut b = Endpoint::bind([22; 32], loopback(), Vec::new(), false, host.clone(), None).unwrap();
+        let p = OpenParams {
+            epoch_lead: Duration::ZERO,
+            preset: pe_world::preset::Preset::BallPit { balls: 8 },
+            ..params()
+        };
+        let Opened { session: s, invite, replies: _replies, .. } =
+            a.open_alone(&p, Duration::from_secs(600), T_JOIN, runner()).expect("A opens alone");
+        let (me_a, me_b) = (s.me, b.me());
+        let slot = Arc::new(FrameSlot::new());
+        let mut sim = Sim::new(Box::new(s.node), s.replica, s.frames, slot, Budget::new(RATE))
+            .with_local(me_a, crate::local::chain_nonce(), Arc::new(StillHands([-0.5, 1.0, -0.4])))
+            .with_transport(transport(s.handle), Some(Box::new(s.hook)))
+            .with_diverge(pe_diverge::Config::default(), None)
+            .expect("A's pe-diverge");
+        let mut notices = Vec::new();
+        assert!(run_until(&mut sim, &host, &mut notices, Duration::from_secs(10), |s| s.stats().finalized > 0));
+        b.dial(&invite).unwrap();
+        let theirs = invite.clone();
+        let joiner = std::thread::spawn(move || b.join_at_cut(&theirs, RATE, Duration::from_secs(20), T_JOIN));
+        // Nobody pastes anything.
+        let ended = run_until(&mut sim, &host, &mut notices, Duration::from_secs(30), |_| joiner.is_finished());
+        assert!(ended, "B's join didn't end: A's console {notices:?}");
+        let cj = joiner.join().unwrap().expect("B in on the invite alone");
+        assert!(notices.contains(&joining_by_invite(me_b)), "A's console: {notices:?}");
+        assert!(cj.members.contains(&me_a) && cj.members.contains(&me_b));
+
+        // A third machine, the same invite: A's inviter answers it itself.
+        let mut c = Endpoint::bind([23; 32], loopback(), Vec::new(), false, host.clone(), None).unwrap();
+        c.dial(&invite).unwrap();
+        let theirs = invite.clone();
+        let third = std::thread::spawn(move || c.join_at_cut(&theirs, RATE, Duration::from_secs(10), T_JOIN));
+        let (mut sim_b, _, _) = joining_sim(cj, me_a, &host);
+        let mut notices_b = Vec::new();
+        run_both(
+            &host,
+            [(&mut sim, &mut notices), (&mut sim_b, &mut notices_b)],
+            Duration::from_secs(15),
+            |_, _, _| third.is_finished(),
+        );
+        match third.join().unwrap() {
+            // Refused while B's join is in flight ("not admitted"), or after it, once the players changed.
+            Err(e) => {
+                let e = e.to_string();
+                assert!(e.contains(crate::join::PLAYERS_CHANGED) || e.contains("not admitted"), "{e}")
+            }
+            Ok(_) => panic!("a second player joined on the same invite"),
+        }
+
+        let mut late = Endpoint::bind([24; 32], loopback(), Vec::new(), false, host, None).unwrap();
+        let mut old = invite;
+        old.expiry_unix_s = unix_now() - 1;
+        match late.dial(&old) {
+            Err(e) => assert!(e.to_string().contains("expired"), "{e}"),
+            Ok(()) => panic!("an expired invite dialled"),
+        }
     }
 
     #[test]

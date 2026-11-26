@@ -149,6 +149,8 @@ pub enum Act {
 /// The inviter's counts, for tests and diagnostics.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct JoinStats {
+    /// Joins started by a hello carrying this invite's id (invite-only, the user's ruling).
+    pub by_invite: u64,
     /// Replies taken, and replies refused (another invite's, expired, a member's, or a join already in flight).
     pub replies: u64,
     pub replies_refused: u64,
@@ -315,13 +317,18 @@ impl Inviter {
 
     /// A join request from a key that isn't a member: `true` if the inviter took it (welcomed it, holds it
     /// undecided while the invite is open and no join is in flight, or refused it itself, saying why); `false`
-    /// refuses it, "not admitted". While the world holds a script, the joiner is refused with [`SCRIPTS`]; once the
+    /// refuses it, "not admitted". A hello whose `token` is this invite's id starts the join at once, as a pasted reply
+    /// would (invite-only, the user's ruling): the invite is the ticket. It stays single-use, since once
+    /// a player joins its pin no longer holds. A hello without it (an older build) is held for a reply, the fallback.
+    /// While the world holds a script, the joiner is refused with [`SCRIPTS`]; once the
     /// members changed since the invite (its pin no longer holds), with [`PLAYERS_CHANGED`], at once rather than
     /// held until pe-net's `T_welcome` closes it, since no reply could start its join (@shader-lang's Low on
     /// d27af1c1: a third player couldn't join anyway, as a member other than the inviter refuses its mesh dial).
+    #[allow(clippy::too_many_arguments)]
     pub fn on_join_request(
         &mut self,
         peer: MemberKey,
+        token: &[u8],
         members: &[MemberKey],
         epoch: u64,
         holds_scripts: bool,
@@ -351,7 +358,13 @@ impl Inviter {
             }
             Some(_) => false,
             None if !self.expired() && peer != DEV_MEMBER => {
-                if self.pin_holds(members, epoch) {
+                if self.pin_holds(members, epoch) && token == self.invite.id {
+                    self.stats.by_invite += 1;
+                    self.notices.push(joining_by_invite(peer));
+                    self.join =
+                        Some(Join { key: peer, step: Step::Dialing, since: now, e_height: None, failed: false });
+                    self.welcome(peer, now);
+                } else if self.pin_holds(members, epoch) {
                     self.held.insert(peer, now);
                 } else {
                     self.acts.push(Act::Refuse(peer, refusal(PLAYERS_CHANGED)));
@@ -535,6 +548,16 @@ pub fn join_failed(m: MemberKey) -> String {
     format!("{} couldn't join. This session can't confirm changes any more: start a new one.", capitalized(player(m)))
 }
 
+/// Whether a console line is the inviter's news of a join (for the status line).
+pub fn is_join_news(line: &str) -> bool {
+    line.ends_with(" is joining with your invite…") || line.ends_with(" joined the session.")
+}
+
+/// The inviter's console when a hello with the invite starts a join.
+pub fn joining_by_invite(m: MemberKey) -> String {
+    format!("{} is joining with your invite…", capitalized(player(m)))
+}
+
 /// The inviter's console, at the new epoch's first final cut.
 pub fn joined(m: MemberKey) -> String {
     format!("{} joined the session.", capitalized(player(m)))
@@ -606,11 +629,39 @@ mod tests {
         (Inviter::new(A, LINE, invite, replies, T_JOIN), reply)
     }
 
+    /// Invite-only (the user's ruling): B's hello carrying the invite's id starts the join with no
+    /// reply, and B's addresses come from the hello. A hello with another token, or none (an older build), is held for
+    /// a reply as before. A third player's hello with the same id, once B is a member, is refused: single-use.
+    #[test]
+    fn a_hello_with_the_invite_s_id_starts_the_join_without_a_reply() {
+        let (mut inv, _) = inviter();
+        assert!(inv.on_join_request(B, &[4; 8], &[A], 0, false, T0));
+        assert_eq!(inv.join(), Some((B, Step::Welcomed, false)), "welcomed at once");
+        assert_eq!((inv.stats.by_invite, inv.stats.replies), (1, 0));
+        assert_eq!(inv.take_acts(), vec![Act::Welcome(B)], "no dial of B's address: A needn't reach B");
+        assert_eq!(inv.take_notices(), vec![joining_by_invite(B)]);
+        assert!(is_join_news(&joining_by_invite(B)) && is_join_news(&joined(B)) && !is_join_news(&joining(B)));
+
+        for token in [&[5u8; 8][..], &[]] {
+            let (mut held, _) = inviter();
+            assert!(held.on_join_request(B, token, &[A], 0, false, T0), "held");
+            assert_eq!((held.join(), held.stats.by_invite), (None, 0), "another token waits for a reply");
+            assert!(held.take_acts().is_empty());
+        }
+
+        // Once B is in (the members are A and B, a new epoch), the invite's pin no longer holds.
+        let (mut spent, _) = inviter();
+        let c = MemberKey([0x0c; 32]);
+        assert!(spent.on_join_request(c, &[4; 8], &[A, B], 1, false, T0), "answered by the inviter itself");
+        assert_eq!(spent.take_acts(), vec![Act::Refuse(c, refusal(PLAYERS_CHANGED))]);
+        assert_eq!(spent.stats.by_invite, 0);
+    }
+
     /// The inviter, B's reply taken, B welcomed and ready: the `Admit` waits to be written.
     fn ready() -> Inviter {
         let (mut inv, reply) = inviter();
         inv.on_reply(reply.clone(), &[A], 0, T0);
-        assert!(inv.on_join_request(B, &[A], 0, false, T0), "B's hello is the join's");
+        assert!(inv.on_join_request(B, &[], &[A], 0, false, T0), "B's hello is the join's");
         inv.on_message(B, AppMsg::JoinReady, &[A], T0);
         assert_eq!(inv.join(), Some((B, Step::Ready, false)));
         assert_eq!(
@@ -680,7 +731,7 @@ mod tests {
             |acts: &[Act]| acts.iter().any(|a| matches!(a, Act::Refuse(k, r) if *k == B && r.detail.contains(SCRIPTS)));
         // At the hello, before any reply: B learns why, and so does A's console.
         let (mut inv, _) = inviter();
-        assert!(inv.on_join_request(B, &[A], 0, true, T0));
+        assert!(inv.on_join_request(B, &[], &[A], 0, true, T0));
         assert!(refused(&inv.take_acts()), "B is told why");
         assert_eq!(inv.take_notices(), vec![couldnt_join(B, SCRIPTS)]);
         assert_eq!(inv.join(), None);
@@ -708,7 +759,7 @@ mod tests {
         let c = MemberKey([0xcc; 32]);
         inv.on_reply(Reply { key: c.0, ..reply }, &[A], 0, T0);
         assert_eq!(inv.join(), Some((B, Step::Dialing, false)), "a second join waits");
-        assert!(!inv.on_join_request(c, &[A], 0, false, T0), "C's hello is refused while B joins");
+        assert!(!inv.on_join_request(c, &[], &[A], 0, false, T0), "C's hello is refused while B joins");
         assert_eq!(inv.stats.replies_refused, 4);
     }
 
@@ -719,14 +770,14 @@ mod tests {
     fn once_the_players_changed_a_third_player_s_hello_is_refused_saying_why() {
         let (mut inv, reply) = inviter();
         let c = MemberKey([0xcc; 32]);
-        assert!(inv.on_join_request(c, &[A, B], 1, false, T0), "the inviter answers it itself");
+        assert!(inv.on_join_request(c, &[], &[A, B], 1, false, T0), "the inviter answers it itself");
         assert_eq!(inv.take_acts(), vec![Act::Refuse(c, refusal(PLAYERS_CHANGED))], "C is told why");
         assert_eq!(inv.take_notices(), vec![couldnt_join(c, PLAYERS_CHANGED)], "and so is A's console");
         inv.on_reply(Reply { key: c.0, ..reply }, &[A, B], 1, T0);
         assert_eq!((inv.join(), inv.stats.replies_refused), (None, 1), "its reply starts no join");
         // While the pin holds, an early hello is held for the reply that names it.
         let (mut inv, _) = inviter();
-        assert!(inv.on_join_request(c, &[A], 0, false, T0));
+        assert!(inv.on_join_request(c, &[], &[A], 0, false, T0));
         assert_eq!((inv.take_acts(), inv.take_notices()), (vec![], vec![]), "held, undecided");
     }
 }

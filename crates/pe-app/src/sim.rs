@@ -552,6 +552,8 @@ pub struct Sim {
     status: Option<Arc<pe_render::notices::StatusLine>>,
     /// The status this simulation put up ([`Sim::set_status`]): it takes the line over the hand-feel pair.
     status_own: Option<String>,
+    /// A line shown for a while when no own status is up: a player joined (the user's ruling).
+    status_flash: Option<(String, Instant)>,
     /// The console's hand-feel switch ([`Sim::with_hand_feel`], [`crate::handfeel`]), and the pair's version last
     /// shown.
     hand_feel: Option<Arc<crate::handfeel::HandFeel>>,
@@ -676,6 +678,9 @@ pub trait NetHook: Send {
         Vec::new()
     }
 }
+
+/// How long a player's joining or joined line stays on the status line.
+const STATUS_FLASH: Duration = Duration::from_secs(10);
 
 /// The most messages step 1 takes from the network in one tick, so a flood cannot stall the tick: the rest wait
 /// in the transport's bounded queue for the next one.
@@ -874,6 +879,7 @@ impl Sim {
             on_join_failed: None,
             status: None,
             status_own: None,
+            status_flash: None,
             hand_feel: None,
             hand_feel_shown: 0,
             slow_frame: None,
@@ -1011,6 +1017,11 @@ impl Sim {
     pub fn take_notices(&mut self) -> Vec<String> {
         if let Some(hook) = &mut self.net_hook {
             self.notices.extend(hook.take_notices());
+        }
+        let joined = self.notices.iter().rev().find(|n| crate::join::is_join_news(n)).cloned();
+        if let Some(line) = joined {
+            self.status_flash = Some((line, Instant::now() + STATUS_FLASH));
+            self.show_status();
         }
         std::mem::take(&mut self.notices)
     }
@@ -1223,7 +1234,14 @@ impl Sim {
     fn show_status(&mut self) {
         let Some(status) = self.status.clone() else { return };
         self.hand_feel_shown = self.hand_feel.as_ref().map_or(0, |f| f.version());
-        let line = self.status_own.clone().or_else(|| self.hand_feel.as_ref().and_then(|f| f.status()));
+        if self.status_flash.as_ref().is_some_and(|(_, until)| Instant::now() >= *until) {
+            self.status_flash = None;
+        }
+        let line = self
+            .status_own
+            .clone()
+            .or_else(|| self.status_flash.as_ref().map(|(l, _)| l.clone()))
+            .or_else(|| self.hand_feel.as_ref().and_then(|f| f.status()));
         // A deliberate slowdown is always on the line while it is on (crate::slowframe), so a recorded run is never
         // taken for a really slow machine.
         self.slow_frame_shown = self.slow_frame.as_ref().map_or(0, |f| f.ms());

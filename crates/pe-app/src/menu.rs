@@ -143,11 +143,10 @@ const SIDE_TURN_DEG: f64 = 20.0;
 const REPLACE_M: f64 = 1.0;
 /// How long a first press of Quit or Join waits for the second, in seconds.
 pub const CONFIRM_S: u64 = 10;
-/// What Join's first press says (J0, @coordinator-opus): the joiner has no VR while it waits.
-pub const JOIN_FIRST: &str = "Joining restarts the game. VR stays off until
-    the other player lets you in. After the restart,
-    send them your reply code (pe1r:) from the terminal,
-    put the headset back on, then tell them you're ready.
+/// What Join's first press says (J0, @coordinator-opus, after the invite-only ruling):
+/// the restart takes VR away until this machine is in the other session, a few seconds.
+pub const JOIN_FIRST: &str = "Joining restarts the game: VR goes off\n\
+    for a few seconds, and comes back in their session.\n\
     Press Join again to go.";
 /// A button's name for the log.
 fn button_name(b: u32) -> String {
@@ -202,7 +201,6 @@ impl Menu {
         match &self.role {
             Role::Opener { expires_unix_s, .. } => {
                 b.push(Button::new(id::INVITE, "Invite a friend"));
-                b.push(Button::new(id::PASTE_REPLY, "Paste reply"));
                 b.push(Button::new(id::JOIN, "Join a session"));
                 b.push(Button::new(id::NEW_SESSION, "New session"));
                 let left = expires_unix_s.saturating_sub(now_unix);
@@ -213,7 +211,6 @@ impl Menu {
                 });
             }
             Role::Joiner { .. } => {
-                b.push(Button::new(id::COPY_REPLY, "Copy my reply code"));
                 b.push(Button::new(id::LEAVE, "Leave (back to my own session)"));
                 lines.push("In someone else's session".into());
             }
@@ -874,7 +871,8 @@ mod tests {
         let (m, _) = opener(Err("empty".into()), true);
         let s = m.spec(1_000);
         let ids: Vec<u32> = s.buttons.iter().map(|b| b.id).collect();
-        assert_eq!(ids, [id::INVITE, id::PASTE_REPLY, id::JOIN, id::NEW_SESSION, id::QUIT, id::CLOSE]);
+        // Paste reply is the console's alone now, the fallback (invite-only, the user's ruling).
+        assert_eq!(ids, [id::INVITE, id::JOIN, id::NEW_SESSION, id::QUIT, id::CLOSE]);
         assert!(s.lines[0].contains("52 min"), "{:?}", s.lines);
         assert!(m.spec(1_000 + 3_600).lines[0].contains("expired"));
         assert!(m.is_open(), "open at launch");
@@ -1007,7 +1005,8 @@ mod tests {
         let host = FakeHost { log: log.clone(), clipboard: true, paste: Err("x".into()), now: 0, spawns: false };
         let mut m = Menu::new(Role::Joiner { reply: "pe1r:me".into() }, Box::new(host));
         let ids: Vec<u32> = m.spec(0).buttons.iter().map(|b| b.id).collect();
-        assert_eq!(ids, [id::COPY_REPLY, id::LEAVE, id::QUIT, id::CLOSE]);
+        // No reply to copy: the invite let it in. The press still works, for the fallback.
+        assert_eq!(ids, [id::LEAVE, id::QUIT, id::CLOSE]);
         m.press(id::COPY_REPLY);
         m.press(id::LEAVE);
         assert_eq!(calls(&log), ["copy reply pe1r:me", "relaunch NewSession"]);
@@ -1049,15 +1048,15 @@ mod tests {
     fn a_click_presses_the_button_the_ray_points_at_and_the_toggle_closes_the_menu() {
         let (mut m, log) = opener(Ok("pe1r:abc".into()), true);
         // Hover only: the panel, the ray and its cursor; nothing pressed.
-        let out = m.frame(&input(&m, Some(1), 0, false, false));
+        let out = m.frame(&input(&m, Some(0), 0, false, false));
         assert_eq!(out.overlays.len(), 3);
         assert!(calls(&log).is_empty() && !out.took[1]);
-        // A click on Paste reply, the second button.
-        let out = m.frame(&input(&m, Some(1), 1, false, false));
+        // A click on Invite a friend, the first button.
+        let out = m.frame(&input(&m, Some(0), 1, false, false));
         assert!(out.took[1], "the press went to the menu");
-        assert_eq!(calls(&log), ["reply pe1r:abc"]);
+        assert_eq!(calls(&log), ["copy invite pe1:abc"]);
         // The menu button closes it: no panel, and a ray that meets nothing is not drawn while closed.
-        let out = m.frame(&input(&m, Some(1), 0, true, false));
+        let out = m.frame(&input(&m, Some(0), 0, true, false));
         assert!(!m.is_open());
         assert!(out.overlays.is_empty(), "{}", out.overlays.len());
     }
