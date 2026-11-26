@@ -126,14 +126,27 @@ Rules for shapes, as built [V `peworld.rs`]:
     view draws it with the signed scale.
   - **A hull's points** are scaled on the shape's own axes, signs included, then turned, then offset into the body's
     frame, as an offset box's corners are; a hull has no placement limit. A mirrored hull's points are the points
-    mirrored by hand, bit for bit, and it steps the same.
+    mirrored by hand, bit for bit, and it steps the same. A hull of triangles too big for Box3D (more than 44
+    vertices: a hull keeps at most 128 edges) is built again at 44 vertices, simplified; every hull that builds at 64
+    builds as before, and the check and the build take the same path (pe-physics; @coordinator-opus)
+    [V tests/hulls.rs].
+  - **Scale composes as a box's does:** a mesh's and a hull's world scale is composed axis by axis down the chain, so
+    under a turned parent with an uneven scale it isn't the shear the parent's frame would give, as for an offset box
+    (@design-reviewer's N3 on CCD part 2 D) [read].
   - **The scale floor:** any axis of a mesh's or a hull's world scale, parent scales included, under 0.01 in
     magnitude (or not a number) refuses the body (`ScaleFloor`, naming the axis); 0.01 builds.
   - **A blob is read and built once per machine,** then kept by its hash and its reading (mesh or hull), so a
     rebuild takes the built mesh (crate::blobs). The cache lets the least recently used builds go once their blobs
     pass 32 MiB [I]; it is a cache of a pure function of the bytes, so what it keeps never changes a result. A hull
-    blob's points must also pass the fork's hull builder as the blob gives them, once; a placed hull its scale
-    flattens too far is refused later, by pe-physics (below).
+    blob's points must also pass the fork's hull builder as the blob gives them, once, before its scale (so one
+    authored past the size limit is `BadBlob` even where its scale would shrink it). A hull scaled other than 1 or -1
+    on some axis is checked again once placed, as `add_body` checks it, and one its scale flattens past what the
+    builder takes, or takes past the size limit, can't be built (`ScaledHull`; @coordinator-opus, R3);
+    a turn or an offset can't flatten one, so an unscaled hull isn't built again. Each check is a build: about 1.3 µs
+    for 4 points, 12 µs for 32, 18 µs for 44, 44 µs for a cloud built again at 44 [V rough,
+    examples/mesh_bullet_cost.rs]. A dynamic body with a mesh builds its hulls once more for its mass check, at each
+    read of its row (an entry that touches it, and each frame it has a collision hit) [read; @design-reviewer's N1
+    on D].
   - **A dynamic body with a mesh needs mass** from its shapes together (`Mass`, with the count of the triangles Box3D
     left out when they opened a mesh): pe-physics's own check, `BodyDesc::check_mass`, which `add_body` makes again.
   - **A blob this machine's store lacks** is a local condition, not the world's (world-model.md 3.4): the body can't
@@ -148,7 +161,7 @@ Rules for shapes, as built [V `peworld.rs`]:
   kind, a body with no world pose, or a body the physics refuses that the world model builds (a mesh scaled past
   pe-physics's size limit, which only `add_body` checks), at the replica's start too. `WorldModel::body` says why
   with a code the inspector can tell apart (`Unbuildable`: `Kind`; `Shape` with its reason, `UnknownKind`,
-  `NonUniformScale`, `SwitchOff`, `NoBlob`, `BadBlob`, `ScaleFloor` or `MisplacedMesh`; `Pose`; `Mass`;
+  `NonUniformScale`, `SwitchOff`, `NoBlob`, `BadBlob`, `ScaleFloor`, `MisplacedMesh` or `ScaledHull`; `Pose`; `Mass`;
   `BlobAbsent`), and its `Display` gives the words world-model.md 3.2 gives. `physical()` lists exactly the objects
   whose `body` is not `Ok(None)`. The replica tries at its start, when an entry or a logic stage makes such an object
   physical (`Created`), and when a body it had can no longer be built (`Rebuilt`, which removes the body); one that
@@ -1334,8 +1347,52 @@ world-model.md 3.2 says what a bullet means; this is the solver's side [V `crate
     sleeping dynamic mesh's contact that isn't touching reads as moving, so it does too although nothing moves: a
     cost, never a state change, since the search is a function of the current poses (@design-reviewer's N1 on CCD
     part 2 C) [read].
-- **Not yet (part 2):** height fields and compounds are neither swept nor swept against (Q5: pe-physics builds
-  neither), and a hull that isn't a box takes a rounded core scaled toward its centre instead of its faces moved in.
+- **Height fields and compounds** are neither swept nor swept against (Q5: pe-physics builds neither). A tripwire test
+  fails if pe-physics makes a shape of a type the sweep doesn't take (tests/bullets.rs,
+  `every_shape_pe_physics_makes_is_one_the_sweep_takes`). A hull that isn't a simple polytope takes a rounded core
+  scaled toward its centre instead of its faces moved in.
+- **A pair that meets during a step** (CCD part 2 E, a fix to part 1): Box3D makes contacts once a step, so a bullet
+  and a body that first touch in a sub-step have no contact until the next step. The sweep leaves a pair that can't
+  close a slop, or one overlapping past its floor that can't close the rest of the way, to the contact solver only if
+  a touching contact joins its shapes this step; else it bounds the pair's motion to the step's end, not only the
+  sub-step's. Before, a small spinning hull slowed by its hit drifted on over the step's later sub-steps and went
+  through a thin wall [V]: of 27 shots at 20 to 400 m/s into a 1 cm wall, a 2 cm tetrahedron spinning at 26 rad/s
+  went through 5 times at 30 Hz and once at 60, a 2 cm cube (hull or box) once at 30 Hz; none at 120 Hz, none for
+  larger hulls, slivers or spheres. After, none in 42 runs of shape, spin and rate [V tests/bullets.rs, and the fork's
+  `a_small_spinning_hull_slowed_by_its_hit_never_drifts_through_a_thin_wall`]. A resting or rolling bullet has its
+  contact, so it keeps the free skip. Cost [V, examples/bullet_cost.rs counts]: the most queries a step in the pit
+  went from 32 to 37 with one bullet, 209 to 218 with ten, 3,515 to 3,554 with a hundred; the hundred-bullet pit's
+  outcome changed (mean awake bodies 935.2 to 936.5), and every RESULT line stayed the same.
+- **Measured in part 2 E** [V pe-physics tests/mesh_bullets.rs, tests/bullets.rs, tests/hulls.rs; timings rough,
+  examples/mesh_bullet_cost.rs]:
+  - **The user's paddle case**: 7,776 shots of a 2 cm ball at 10, 60 and 240 m/s at a paddle 2 m long
+    turning about its centre (kinematic and dynamic closed box meshes, and an open blade with both sides), at 30, 60
+    and 120 Hz. A geometric replay sorts each shot: its straight flight first touches a face and crosses the paddle
+    (2,832), stays more than 5 cm clear (4,236), or grazes it (708, not judged). As a bullet, every crossing shot is
+    turned by the frame after, never ends a frame inside the paddle, and stays on the side of the face it met until
+    it is clear (@design-reviewer's M1); every clear one is untouched, bit for bit. Without the flag, 2,674 of the
+    2,832 pass through. The same test passes on the sweep before the fix below: a sphere bullet's hit leaves it
+    nothing to drift on with, so the paddle case never met that failure; spinning hulls did.
+  - **A body turns at most 1/8 of a turn per frame** (Box3D's cap: 23.6 rad/s at 30 Hz, 47 at 60, 94 at 120;
+    pe-physics never sets the fast-rotation flag), so a paddle set to 60 rad/s turns at that only at 120 Hz. A held
+    object turned faster lags the hand. Open option, a post-test decision (@coordinator-opus): Box3D's
+    fast-rotation flag on held objects. Its cost isn't measured; Box3D keeps the flag for round bodies, because a
+    long body turning far in a step meets contacts made at the step's start.
+  - **Static mesh walls** at 30, 60 and 120 Hz (one-sided, a closed 1 cm box mesh, both-sided from either side): a
+    bullet never crosses one; a one-sided wall from behind lets it through, as Box3D's mesh contact does. A ball and a
+    cube sliding at 50 m/s across a flat mesh of 1,152 triangles keep to it; bullets resting and rolling on a mesh
+    raise no sweep event and move as unflagged bodies do.
+  - **Hull bullets** (Q6): a tetrahedron and a cube 2 cm across, a 32-point hull and a sliver 2 mm thick, spinning,
+    never cross a 1 cm box wall or a mesh wall at 30, 60 or 120 Hz (with the fix above). In the sweep they cost more
+    than spheres: 40 spinning bullets fired at a wall, mean step 292 µs as spheres, 447 as boxes, 796 as tetrahedra,
+    1,133 as slivers and 1,643 as 32-point hulls; the last two spend the whole budget (1,024 queries a sub-step) in
+    their impact step, which holds the rest, never letting them through.
+  - **Meshes:** ten bullets skimming a 5,000-triangle mesh floor at 100 m/s spend no query (the plane cull), against
+    80 over a box floor; thirty bullets at three paddles turning at 30 rad/s take 130 µs a step, against 11 for
+    unflagged balls, which pass through.
+  - **Determinism:** the paddle scene steps the same on 1, 2, 4 and 8 workers and through a restore, and its state is
+    a RESULT line; the hull builder's output from 13 inputs (degenerate ones too) is a RESULT line and a golden, so
+    tier 2 compares it across its four platforms.
 - **Known limit** [V swept tests' trace]: a 12 cm box bullet tumbling into a 1 cm wall at 400 m/s and 200 rad/s
   takes 35 hits in one frame, ends spinning at about 1900 rad/s with its centre still closing, and is held against
   the wall from then on. It never crosses. Up to 150 m/s, capsules and boxes at every spin tested are free again
