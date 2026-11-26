@@ -263,6 +263,12 @@ pub struct SimStats {
     /// tests' lead allowances are fitted to it (K4's A/B of 20 blackouts; @coordinator-opus).
     pub stepping_slow_ms: u64,
     pub stepping_lag_max_ms: u64,
+    /// Entries agreement voided (`AgreeEvent::Voided`, any reason): this member's own, actions it made that never
+    /// happen, and the other members'. A void of an entry already out of the view changes nothing on screen and writes
+    /// no rollback line, so these and the log's `voids:` line are its only trace (@diverge-eng, K4's
+    /// R3').
+    pub voided_own: u64,
+    pub voided_others: u64,
     /// `HandMode` entries step 2 sent for the console's `hand-mode` ([`crate::handfeel`]), and those agreement
     /// refused.
     pub hand_modes: u64,
@@ -674,6 +680,23 @@ pub trait NetHook: Send {
 /// The most messages step 1 takes from the network in one tick, so a flood cannot stall the tick: the rest wait
 /// in the transport's bounded queue for the next one.
 pub const MAX_IN_PER_TICK: usize = 1024;
+
+/// The voids among `events`: this member's own (`me`'s) by reason, and how many of the other members'. With no local
+/// member, every void is another's.
+fn voids_by_author(events: &[AgreeEvent], me: Option<MemberKey>) -> (std::collections::BTreeMap<String, u64>, u64) {
+    let mut own = std::collections::BTreeMap::new();
+    let mut others = 0;
+    for e in events {
+        if let AgreeEvent::Voided { author, reason, .. } = e {
+            if Some(*author) == me {
+                *own.entry(format!("{reason:?}")).or_default() += 1;
+            } else {
+                others += 1;
+            }
+        }
+    }
+    (own, others)
+}
 
 /// A status line's message with each number blanked to `#`, so "Behind by 3.2 s" and "Behind by 12.0 s" are one
 /// message: the log gets a line only when the message changes ([`Sim::show_status`]).
@@ -1416,6 +1439,24 @@ impl Sim {
         self.local.as_ref().map(|l| l.chain.me())
     }
 
+    /// Agreement's voids this tick, by author ([`SimStats::voided_own`]), and a console line when there are any, so a
+    /// run's log shows the actions that never happen even where no rollback line does.
+    fn count_voids(&mut self, events: &[AgreeEvent]) {
+        let (own, others) = voids_by_author(events, self.local_member());
+        let mine: u64 = own.values().sum();
+        if mine + others == 0 {
+            return;
+        }
+        self.stats.voided_own += mine;
+        self.stats.voided_others += others;
+        let reasons: Vec<String> = own.iter().map(|(r, n)| format!("{r} x{n}")).collect();
+        let why = if reasons.is_empty() { String::new() } else { format!(" ({})", reasons.join(", ")) };
+        self.notices.push(format!(
+            "voids: {mine} of this machine's entries{why} and {others} of the other members' are void: their actions \
+             don't happen"
+        ));
+    }
+
     /// For the tick trace: the other members' entries agreement holds, by class, at each frame not counted yet that
     /// is final or a second old, whichever comes first (each frame once). A final frame's entries are its cut's, so
     /// none is in flight; a second on, an entry in flight has arrived. So a frame short of another member's entries is
@@ -1895,6 +1936,7 @@ impl Sim {
         // routed in this tick, and its Repair-lane messages go to the outbox.
         let events = self.agree.events();
         self.stats.events += events.len() as u64;
+        self.count_voids(&events);
         self.track_split(&events);
         self.note_rollback(&report.advance, stepped_before, p, now, &events);
         self.stats.recasts = self.agree.stats().recasts;
@@ -3076,6 +3118,27 @@ pub(crate) mod tests {
                 "status: shown: Hands: always within reach · drawn at the tracked pose".to_string(),
             ]
         );
+    }
+
+    /// Voids are counted by author and, this member's own, by reason (SimStats' voided_own and voided_others).
+    #[test]
+    fn voids_are_counted_by_author_and_reason() {
+        use pe_seams::VoidReason;
+        let keys = pe_seams::test_util::TestKeys::new(3, 2);
+        let (me, other) = (keys.key(0), keys.key(1));
+        let cut = CutRef { line: LineId::origin(), height: 1, frame: Frame(6) };
+        let void = |author, reason| AgreeEvent::Voided { entry: EntryRef::default(), author, reason, cut };
+        let events = vec![
+            void(me, VoidReason::Late),
+            void(other, VoidReason::Late),
+            void(me, VoidReason::Late),
+            void(me, VoidReason::BackStamped),
+        ];
+        let (own, others) = voids_by_author(&events, Some(me));
+        assert_eq!(own, std::collections::BTreeMap::from([("BackStamped".to_string(), 1), ("Late".to_string(), 2)]));
+        assert_eq!(others, 1);
+        assert_eq!(voids_by_author(&events, None), (std::collections::BTreeMap::new(), 4), "no local member");
+        assert_eq!(voids_by_author(&[], Some(me)), (std::collections::BTreeMap::new(), 0));
     }
 
     /// The status line in the log (@coordinator-opus, after K4's R3'): a line when it shows, none while
@@ -5704,6 +5767,18 @@ pub(crate) mod tests {
             })
             .max()
             .unwrap_or(0);
+        // SimStats counts every void the events carry, by author (K4's R3'; the control voids B's entries).
+        for (i, (sim, _, log)) in sims.iter().enumerate() {
+            let me = keys.key(i);
+            let log = log.lock().expect("the log");
+            let of = |mine: bool| {
+                let voids =
+                    log.iter().filter(|e| matches!(e, AgreeEvent::Voided { author, .. } if (*author == me) == mine));
+                voids.count() as u64
+            };
+            let st = sim.stats();
+            assert_eq!((st.voided_own, st.voided_others), (of(true), of(false)), "machine {i}'s voids");
+        }
         let fin = |i: usize| sims[i].1.newest().and_then(|v| v.final_frame).map_or(0, |f| f.0);
         let lead = sims[1].0.stats().lead;
         (lead, late, current as f64 / counted as f64, [fin(0), fin(1)], sims[1].0.stats().edits)
