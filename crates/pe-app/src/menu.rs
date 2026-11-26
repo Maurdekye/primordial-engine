@@ -13,6 +13,12 @@
 //!   console line; the menu says which worked.
 //! - **The wrist button** sits on the back of the left wrist and is clicked with the right hand's
 //!   pointer. It is the only menu toggle a tracked hand has.
+//! - **Quit and Join ask first** (@coordinator-opus, after the friend test's attempts of 2026-11-26):
+//!   the first press says what will happen, and only a second press of the same button within [`CONFIRM_S`] does it.
+//!   Join's first press says that VR stays off until the opener lets this machine in, and that the reply code goes
+//!   back from the desktop. Any other button, or closing the menu, takes the question back.
+//! - **Every action is logged** (same ruling): each button pressed, the menu opened or closed, and what the button
+//!   said, as `menu: …` lines in the run's log.
 
 use pe_render::menu::{
     Button, MenuPanel, PanelSpec, Ui, UiInput, UiOutput, button_at, cursor_overlay, place_beside, place_in_front,
@@ -62,6 +68,8 @@ pub trait MenuHost: Send {
     fn relaunch(&mut self, r: Relaunch);
     /// End the run.
     fn quit(&mut self);
+    /// A line in the run's log (and on the console): each menu action.
+    fn log(&mut self, line: &str);
     /// The wall clock, Unix seconds (an invite's time left).
     fn unix_now(&self) -> u64;
     /// Whether this world takes spawns (the plane's `/Spawned`; S4). No spawn panel without.
@@ -101,8 +109,10 @@ pub struct Menu {
     main: Option<MenuPanel>,
     /// The wrist button, placed on the left wrist each frame it is tracked.
     wrist: Option<MenuPanel>,
-    /// The last thing a button did, shown on the panel.
+    /// The last thing a button did, shown on the panel: one line per `\n`.
     message: Option<String>,
+    /// A press that waits for its second press (Quit, Join): the button, and the Unix second it lapses after.
+    confirm: Option<(u32, u64)>,
     /// A relaunch or quit is under way: the buttons are off.
     leaving: bool,
     /// Where the head was when the main panel was placed.
@@ -131,6 +141,33 @@ const SIDE_GAP: f64 = 0.04;
 const SIDE_TURN_DEG: f64 = 20.0;
 /// How far the head may move from where it was when the main panel was placed before the panel follows (review L3).
 const REPLACE_M: f64 = 1.0;
+/// How long a first press of Quit or Join waits for the second, in seconds.
+pub const CONFIRM_S: u64 = 10;
+/// What Join's first press says (J0, @coordinator-opus): the joiner has no VR while it waits.
+pub const JOIN_FIRST: &str = "Joining restarts the game. VR stays off until
+    the other player lets you in. After the restart,
+    send them your reply code (pe1r:) from the terminal,
+    put the headset back on, then tell them you're ready.
+    Press Join again to go.";
+/// A button's name for the log.
+fn button_name(b: u32) -> String {
+    match b {
+        id::INVITE => "Invite a friend".into(),
+        id::PASTE_REPLY => "Paste reply".into(),
+        id::JOIN => "Join a session".into(),
+        id::NEW_SESSION => "New session".into(),
+        id::LEAVE => "Leave".into(),
+        id::COPY_REPLY => "Copy my reply code".into(),
+        id::QUIT => "Quit".into(),
+        id::CLOSE => "Close menu".into(),
+        id::CLEAR => "Clear".into(),
+        b if (id::SPAWN..id::SPAWN + 4).contains(&b) => {
+            crate::spawn::Kind::ALL[(b - id::SPAWN) as usize].template().into()
+        }
+        b => format!("button {b}"),
+    }
+}
+
 /// An invite's and a reply code's prefixes (pe-net-crypto's encodings).
 const INVITE_PREFIX: &str = "pe1:";
 const REPLY_PREFIX: &str = "pe1r:";
@@ -144,6 +181,7 @@ impl Menu {
             main: None,
             wrist: None,
             message: None,
+            confirm: None,
             leaving: false,
             placed_at: None,
             side: None,
@@ -186,13 +224,20 @@ impl Menu {
         }
         b.push(Button::new(id::QUIT, "Quit"));
         b.push(Button::new(id::CLOSE, "Close menu"));
+        // A press waiting for its second says so on its button.
+        if let Some((c, until)) = self.confirm
+            && now_unix <= until
+            && let Some(x) = b.iter_mut().find(|x| x.id == c)
+        {
+            x.label = if c == id::QUIT { "Press again to quit".into() } else { "Press again to join".into() };
+        }
         if self.leaving {
             for x in &mut b {
                 x.enabled = false;
             }
         }
         if let Some(m) = &self.message {
-            lines.push(m.clone());
+            lines.extend(m.lines().map(String::from));
         }
         PanelSpec { title: Some("Primordial Engine".into()), buttons: b, lines }
     }
@@ -200,6 +245,8 @@ impl Menu {
     /// Press button `b`.
     pub fn press(&mut self, b: u32) {
         let now = self.host.unix_now();
+        // The second press of a button that asked first; any other press takes the question back.
+        let confirmed = self.confirm.take().is_some_and(|(c, until)| c == b && now <= until);
         let msg = match b {
             id::INVITE => match &self.role {
                 Role::Opener { invite, expires_unix_s } if *expires_unix_s > now => {
@@ -235,10 +282,14 @@ impl Menu {
                     "That's your own invite: send it to your friend, and copy theirs to join them".into()
                 }
                 Ok(code) if code.starts_with(INVITE_PREFIX) => match self.host.check_invite(&code) {
-                    Ok(()) => {
+                    Ok(()) if confirmed => {
                         self.leaving = true;
                         self.host.relaunch(Relaunch::Join(code));
                         "Joining: restarting…".into()
+                    }
+                    Ok(()) => {
+                        self.confirm = Some((b, now + CONFIRM_S));
+                        JOIN_FIRST.into()
                     }
                     Err(e) => format!("That invite can't be joined: {e}"),
                 },
@@ -250,13 +301,18 @@ impl Menu {
                 self.host.relaunch(Relaunch::NewSession);
                 Some("Restarting in a new session of your own…".into())
             }
-            id::QUIT => {
+            id::QUIT if confirmed => {
                 self.leaving = true;
                 self.host.quit();
                 Some("Quitting…".into())
             }
+            id::QUIT => {
+                self.confirm = Some((b, now + CONFIRM_S));
+                Some("Quit the game? Press Quit again to quit.".into())
+            }
             id::CLOSE => {
                 self.open = false;
+                self.host.log("menu: closed");
                 None
             }
             b if (id::SPAWN..id::SPAWN + 4).contains(&b) => {
@@ -279,6 +335,10 @@ impl Menu {
             }
             _ => None,
         };
+        if b != id::WRIST && b != id::CLOSE {
+            let said = msg.as_deref().map(|m| format!(": {}", m.replace('\n', " "))).unwrap_or_default();
+            self.host.log(&format!("menu: {}{said}", button_name(b)));
+        }
         if msg.is_some() {
             self.message = msg;
         }
@@ -286,8 +346,11 @@ impl Menu {
 
     fn toggle(&mut self) {
         self.open = !self.open;
+        self.host.log(if self.open { "menu: opened" } else { "menu: closed" });
         if self.open {
             self.main = None; // placed again in front of the head
+        } else {
+            self.confirm = None;
         }
     }
 
@@ -544,6 +607,10 @@ impl MenuHost for AppHost {
         self.quit.request_from_app("the menu's Quit");
     }
 
+    fn log(&mut self, line: &str) {
+        crate::out!("{line}");
+    }
+
     fn unix_now(&self) -> u64 {
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
     }
@@ -723,6 +790,9 @@ mod tests {
         fn quit(&mut self) {
             self.log.0.lock().unwrap().push("quit".into());
         }
+        fn log(&mut self, line: &str) {
+            self.log.0.lock().unwrap().push(line.into());
+        }
         fn unix_now(&self) -> u64 {
             self.now
         }
@@ -743,8 +813,14 @@ mod tests {
         (Menu::new(Role::Opener { invite: "pe1:abc".into(), expires_unix_s: 1_000 + 52 * 60 }, Box::new(host)), log)
     }
 
+    /// What the menu did to its host, without its log lines.
     fn calls(l: &Log) -> Vec<String> {
-        l.0.lock().unwrap().clone()
+        l.0.lock().unwrap().iter().filter(|c| !c.starts_with("menu: ")).cloned().collect()
+    }
+
+    /// The menu's log lines.
+    fn logged(l: &Log) -> Vec<String> {
+        l.0.lock().unwrap().iter().filter(|c| c.starts_with("menu: ")).cloned().collect()
     }
 
     #[test]
@@ -818,6 +894,9 @@ mod tests {
     fn join_relaunches_with_the_pasted_invite_and_then_the_buttons_are_off() {
         let (mut m, log) = opener(Ok("pe1:friend".into()), true);
         m.press(id::JOIN);
+        assert!(calls(&log).is_empty(), "the first press only says what Join does");
+        assert_eq!(m.spec(1_000).lines[1..], JOIN_FIRST.lines().collect::<Vec<_>>()[..]);
+        m.press(id::JOIN);
         assert_eq!(calls(&log), ["relaunch Join(\"pe1:friend\")"]);
         assert!(m.spec(1_000).buttons.iter().all(|b| !b.enabled), "leaving: nothing more to press");
         let (mut n, log) = opener(Ok("pe1r:not-an-invite".into()), true);
@@ -829,12 +908,72 @@ mod tests {
         assert!(o.spec(1_000).lines.last().unwrap().starts_with("That's your own invite"));
         let (mut q, log) = opener(Ok("join me: pe1:friend.".into()), true);
         q.press(id::JOIN);
+        q.press(id::JOIN);
         assert_eq!(calls(&log), ["relaunch Join(\"pe1:friend\")"], "a code inside a sentence");
         let (mut x, log) = opener(Ok("pe1:expired".into()), true);
         x.press(id::JOIN);
         assert!(calls(&log).is_empty(), "an invite that can't be joined never relaunches");
         assert!(x.spec(1_000).lines.last().unwrap().starts_with("That invite can't be joined: it has expired"));
         assert!(x.spec(1_000).buttons.iter().all(|b| b.enabled), "and the session stays");
+    }
+
+    /// Quit and Join ask first: a second press of the same button within `CONFIRM_S` does it, and
+    /// its button says so meanwhile; a lapse, another button or closing the menu takes the question back.
+    #[test]
+    fn quit_and_join_ask_first_and_a_lapse_or_another_button_takes_it_back() {
+        let (mut m, log) = opener(Ok("pe1:friend".into()), true);
+        m.press(id::QUIT);
+        assert!(calls(&log).is_empty());
+        let quit = |m: &Menu, now| m.spec(now).buttons.iter().find(|b| b.id == id::QUIT).unwrap().label.clone();
+        assert_eq!(quit(&m, 1_000), "Press again to quit");
+        assert_eq!(quit(&m, 1_000 + CONFIRM_S + 1), "Quit", "lapsed");
+        m.press(id::QUIT);
+        assert_eq!(calls(&log), ["quit"]);
+        assert!(m.spec(1_000).buttons.iter().all(|b| !b.enabled));
+
+        let (mut n, log) = opener(Ok("pe1:friend".into()), true);
+        n.press(id::QUIT);
+        n.press(id::INVITE);
+        n.press(id::QUIT);
+        assert_eq!(calls(&log), ["copy invite pe1:abc"], "another button took the question back");
+        n.press(id::JOIN);
+        n.press(id::QUIT);
+        n.press(id::JOIN);
+        assert_eq!(calls(&log), ["copy invite pe1:abc"], "Quit took Join's back, and Join Quit's");
+        n.toggle();
+        n.toggle();
+        n.press(id::JOIN);
+        assert_eq!(calls(&log), ["copy invite pe1:abc"], "closing the menu took it back");
+        n.press(id::JOIN);
+        assert_eq!(calls(&log), ["copy invite pe1:abc", "relaunch Join(\"pe1:friend\")"]);
+    }
+
+    /// A first press that lapsed is a first press again (FakeHost's clock: `now`).
+    #[test]
+    fn a_lapsed_question_asks_again() {
+        let log = Log::default();
+        let host = FakeHost { log: log.clone(), clipboard: true, paste: Err("x".into()), now: 2_000, spawns: false };
+        let mut m = Menu::new(Role::Alone, Box::new(host));
+        m.confirm = Some((id::QUIT, 2_000 - 1));
+        m.press(id::QUIT);
+        assert!(calls(&log).is_empty(), "lapsed: this press asks again");
+        m.press(id::QUIT);
+        assert_eq!(calls(&log), ["quit"]);
+    }
+
+    /// Every action is logged: the button, and what it said on one line.
+    #[test]
+    fn each_menu_action_is_logged() {
+        let (mut m, log) = opener(Ok("pe1:friend".into()), true);
+        m.press(id::INVITE);
+        m.press(id::JOIN);
+        m.press(id::CLOSE);
+        m.toggle();
+        m.press(id::QUIT);
+        let l = logged(&log);
+        assert!(l[0].starts_with("menu: Invite a friend: Invite copied (52 min left)"), "{l:?}");
+        assert_eq!(l[1], format!("menu: Join a session: {}", JOIN_FIRST.replace('\n', " ")));
+        assert_eq!(l[2..], ["menu: closed", "menu: opened", "menu: Quit: Quit the game? Press Quit again to quit."]);
     }
 
     #[test]
