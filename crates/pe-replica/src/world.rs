@@ -201,7 +201,9 @@ pub enum ShapeReason {
     SwitchOff,
     /// A mesh or a hull shape that names no blob.
     NoBlob,
-    /// A mesh's or a hull's blob that can't be read or built (world-model.md 3.2's formats and the fork's limits).
+    /// A mesh's or a hull's blob that can't be read or built (world-model.md 3.2's formats and the fork's limits). A
+    /// hull blob's points are checked as the blob gives them, before the shape's scale: one authored past the size limit
+    /// is refused even where its scale would shrink it (@design-reviewer's N2 on CCD part 2 D).
     BadBlob,
     /// An axis of a mesh's or a hull's world scale (parent scales included) under 0.01 in magnitude, Box3D's floor on
     /// scale (world-model.md 3.2): 0 is x, 1 is y, 2 is z.
@@ -209,6 +211,10 @@ pub enum ShapeReason {
     /// A mesh whose place in its body, composed down the chain, isn't the body's origin, unturned (world-model.md 3.2,
     /// v1): Box3D's mesh has no local transform.
     MisplacedMesh,
+    /// A hull its scale leaves unbuildable, flattened past what Box3D's hull builder takes or past the size limit:
+    /// checked as `add_body` checks it, for a hull scaled other than 1 or -1 on some axis (a turn or an offset can't
+    /// flatten one, though an offset past the size limit is refused by `add_body` alone; @coordinator-opus, R3).
+    ScaledHull,
 }
 
 impl std::fmt::Display for Unbuildable {
@@ -237,7 +243,10 @@ impl std::fmt::Display for ShapeReason {
                 write!(f, "meshes and hulls are built only in a world founded with its blob-shapes setting on")
             }
             ShapeReason::NoBlob => write!(f, "a mesh or hull shape that names no blob"),
-            ShapeReason::BadBlob => write!(f, "a mesh or hull blob that can't be read or built"),
+            ShapeReason::BadBlob => write!(
+                f,
+                "a mesh or hull blob that can't be read or built (a hull's points are checked before its scale is applied)"
+            ),
             ShapeReason::ScaleFloor { axis } => write!(
                 f,
                 "the shape's world scale {} is under 0.01 in magnitude, Box3D's floor on scale: rescale the mesh at import",
@@ -246,6 +255,10 @@ impl std::fmt::Display for ShapeReason {
             ShapeReason::MisplacedMesh => write!(
                 f,
                 "a mesh child must sit at its body's origin, unturned: snap it there, or make the mesh the body's own shape"
+            ),
+            ShapeReason::ScaledHull => write!(
+                f,
+                "the hull's scale flattens it too far to build, or takes it past the size limit: rescale the hull at import"
             ),
         }
     }

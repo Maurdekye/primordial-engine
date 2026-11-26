@@ -34,6 +34,7 @@
 use super::StepContext;
 use crate::body::{body_flags, should_bodies_collide, wake_body, BodyState};
 use crate::constants::{linear_slop, MAX_ROTATION};
+use crate::contact::contact_flags;
 use crate::core::NULL_INDEX;
 use crate::distance::{make_proxy, shape_distance, DistanceInput, ShapeProxy, SimplexCache};
 use crate::dynamic_tree::DEFAULT_MASK_BITS;
@@ -280,6 +281,9 @@ struct Pair {
     core_cache: SimplexCache,
     /// `b` is a mesh triangle (`proxy_b` and `core_b` are the triangle itself).
     tri: Option<Tri>,
+    /// Box3D's contact solver holds the pair this step: a touching contact joins its two shapes ([`held_by_contact`]).
+    /// Only then may the sweep leave a slow or a deep pair to it for the rest of the sub-step alone.
+    held: bool,
 }
 
 /// A mesh triangle as a pair's partner `b` (CCD part 2). Box3D's triangles are one-sided: its contact solver drops a
@@ -398,6 +402,10 @@ const NO_ENTRY: u32 = u32::MAX;
 /// The pass of one step: [`SweptPass::find`] and [`SweptPass::resolve`] around each sub-step's `integrate positions`,
 /// then [`finish`] after the step.
 pub(super) struct SweptPass {
+    /// The step's sub-steps after the current one ([`Self::find`]'s `left`). Box3D's contact solver has a pair only
+    /// from the step after its shapes first touch (collide runs once a step), so a pair that meets during the step is
+    /// the sweep's to the step's end, not only the sub-step's ([`Pair::held`]).
+    left: i32,
     movers: Vec<Mover>,
     pairs: Vec<Pair>,
     /// Body id to mover index plus one (0: none), for the current sub-step.
@@ -459,12 +467,15 @@ impl SweptPass {
             hit_threshold: world.hit_event_threshold,
             hits: Vec::new(),
             counters: SweptCounters::default(),
+            left: 0,
         }
     }
 
     /// Before `integrate positions`: the candidate pairs of every swept body over this sub-step, and the poses their
-    /// bodies start it at. `states` are the awake states, still at the sub-step's start.
-    pub(super) fn find(&mut self, world: &World, states: &[BodyState]) {
+    /// bodies start it at. `states` are the awake states, still at the sub-step's start; `left` is how many of the
+    /// step's sub-steps come after this one.
+    pub(super) fn find(&mut self, world: &World, states: &[BodyState], left: i32) {
+        self.left = left;
         for m in &self.movers {
             self.mover_of[m.body_id as usize] = 0;
         }
@@ -784,6 +795,7 @@ impl SweptPass {
             cache: SimplexCache::default(),
             core_cache: SimplexCache::default(),
             tri: None,
+            held: held_by_contact(world, sa, sb),
         });
         self.counters.pairs += 1;
     }
@@ -843,6 +855,7 @@ impl SweptPass {
         let radius_a = proxy_radius(&proxy_a, ma.local_center);
         let mat_a = own.get_material(0);
         let indices = get_mesh_material_indices(data);
+        let held = held_by_contact(world, shape_id, other);
         for index in found {
             if self.pairs.iter().any(|p| p.shape_a == shape_id && p.shape_b == other && p.tri.is_some_and(|x| x.index == index))
             {
@@ -904,6 +917,7 @@ impl SweptPass {
                     centre,
                     margin,
                 }),
+                held,
             });
             self.counters.pairs += 1;
         }
@@ -1012,10 +1026,15 @@ impl SweptPass {
             max_float(0.0, -dot(sub(mb.rate(), ma.rate()), n)) + ma.turn_rate() * radius_a + mb.turn_rate() * radius_b
         };
         let mut t = max_float(self.pairs[p].proven, max_float(ma.t0, mb.t0));
-        // A pair that can't close a slop, nor the thinner core's half-extent, over the rest of the sub-step can't pass
-        // through anything: the contact solver has it, and no query is spent (a bullet resting, rolling or jostling
-        // among slow bodies costs nothing). A fast partner, a paddle swinging at a resting ball, still makes it swept.
-        if closing * (1.0 - t) <= min_float(slop, self.pairs[p].thin) {
+        // How long, in sub-steps from `t`, the pair stays the sweep's alone: the rest of the sub-step if the contact
+        // solver holds it, else the rest of the step, whose contacts were made before the pair met (CCD part 2 E: a
+        // spinning 1 cm tetrahedron slowed by its hit at 30 Hz drifted on through a 1 cm wall over the step's last 7
+        // sub-steps, each judged on its own as unable to close a slop).
+        let rest = 1.0 - t + if self.pairs[p].held { 0.0 } else { self.left as f32 };
+        // A pair that can't close a slop, nor the thinner core's half-extent, over that time can't pass through
+        // anything: the contact solver has it, and no query is spent (a bullet resting, rolling or jostling among slow
+        // bodies costs nothing). A fast partner, a paddle swinging at a resting ball, still makes it swept.
+        if closing * rest <= min_float(slop, self.pairs[p].thin) {
             self.pairs[p].proven = 1.0;
             self.pairs[p].done = true;
             self.counters.slow += 1;
@@ -1138,12 +1157,12 @@ impl SweptPass {
                         return Stop::Swept;
                     }
                     // Not approaching where they meet. If neither can close the rest of the way across the thinner
-                    // core by the sub-step's end (judged along the normal, so a slide along the contact isn't
-                    // counted as closing), the contact solver has the pair. Otherwise the rest of the motion can't
-                    // be proven, so both are held here.
+                    // core by the time the contact solver has the pair (`rest`: judged along the normal, so a slide
+                    // along the contact isn't counted as closing), it has the pair. Otherwise the rest of the motion
+                    // can't be proven, so both are held here.
                     // A pair that can't close at all can't get deeper, so only a closing one is judged.
                     let reach = along(core.normal);
-                    if reach > 0.0 && reach * (1.0 - t) > 2.0 * pair.thin + core.lower_n {
+                    if reach > 0.0 && reach * rest > 2.0 * pair.thin + core.lower_n {
                         // Not provable. If either body moves away along the normal, it keeps just that motion; else
                         // both are held.
                         let away = dot(mb.rate(), core.normal) > 0.0 || dot(ma.rate(), core.normal) < 0.0;
@@ -1711,6 +1730,35 @@ fn swept_shapes(world: &World, body_id: i32) -> bool {
 /// swept itself; mesh triangles are its partners (part 2 A).
 fn convex(shape: &Shape) -> bool {
     matches!(shape.geometry, ShapeGeometry::Sphere(_) | ShapeGeometry::Capsule(_) | ShapeGeometry::Hull(_))
+}
+
+/// Whether the sweep takes a shape of type `t` as a partner, as [`convex`] and the mesh test in [`SweptPass::consider`]
+/// decide it: a sphere, capsule or hull, or a mesh, whose triangles are the partners. A height field or a compound is
+/// neither swept nor swept against. No wildcard arm, so a new shape type stops this compiling until it is decided here
+/// and there; pe-physics's tripwire test holds every shape pe-physics makes to it (CCD part 2 E).
+pub fn sweeps_against(t: crate::geometry::ShapeType) -> bool {
+    use crate::geometry::ShapeType;
+    match t {
+        ShapeType::Sphere | ShapeType::Capsule | ShapeType::Hull | ShapeType::Mesh => true,
+        ShapeType::Compound | ShapeType::Height => false,
+    }
+}
+
+/// Whether Box3D's contact solver holds shapes `sa` and `sb` this step: a touching contact joins them, its manifold
+/// made at the step's start. A pair that first meets during the step has none until the next step. For a mesh, the
+/// contact is the bullet's with the whole mesh shape, so its triangle pairs share it.
+fn held_by_contact(world: &World, sa: i32, sb: i32) -> bool {
+    let body = world.shapes[sa as usize].body_id;
+    let mut key = world.bodies[body as usize].head_contact_key;
+    while key != NULL_INDEX {
+        let contact = &world.contacts[(key >> 1) as usize];
+        key = contact.edges[(key & 1) as usize].next_key;
+        let ends = (contact.shape_id_a, contact.shape_id_b);
+        if (contact.flags & contact_flags::TOUCHING) != 0 && (ends == (sa, sb) || ends == (sb, sa)) {
+            return true;
+        }
+    }
+    false
 }
 
 /// A shape's core for the touching rule: the shape moved inward by [`shrink`]`(e)` on every side, `e` its inner size.

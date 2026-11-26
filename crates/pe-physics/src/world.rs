@@ -328,10 +328,7 @@ fn hulls_of(desc: &BodyDesc) -> Result<Vec<Option<HullData>>, PhysicsError> {
         .iter()
         .map(|shape| match &shape.geometry {
             Geometry::Box { half_extents: h } => Ok(Some(make_box_hull(h[0], h[1], h[2]).base)),
-            Geometry::Hull { points } => {
-                let points: Vec<Vec3> = points.iter().map(|&p| vec3(p)).collect();
-                create_hull(&points, 64).map(Some).ok_or(PhysicsError::BadHull)
-            }
+            Geometry::Hull { points } => build_hull(points).map(Some).ok_or(PhysicsError::BadHull),
             _ => Ok(None),
         })
         .collect()
@@ -377,9 +374,20 @@ fn weigh(desc: &BodyDesc, hulls: &[Option<HullData>]) -> Result<(), PhysicsError
 /// be refused by [`PhysicsWorld::add_body`].
 pub fn check_hull(points: &[[f32; 3]]) -> Result<(), PhysicsError> {
     ShapeDesc::new(Geometry::Hull { points: points.to_vec() }).validate()?;
-    let points: Vec<Vec3> = points.iter().map(|&p| vec3(p)).collect();
-    create_hull(&points, 64).map(|_| ()).ok_or(PhysicsError::BadHull)
+    build_hull(points).map(|_| ()).ok_or(PhysicsError::BadHull)
 }
+
+/// The fork's hull of `points`, as every hull shape is built ([`hulls_of`], [`check_hull`]): at most 64 vertices,
+/// else at most 44. Box3D keeps at most 128 edges, so a hull of triangles has at most 44 vertices (3 V - 6 edges);
+/// one whose surface is bigger is refused at 64, and built again at 44, which simplifies it to 44 vertices. Every hull
+/// that builds at 64 is built as before (@coordinator-opus, CCD part 2 E).
+fn build_hull(points: &[[f32; 3]]) -> Option<HullData> {
+    let points: Vec<Vec3> = points.iter().map(|&p| vec3(p)).collect();
+    create_hull(&points, 64).or_else(|| create_hull(&points, MAX_TRIANGLE_HULL_VERTICES))
+}
+
+/// The most vertices a hull of triangles can have within Box3D's 128 edges (3 V - 6 <= 128).
+const MAX_TRIANGLE_HULL_VERTICES: i32 = 44;
 
 impl BodyDesc {
     /// Whether any of its shapes is a mesh.

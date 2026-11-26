@@ -111,7 +111,7 @@ pub enum Geometry {
         half_extents: [f32; 3],
     },
     /// The convex hull of 4 to [`limits::MAX_HULL_POINTS`] points (at most 64 hull vertices
-    /// are kept).
+    /// are kept; a hull of triangles too big for Box3D's 128 edges is simplified to 44).
     Hull {
         points: Vec<[f32; 3]>,
     },
