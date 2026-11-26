@@ -54,9 +54,9 @@ machine during the session.
 - **The world freezes for several seconds after a long drop:** about 4 s on real machines with few objects, longer
   with many.
 - **A drop longer than about 30 s ends the session:** start or join again.
-- **If one machine runs slower than real time,** confirmations trail it by its lag; nothing stops, and the other
-  player keeps moving. A short hitch adds about 1.5 s of lag and recovers in a few seconds.
-- **A machine more than about 70 s behind can't recover:** restart the session.
+- **If one machine runs slower than real time,** the game agrees on the shared world later on that machine, by
+  however far behind it is. Nothing stops, and the other player keeps moving. A short hitch adds about 1.5 s and
+  recovers in a few seconds.
 - **Mesh colliders are off in this build.**
 
 ## If something goes wrong
