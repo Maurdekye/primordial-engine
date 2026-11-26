@@ -46,9 +46,11 @@
 //! descendants reached without passing another `Body`) in id order, each placed in the body's frame and scaled by
 //! its object's world scale. A child's place composes the local transforms from the body down to it, starting from
 //! the body's world scale, so it does not depend on the body's pose; an object without a `Transform` sits at its
-//! frame (world-model.md 3.3). Boxes scale per axis. A sphere or capsule under non-uniform scale, a mesh, a hull or an
-//! unknown kind cannot be built yet ([`Unbuildable::Shape`]), and neither can an unknown body kind or a body with no
-//! world pose: the object is physical, [`WorldModel::body`] says why it cannot be built, and it has no body.
+//! frame (world-model.md 3.3). Boxes scale per axis. A sphere or capsule under non-uniform scale, or an unknown kind,
+//! cannot be built ([`Unbuildable::Shape`]), and neither can an unknown body kind or a body with no world pose: the
+//! object is physical, [`WorldModel::body`] says why it cannot be built, and it has no body. Meshes and hulls are
+//! built from their blobs, in a world whose blob-shapes setting is on (`blob_part`; CCD part 2 D): a mesh at its
+//! body's origin, unturned, with the signed world scale, and a hull's points placed into the body's frame.
 
 use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
@@ -68,10 +70,11 @@ use pe_world::edit::{AssetTarget, Op};
 use pe_world::script::AssetId;
 use pe_world::{Footprint, FrameEnd, RekeyReport, VoidKind, World, input_phase};
 
+use crate::blobs::{BlobShapes, Built, Read};
 use crate::logic::{ScriptRow, ScriptRunner, StageWorld};
 use crate::world::{
     BodyKind, BodyRow, BodyStateRow, Change, ClaimRow, Effects, HAND_RADIUS, HandRow, LogicFx, Phase, PhysicsSettings,
-    PlayerRow, PushFx, ShapePart, ShapeRow, ThrowFx, Unbuildable, WorldModel,
+    PlayerRow, PushFx, ShapePart, ShapeReason, ShapeRow, ThrowFx, Unbuildable, WorldModel,
 };
 
 const IDENTITY_ROTATION: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
@@ -84,6 +87,9 @@ pub struct PeWorld {
     /// The author's prediction of its own code commit: this machine's state, never the world's, so it stays across
     /// rollbacks and restores.
     predict: Predict,
+    /// The meshes and hulls built from their blobs, by blob (crate::blobs): this machine's cache, never the world's,
+    /// so it stays across rollbacks and restores too.
+    shapes: BlobShapes,
 }
 
 /// The author's prediction of its own code commit (logic.md 6.2a's option (i); @coordinator-opus).
@@ -132,7 +138,7 @@ struct Prediction {
 
 impl PeWorld {
     pub fn new(world: World, domain: DomainId) -> PeWorld {
-        PeWorld { world, domain, predict: Predict::default() }
+        PeWorld { world, domain, predict: Predict::default(), shapes: BlobShapes::default() }
     }
 
     pub fn world(&self) -> &World {
@@ -161,7 +167,7 @@ impl PeWorld {
                     reparented: report.moved.into_iter().map(|id| (id, true)).collect(),
                     ..Footprint::default()
                 };
-                (applied(), effects(&before, &self.world, &footprint))
+                (applied(), effects(&before, &self.world, &footprint, &self.shapes))
             }
             // A key with no permission bits: S3 admits no such author, and pe-world changed nothing.
             Err(_) => (Outcome::Refused { op: None, reason: Reason::NoPermission }, Effects::default()),
@@ -179,7 +185,7 @@ impl PeWorld {
                     self.world.apply_input(frame, entry)
                 };
                 let effects = match outcome {
-                    Outcome::Applied { .. } => effects(&before, &self.world, &footprint),
+                    Outcome::Applied { .. } => effects(&before, &self.world, &footprint, &self.shapes),
                     _ => Effects::default(),
                 };
                 (outcome, effects)
@@ -455,7 +461,7 @@ impl WorldModel for PeWorld {
                 footprint.removed.push(o);
             }
         }
-        let effects = effects(&before, &self.world, &footprint);
+        let effects = effects(&before, &self.world, &footprint, &self.shapes);
         let (now, then) = (self.world.store(), before.store());
         let events = (out.events.into_iter())
             .map(|e| {
@@ -469,7 +475,7 @@ impl WorldModel for PeWorld {
     }
 
     fn body(&self, id: ObjectId) -> Result<Option<BodyRow>, Unbuildable> {
-        body_row(&self.world, id)
+        body_row(&self.world, &self.shapes, id)
     }
 
     fn physical(&self) -> Vec<ObjectId> {
@@ -715,8 +721,9 @@ fn view_light(l: &Light) -> Option<pe_seams::Light> {
 
 /// The body row of `id`: `Ok(None)` if it is not physical (no `Body`, or no shape of its own or a compound child's:
 /// exactly what pe-world's `World::physical` leaves out), and why it cannot be built if it is physical but has an
-/// unknown body kind, no world pose, or a shape that cannot be built.
-fn body_row(world: &World, id: ObjectId) -> Result<Option<BodyRow>, Unbuildable> {
+/// unknown body kind, no world pose, a shape that cannot be built, or no mass for a dynamic body with a mesh. A reason
+/// every machine finds comes before a blob only this one lacks ([`Unbuildable::BlobAbsent`]).
+fn body_row(world: &World, shapes: &BlobShapes, id: ObjectId) -> Result<Option<BodyRow>, Unbuildable> {
     let store = world.store();
     let Some(body) = store.get::<Body>(id) else {
         return Ok(None);
@@ -739,19 +746,33 @@ fn body_row(world: &World, id: ObjectId) -> Result<Option<BodyRow>, Unbuildable>
     };
     let at = store.world_transform(id).ok_or(Unbuildable::Pose)?;
     let origin = WorldTransform { pos: Pos::ORIGIN, rot: IDENTITY_ROTATION, scale: at.scale };
-    let mut shapes = Vec::new();
+    let mut parts = Vec::new();
+    let mut absent = None;
+    let mut add = |object: ObjectId, shape: &Shape, placed: &WorldTransform| {
+        match part(world, shapes, object, shape, placed) {
+            Ok(p) => parts.push(p),
+            Err(a @ Unbuildable::BlobAbsent { .. }) => {
+                absent.get_or_insert(a);
+            }
+            Err(e) => return Err(e),
+        }
+        Ok(())
+    };
     if let Some(shape) = own {
-        shapes.push(part(id, shape, &origin)?);
+        add(id, shape, &origin)?;
     }
     for (child, shape) in children {
         let placed = in_body(store, &origin, id, child).ok_or(Unbuildable::Pose)?;
-        shapes.push(part(child, shape, &placed)?);
+        add(child, shape, &placed)?;
     }
-    Ok(Some(BodyRow {
+    if let Some(absent) = absent {
+        return Err(absent);
+    }
+    let row = BodyRow {
         kind,
         pos: at.pos,
         rotation: at.rot,
-        shapes,
+        shapes: parts,
         friction: body.friction,
         restitution: body.restitution,
         rolling_resistance: body.rolling_resistance,
@@ -761,7 +782,17 @@ fn body_row(world: &World, id: ObjectId) -> Result<Option<BodyRow>, Unbuildable>
         bullet: body.bullet != 0,
         may_sleep: body.may_sleep != 0,
         grabbable: body.grabbable != 0,
-    }))
+    };
+    // A dynamic body with a mesh needs mass from its shapes together (world-model.md 3.2): pe-physics's own check,
+    // which `add_body` makes again. Any other refusal of the body is `add_body`'s: a fault, without a reason here.
+    let has_mesh = row.shapes.iter().any(|p| matches!(p.shape, ShapeRow::Mesh { .. }));
+    if kind == BodyKind::Dynamic
+        && has_mesh
+        && let Err(pe_physics::PhysicsError::Massless { dropped }) = crate::bodies::desc(&row, row.pos).check_mass()
+    {
+        return Err(Unbuildable::Mass { dropped });
+    }
+    Ok(Some(row))
 }
 
 /// The descendants of `body` reached without passing another `Body`, in id order.
@@ -800,8 +831,15 @@ fn in_body(store: &SimStore, origin: &WorldTransform, body: ObjectId, child: Obj
 }
 
 /// One shape, `object`'s, at `placed`, its place in its body's frame and its world scale. The body's own shape sits at
-/// the body's origin, unturned.
-fn part(object: ObjectId, shape: &Shape, placed: &WorldTransform) -> Result<ShapePart, Unbuildable> {
+/// the body's origin, unturned. A primitive is scaled by the scale's magnitude; a mesh or a hull keeps its signs, so a
+/// negative axis mirrors it (@coordinator-opus, point 1).
+fn part(
+    world: &World,
+    shapes: &BlobShapes,
+    object: ObjectId,
+    shape: &Shape,
+    placed: &WorldTransform,
+) -> Result<ShapePart, Unbuildable> {
     let center = (placed.pos - Pos::ORIGIN).0.map(|c| c as f32);
     let rotation = placed.rot;
     let scale = placed.scale.map(f32::abs);
@@ -822,15 +860,67 @@ fn part(object: ObjectId, shape: &Shape, placed: &WorldTransform) -> Result<Shap
                 radius: size[0] * scale[0],
             }
         }
-        _ => return Err(Unbuildable::Shape),
+        shape_kind::SPHERE | shape_kind::CAPSULE => return Err(Unbuildable::Shape(ShapeReason::NonUniformScale)),
+        shape_kind::MESH | shape_kind::HULL => blob_part(world, shapes, shape, placed, center)?,
+        _ => return Err(Unbuildable::Shape(ShapeReason::UnknownKind)),
     };
     Ok(ShapePart { shape: row, density: shape.density, object })
+}
+
+/// A mesh or a hull, from its blob (world-model.md 3.2), at `placed`; `center` is its position as the build uses it.
+/// In order: the world must build them (its blob-shapes setting, 6.6 config item 8), the shape must name a blob, a mesh
+/// must sit at its body's origin, unturned (v1: Box3D's mesh has no local transform), every axis of the world scale
+/// must be 0.01 or more in magnitude, this machine must hold the blob (a local condition, [`Unbuildable::BlobAbsent`]),
+/// and the blob must read and build.
+fn blob_part(
+    world: &World,
+    shapes: &BlobShapes,
+    shape: &Shape,
+    placed: &WorldTransform,
+    center: [f32; 3],
+) -> Result<ShapeRow, Unbuildable> {
+    let refused = |why| Err(Unbuildable::Shape(why));
+    if !world.settings().blob_shapes {
+        return refused(ShapeReason::SwitchOff);
+    }
+    if shape.mesh.is_none() {
+        return refused(ShapeReason::NoBlob);
+    }
+    let mesh = shape.kind == shape_kind::MESH;
+    // The composed place exactly the body's: the f32 position all ±0, and the rotation's x, y and z all ±0 with w ±1
+    // (the composed rotation's sign is not canonical).
+    let r = placed.rot;
+    let at_origin = center.iter().all(|&c| c == 0.0) && r[..3].iter().all(|&c| c == 0.0) && r[3].abs() == 1.0;
+    if mesh && !at_origin {
+        return refused(ShapeReason::MisplacedMesh);
+    }
+    let scale = placed.scale;
+    // Under the floor, or not a number.
+    if let Some(axis) = scale.iter().position(|s| s.is_nan() || s.abs() < pe_physics::limits::MIN_MESH_SCALE) {
+        return refused(ShapeReason::ScaleFloor { axis: axis as u8 });
+    }
+    let Some(bytes) = world.blobs().get(&shape.mesh) else {
+        return Err(Unbuildable::BlobAbsent { blob: Hash(shape.mesh.hash) });
+    };
+    match shapes.get(if mesh { Read::Mesh } else { Read::Hull }, shape.mesh.hash, &bytes) {
+        Built::Mesh(mesh) => Ok(ShapeRow::Mesh { mesh, scale }),
+        // Each point scaled on the shape's own axes, then turned, then offset into the body's frame.
+        Built::Hull(points) => {
+            let at = (placed.pos - Pos::ORIGIN).0;
+            let place = |p: &[f32; 3]| {
+                let turned = rotate(placed.rot, [0, 1, 2].map(|k| f64::from(p[k] * scale[k])));
+                [0, 1, 2].map(|k| (at[k] + turned[k]) as f32)
+            };
+            Ok(ShapeRow::Hull { points: points.iter().map(place).collect() })
+        }
+        Built::Bad => refused(ShapeReason::BadBlob),
+    }
 }
 
 // ---- effects --------------------------------------------------------------------------------------------------------
 
 /// An applied entry's physics effects, from the bodies it affected (module doc), in id order.
-fn effects(before: &World, after: &World, footprint: &Footprint) -> Effects {
+fn effects(before: &World, after: &World, footprint: &Footprint, shapes: &BlobShapes) -> Effects {
     let mut touched: BTreeSet<ObjectId> = BTreeSet::new();
     let mut moved: Vec<ObjectId> = Vec::new();
     touched.extend(&footprint.created);
@@ -868,7 +958,7 @@ fn effects(before: &World, after: &World, footprint: &Footprint) -> Effects {
         // A physical object that cannot be built has no body (replica.md 2.1). The replica tries to build one that
         // becomes physical so, and rebuilds one whose body can no longer be built, counting a fault each time; one
         // that stays unbuildable, or stops being physical, had no body and changes nothing.
-        match (body_row(before, id), body_row(after, id)) {
+        match (body_row(before, shapes, id), body_row(after, shapes, id)) {
             (Ok(None) | Err(_), Ok(Some(_))) | (Ok(None), Err(_)) => changed.push((id, Change::Created)),
             (Ok(Some(_)), Err(_)) => changed.push((id, Change::Rebuilt)),
             (Ok(Some(_)), Ok(None)) => changed.push((id, Change::Removed)),

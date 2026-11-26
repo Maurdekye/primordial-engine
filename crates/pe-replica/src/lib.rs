@@ -14,6 +14,7 @@
 //! - [`mock`]: a small world model for tests and the harness.
 //! - [`peworld`]: pe-world's `World` as the replica's [`WorldModel`], [`PeWorld`].
 
+mod blobs;
 pub mod bodies;
 pub mod drive;
 pub mod hands;
@@ -28,5 +29,5 @@ pub mod world;
 pub use drive::{DriveReport, Driver};
 pub use logic::{ScriptRunner, event_kind};
 pub use peworld::PeWorld;
-pub use replica::{CorrectedInteraction, InteractionChecks, ReplicaConfig, ReplicaImpl};
+pub use replica::{AbsentBlobs, CorrectedInteraction, InteractionChecks, ReplicaConfig, ReplicaImpl};
 pub use world::{Phase, WorldModel, apply_order};

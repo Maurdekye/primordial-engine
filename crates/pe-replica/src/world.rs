@@ -104,16 +104,40 @@ pub enum BodyKind {
     Dynamic,
 }
 
-/// One shape of a body, in the body's frame, already scaled by the object's world scale (replica.md 2.1).
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// One shape of a body, in the body's frame, already scaled by the object's world scale (replica.md 2.1), but for a
+/// mesh, which Box3D scales.
+#[derive(Clone, Debug, PartialEq)]
 pub enum ShapeRow {
-    Sphere { center: [f32; 3], radius: f32 },
-    Capsule { center1: [f32; 3], center2: [f32; 3], radius: f32 },
-    Box { center: [f32; 3], rotation: [f32; 4], half_extents: [f32; 3] },
+    Sphere {
+        center: [f32; 3],
+        radius: f32,
+    },
+    Capsule {
+        center1: [f32; 3],
+        center2: [f32; 3],
+        radius: f32,
+    },
+    Box {
+        center: [f32; 3],
+        rotation: [f32; 4],
+        half_extents: [f32; 3],
+    },
+    /// A mesh built from its blob (world-model.md 3.2), at its body's origin, unturned (v1), with the object's world
+    /// scale, signs included: Box3D scales it, and reads its winding back when an odd number of axes are negative, so
+    /// a negative axis mirrors it.
+    Mesh {
+        mesh: pe_physics::Mesh,
+        scale: [f32; 3],
+    },
+    /// A hull's points from its blob, in the body's frame: scaled on the shape's own axes, signs included (a negative
+    /// axis mirrors it), then turned, then offset, as an offset box's corners are.
+    Hull {
+        points: Vec<[f32; 3]>,
+    },
 }
 
 /// One shape of a body and its density: pe-world keeps a density on each `Shape` row (world-model.md 3.2).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ShapePart {
     pub shape: ShapeRow,
     /// Kg per cubic metre (replica.md 2.1: mass becomes density).
@@ -142,19 +166,89 @@ pub struct BodyRow {
     pub grabbable: bool,
 }
 
-/// Why the world model cannot build a physical object's body (replica.md 2.1). The object has no body, and each time
-/// the replica tries to build it, at its start or when an entry or a logic stage makes it physical or changes it,
-/// it counts a fault.
+/// Why the world model cannot build a physical object's body (replica.md 2.1), as a code the inspector can tell apart;
+/// `Display` gives the words. The object has no body, and each time the replica tries to build it, at its start or
+/// when an entry or a logic stage makes it physical or changes it, it counts a fault: every reason but
+/// [`Unbuildable::BlobAbsent`] is the same on every machine that holds the world.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unbuildable {
     /// A body kind the physics does not have.
     Kind,
-    /// A shape the replica cannot build yet: a mesh, a hull, an unknown kind, or a sphere or capsule under
-    /// non-uniform scale.
-    Shape,
+    /// A shape the replica cannot build, and why.
+    Shape(ShapeReason),
     /// No world pose: the body has no `Transform` or its frame is out of range, or a compound child's place in the
     /// body cannot be composed.
     Pose,
+    /// A dynamic body with a mesh whose shapes together have no mass (world-model.md 3.2): Box3D would give it no
+    /// inverse mass. `dropped` counts the triangles Box3D left out under the minimum area when they are what opened
+    /// a mesh, else 0 (pe-physics's `Massless`).
+    Mass { dropped: u32 },
+    /// A mesh's or a hull's blob that this machine's blob store lacks: a local condition, not the world's (world-model.md
+    /// 3.4), so the replica counts it apart from its faults ([`crate::ReplicaImpl::absent_blobs`]). Any reason of
+    /// another shape of the body that every machine finds comes first.
+    BlobAbsent { blob: Hash },
+}
+
+/// Why a shape can't be built ([`Unbuildable::Shape`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShapeReason {
+    /// A `Shape.kind` the replica has no shape for.
+    UnknownKind,
+    /// A sphere or a capsule under non-uniform scale.
+    NonUniformScale,
+    /// A mesh or a hull in a world whose blob-shapes setting is off (world-model.md 6.6, config item 8): the object is
+    /// still drawn, but nothing collides with it.
+    SwitchOff,
+    /// A mesh or a hull shape that names no blob.
+    NoBlob,
+    /// A mesh's or a hull's blob that can't be read or built (world-model.md 3.2's formats and the fork's limits).
+    BadBlob,
+    /// An axis of a mesh's or a hull's world scale (parent scales included) under 0.01 in magnitude, Box3D's floor on
+    /// scale (world-model.md 3.2): 0 is x, 1 is y, 2 is z.
+    ScaleFloor { axis: u8 },
+    /// A mesh whose place in its body, composed down the chain, isn't the body's origin, unturned (world-model.md 3.2,
+    /// v1): Box3D's mesh has no local transform.
+    MisplacedMesh,
+}
+
+impl std::fmt::Display for Unbuildable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Unbuildable::Kind => write!(f, "a body kind the physics doesn't have"),
+            Unbuildable::Shape(why) => write!(f, "{why}"),
+            Unbuildable::Pose => write!(
+                f,
+                "no world pose: no Transform, a frame out of range, or a child's place in the body can't be composed"
+            ),
+            Unbuildable::Mass { dropped } => write!(f, "{}", pe_physics::PhysicsError::Massless { dropped: *dropped }),
+            Unbuildable::BlobAbsent { .. } => {
+                write!(f, "this machine lacks the shape's blob, so it can't build the body until the bytes arrive")
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for ShapeReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ShapeReason::UnknownKind => write!(f, "a shape kind the physics doesn't have"),
+            ShapeReason::NonUniformScale => write!(f, "a sphere or a capsule under non-uniform scale"),
+            ShapeReason::SwitchOff => {
+                write!(f, "meshes and hulls are built only in a world founded with its blob-shapes setting on")
+            }
+            ShapeReason::NoBlob => write!(f, "a mesh or hull shape that names no blob"),
+            ShapeReason::BadBlob => write!(f, "a mesh or hull blob that can't be read or built"),
+            ShapeReason::ScaleFloor { axis } => write!(
+                f,
+                "the shape's world scale {} is under 0.01 in magnitude, Box3D's floor on scale: rescale the mesh at import",
+                ["x", "y", "z"].get(usize::from(*axis)).copied().unwrap_or("?")
+            ),
+            ShapeReason::MisplacedMesh => write!(
+                f,
+                "a mesh child must sit at its body's origin, unturned: snap it there, or make the mesh the body's own shape"
+            ),
+        }
+    }
 }
 
 /// A hand's radius in metres: the sphere a hand without a `Shape` of its own is drawn as (S5), and the body it will

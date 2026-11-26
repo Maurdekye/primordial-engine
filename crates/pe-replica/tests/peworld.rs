@@ -8,7 +8,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use pe_replica::hands::hand_mode;
 use pe_replica::mock::MockClock;
-use pe_replica::world::{BodyKind, Change, Phase, ShapeRow, Unbuildable, WorldModel};
+use pe_replica::world::{BodyKind, Change, Phase, ShapeReason, ShapeRow, Unbuildable, WorldModel};
 use pe_replica::{CorrectedInteraction, PeWorld, ReplicaConfig, ReplicaImpl};
 use pe_seams::test_util::{EntryBuilder, TestKeys};
 use pe_seams::{
@@ -102,7 +102,7 @@ fn body_rows_follow_the_world_s_rows() {
         ShapeRow::Box { center: [0.0; 3], rotation: [0.0, 0.0, 0.0, 1.0], half_extents: [0.5, 0.1, 0.5] }
     );
     assert_eq!(table.shapes[0].density, 500.0);
-    match table.shapes[1].shape {
+    match table.shapes[1].shape.clone() {
         ShapeRow::Sphere { center, radius } => {
             assert!(close(center, [1.0, 0.0, 0.0]), "the child sits 1 m along the table's own x: {center:?}");
             assert_eq!(radius, 0.2);
@@ -110,8 +110,9 @@ fn body_rows_follow_the_world_s_rows() {
         s => panic!("a sphere, not {s:?}"),
     }
     assert_eq!(table.shapes[1].density, 800.0);
-    assert_eq!(pw.body(oid(4)), Err(Unbuildable::Shape), "a sphere under non-uniform scale cannot be built");
-    match pw.body(oid(5)).unwrap().expect("box").shapes[0].shape {
+    let non_uniform = Err(Unbuildable::Shape(ShapeReason::NonUniformScale));
+    assert_eq!(pw.body(oid(4)), non_uniform, "a sphere under non-uniform scale cannot be built");
+    match pw.body(oid(5)).unwrap().expect("box").shapes[0].shape.clone() {
         ShapeRow::Box { half_extents, .. } => assert_eq!(half_extents, [2.0, 3.0, 4.0]),
         s => panic!("a box, not {s:?}"),
     }
@@ -137,7 +138,7 @@ fn a_compound_child_sits_at_its_frame_and_a_move_does_not_rebuild() {
     w.insert(oid(4), cuboid([0.1, 0.1, 0.1])).expect("c");
     let mut pw = PeWorld::new(w, DomainId(0));
     let built = pw.body(oid(2)).unwrap().expect("the body is built");
-    let shapes: Vec<ShapeRow> = built.shapes.iter().map(|p| p.shape).collect();
+    let shapes: Vec<ShapeRow> = built.shapes.iter().map(|p| p.shape.clone()).collect();
     let unturned = [0.0, 0.0, 0.0, 1.0];
     assert_eq!(
         shapes,
@@ -3096,12 +3097,13 @@ fn a_physical_object_that_cannot_be_built_says_why() {
     w.insert(oid(8), Shape { kind: shape_kind::CAPSULE, ..sphere(0.2) }).expect("8");
     let pw = PeWorld::new(w, DomainId(0));
 
-    assert_eq!(pw.body(oid(2)), Err(Unbuildable::Shape), "a mesh");
+    assert_eq!(pw.body(oid(2)), Err(Unbuildable::Shape(ShapeReason::SwitchOff)), "a mesh, in a world without them");
     assert_eq!(pw.body(oid(3)), Err(Unbuildable::Kind));
     assert_eq!(pw.body(oid(4)), Err(Unbuildable::Pose), "no Transform");
     assert_eq!(pw.body(oid(5)), Ok(None), "no shape");
     assert_eq!(pw.body(oid(6)), Ok(None), "no shape, so its kind is never read");
-    assert_eq!(pw.body(oid(7)), Err(Unbuildable::Shape), "its child's capsule under non-uniform scale");
+    let non_uniform = Err(Unbuildable::Shape(ShapeReason::NonUniformScale));
+    assert_eq!(pw.body(oid(7)), non_uniform, "its child's capsule under non-uniform scale");
     assert_eq!(pw.body(oid(8)), Ok(None), "a compound child has no body of its own");
     let listed: Vec<ObjectId> = (1..=8).map(oid).filter(|&id| pw.body(id) != Ok(None)).collect();
     assert_eq!(listed, [oid(1), oid(2), oid(3), oid(4), oid(7)]);
@@ -3366,4 +3368,391 @@ fn measure_the_tight_hold_at_30_60_and_120_hz() {
             overruns.join("; ")
         );
     }
+}
+
+// ---- meshes and hulls built from their blobs (world-model.md 3.2; CCD part 2 D) ------------------------------------
+
+/// A mesh v1 blob (`PEM1`).
+fn mesh_blob(vertices: &[[f32; 3]], triangles: &[[u32; 3]]) -> Vec<u8> {
+    let mut b = b"PEM1".to_vec();
+    b.extend_from_slice(&(vertices.len() as u32).to_le_bytes());
+    vertices.iter().flatten().for_each(|c| b.extend_from_slice(&c.to_le_bytes()));
+    b.extend_from_slice(&(triangles.len() as u32).to_le_bytes());
+    triangles.iter().flatten().for_each(|i| b.extend_from_slice(&i.to_le_bytes()));
+    b
+}
+
+/// A hull v1 blob (`PEH1`).
+fn hull_blob(points: &[[f32; 3]]) -> Vec<u8> {
+    let mut b = b"PEH1".to_vec();
+    b.extend_from_slice(&(points.len() as u32).to_le_bytes());
+    points.iter().flatten().for_each(|c| b.extend_from_slice(&c.to_le_bytes()));
+    b
+}
+
+/// A wedge, closed and asymmetric: the corner at the origin and the points 2 m along x, 1 m along y and 1 m along z,
+/// each face counter-clockwise from outside. Its slanted face is x/2 + y + z = 1.
+const WEDGE: [[f32; 3]; 4] = [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+const WEDGE_FACES: [[u32; 3]; 4] = [[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]];
+
+/// The wedge mirrored across x = 0 by its vertices, its faces turned to keep them facing out.
+fn wedge_mirrored_by_hand() -> Vec<u8> {
+    let v: Vec<[f32; 3]> = WEDGE.iter().map(|p| [-p[0], p[1], p[2]]).collect();
+    let t: Vec<[u32; 3]> = WEDGE_FACES.iter().map(|f| [f[0], f[2], f[1]]).collect();
+    mesh_blob(&v, &t)
+}
+
+/// A closed box mesh, 9 vertices and 14 triangles (288 bytes: a carried blob), whose +z face is a fan around a point
+/// `inset` in from its edge (pe-physics's golden sliver blob): at 4e-6 every triangle is built, at 2e-7 one is too
+/// thin and Box3D leaves it out, which opens the mesh.
+fn sliver_box(inset: f32) -> Vec<u8> {
+    let (c, h) = ([0.123_f32, -0.456, 0.789], [0.3_f32, 0.7, 0.11]);
+    let mut v: Vec<[f32; 3]> = (0..8u32)
+        .map(|k| {
+            let s = |bit: u32| if k & bit != 0 { 1.0 } else { -1.0 };
+            [c[0] + s(1) * h[0], c[1] + s(2) * h[1], c[2] + s(4) * h[2]]
+        })
+        .collect();
+    let mut t = vec![[0, 2, 1], [1, 2, 3], [0, 1, 4], [1, 5, 4], [2, 6, 3], [3, 6, 7], [0, 4, 2], [2, 4, 6]];
+    t.extend([[1, 3, 5], [3, 7, 5]]);
+    v.push([c[0], c[1] - h[1] + inset, c[2] + h[2]]);
+    t.extend([[4, 5, 8], [5, 7, 8], [7, 6, 8], [6, 4, 8]]);
+    mesh_blob(&v, &t)
+}
+
+/// A mesh or a hull `Shape` naming `blob`.
+fn blob_shape(kind: u32, blob: pe_world::components::BlobRef) -> Shape {
+    Shape { kind, density: 500.0, size: [1.0; 3], mesh: blob, ..Shape::default() }
+}
+
+/// Genesis in a world that builds meshes and hulls, or doesn't.
+fn genesis_with_blob_shapes(on: bool) -> World {
+    let mut w = genesis();
+    w.set_blob_shapes(on);
+    w
+}
+
+/// `id` at the root, at `t`, with `body` and `shape`.
+fn object(w: &mut World, id: u128, t: Transform, body: Body, shape: Shape) {
+    w.create(oid(id), None, MemberKey([1; 32]), GENESIS).expect("create");
+    w.insert(oid(id), t).expect("transform");
+    w.insert(oid(id), body).expect("body");
+    w.insert(oid(id), shape).expect("shape");
+}
+
+/// `id`, a compound child of `parent` at its local transform `t`, with only a shape.
+fn child(w: &mut World, id: u128, parent: u128, t: Transform, shape: Shape) {
+    w.create(oid(id), Some(oid(parent)), MemberKey([1; 32]), GENESIS).expect("create");
+    w.insert(oid(id), t).expect("transform");
+    w.insert(oid(id), shape).expect("shape");
+}
+
+fn static_body() -> Body {
+    Body { friction: 0.6, ..Body::default() }
+}
+
+/// Off by default and in every preset (world-model.md 6.6, config item 8): a mesh or a hull is
+/// `Unbuildable::Shape(SwitchOff)`, gets no body, and is still drawn. On, both are built, from their blobs.
+#[test]
+fn meshes_and_hulls_are_built_only_in_a_world_that_builds_them() {
+    for on in [false, true] {
+        let mut w = genesis_with_blob_shapes(on);
+        let mesh = w.blobs().put(&mesh_blob(&WEDGE, &WEDGE_FACES));
+        let hull = w.blobs().put(&hull_blob(&WEDGE));
+        object(&mut w, 2, Transform::at(pos(-3.0, 0.0, 0.0)), static_body(), blob_shape(shape_kind::MESH, mesh));
+        object(&mut w, 3, Transform::at(pos(3.0, 1.0, 0.0)), dynamic(), blob_shape(shape_kind::HULL, hull));
+        let pw = PeWorld::new(w.clone(), DomainId(0));
+        let drawn: Vec<ObjectId> = pw
+            .view_objects()
+            .iter()
+            .filter(|o| matches!(o.shape, Some(pe_seams::Shape::Mesh(_))))
+            .map(|o| o.id)
+            .collect();
+        assert_eq!(drawn, [oid(2), oid(3)], "drawn either way");
+        let r = replica_of(w);
+        assert_eq!(r.faults(), if on { 0 } else { 2 });
+        if on {
+            assert!(
+                matches!(&pw.body(oid(2)).unwrap().unwrap().shapes[0].shape, ShapeRow::Mesh { scale, .. } if *scale == [1.0; 3])
+            );
+            assert!(
+                matches!(&pw.body(oid(3)).unwrap().unwrap().shapes[0].shape, ShapeRow::Hull { points } if points[..] == WEDGE)
+            );
+            assert!(r.physics().has_body(oid(2)) && r.physics().has_body(oid(3)));
+        } else {
+            let off = Err(Unbuildable::Shape(ShapeReason::SwitchOff));
+            assert_eq!((pw.body(oid(2)), pw.body(oid(3))), (off.clone(), off));
+            assert!(!r.physics().has_body(oid(2)) && !r.physics().has_body(oid(3)), "nothing collides with them");
+        }
+    }
+}
+
+/// Where a 0.1 m ball dropped at (-0.5, 1.5, 0.2) is after 40 frames, over a static wedge at the origin made of
+/// `shape` and scaled by `scale`.
+fn ball_over(shape: impl Fn(&mut World) -> Shape, scale: [f32; 3]) -> ([f64; 3], ReplicaImpl<PeWorld>) {
+    let mut w = genesis_with_blob_shapes(true);
+    let shape = shape(&mut w);
+    object(&mut w, 2, Transform::at(pos(0.0, 0.0, 0.0)).with_scale(scale), static_body(), shape);
+    object(&mut w, BALL, Transform::at(pos(-0.5, 1.5, 0.2)), dynamic(), sphere(0.1));
+    let mut r = replica_of(w);
+    r.advance(Frame(40), &mut Source::default());
+    (body_at(&r, BALL), r)
+}
+
+/// A negative scale axis mirrors a mesh and a hull (@coordinator-opus, point 1): built with the signed
+/// scale, each is the shape mirrored by hand, where the unsigned scale would build it unmirrored with no fault. The
+/// view draws it with the signed scale too.
+#[test]
+fn a_mirrored_mesh_and_hull_build_mirrored() {
+    let mirror = [-1.0, 1.0, 1.0];
+    let mesh = |w: &mut World| blob_shape(shape_kind::MESH, w.blobs().put(&mesh_blob(&WEDGE, &WEDGE_FACES)));
+    let by_hand = |w: &mut World| blob_shape(shape_kind::MESH, w.blobs().put(&wedge_mirrored_by_hand()));
+    let (mirrored, r) = ball_over(mesh, mirror);
+    let (reference, _) = ball_over(by_hand, [1.0; 3]);
+    let (unmirrored, _) = ball_over(mesh, [1.0; 3]);
+    // The slope turns the ball's fall sideways; with nothing under it, it falls straight down to the floor.
+    let aside = |p: [f64; 3]| ((p[0] + 0.5).powi(2) + (p[2] - 0.2).powi(2)).sqrt();
+    assert!(aside(mirrored) > 0.1, "the ball met the mirrored wedge's slope: {mirrored:?}");
+    assert!(mirrored.iter().zip(&reference).all(|(a, b)| (a - b).abs() < 1e-3), "{mirrored:?} {reference:?}");
+    assert!(aside(unmirrored) < 1e-3 && unmirrored[1] < 0.11, "nothing under it: {unmirrored:?}");
+    assert_eq!(r.faults(), 0);
+    let row = r.world().body(oid(2)).unwrap().unwrap();
+    assert!(matches!(&row.shapes[0].shape, ShapeRow::Mesh { scale, .. } if *scale == mirror));
+    let drawn = r.world().view_objects().into_iter().find(|o| o.id == oid(2)).expect("drawn");
+    assert_eq!(drawn.scale, mirror, "the view's scale is signed");
+
+    // A hull: the blob's points scaled with their signs are exactly the points mirrored by hand.
+    let hull = |w: &mut World| blob_shape(shape_kind::HULL, w.blobs().put(&hull_blob(&WEDGE)));
+    let flipped: Vec<[f32; 3]> = WEDGE.iter().map(|p| [-p[0], p[1], p[2]]).collect();
+    let hull_by_hand = |w: &mut World| blob_shape(shape_kind::HULL, w.blobs().put(&hull_blob(&flipped)));
+    let (mirrored, r) = ball_over(hull, mirror);
+    let (reference, _) = ball_over(hull_by_hand, [1.0; 3]);
+    assert!(aside(mirrored) > 0.1, "the ball met the mirrored hull: {mirrored:?}");
+    assert_eq!(mirrored, reference, "the same points, so the same steps");
+    let row = r.world().body(oid(2)).unwrap().unwrap();
+    assert!(matches!(&row.shapes[0].shape, ShapeRow::Hull { points } if *points == flipped));
+
+    // A dynamic mirrored closed mesh keeps its mass: mirroring reads its winding back.
+    let mut w = genesis_with_blob_shapes(true);
+    let shape = mesh(&mut w);
+    object(&mut w, 2, Transform::at(pos(0.0, 2.0, 0.0)).with_scale(mirror), dynamic(), shape);
+    let r = replica_of(w);
+    assert!(r.physics().has_body(oid(2)) && r.faults() == 0);
+}
+
+/// v1's placement limit (world-model.md 3.2): a mesh is built where its composed place is exactly its body's, the
+/// position as the build uses it all ±0 and the rotation's x, y and z all ±0 with w ±1, so a child at the body's
+/// origin with the rotation (0, 0, 0, -1) passes. A mesh child offset or turned makes the whole body
+/// `MisplacedMesh`. A hull has no such limit: an offset, turned child hull is placed point by point.
+#[test]
+fn a_mesh_must_sit_at_its_body_s_origin_unturned() {
+    let quarter = [0.0, std::f32::consts::FRAC_1_SQRT_2, 0.0, std::f32::consts::FRAC_1_SQRT_2];
+    let at = |local: Transform| {
+        let mut w = genesis_with_blob_shapes(true);
+        let mesh = w.blobs().put(&mesh_blob(&WEDGE, &WEDGE_FACES));
+        object(&mut w, 2, Transform::at(pos(0.0, 1.0, 0.0)).with_rot(quarter), static_body(), cuboid([0.1; 3]));
+        child(&mut w, 3, 2, local, blob_shape(shape_kind::MESH, mesh));
+        PeWorld::new(w, DomainId(0)).body(oid(2))
+    };
+    let misplaced = Err(Unbuildable::Shape(ShapeReason::MisplacedMesh));
+    assert!(at(Transform::local([0.0; 3])).is_ok_and(|b| b.is_some()), "at the origin, in a turned body");
+    assert!(at(Transform::local([0.0; 3]).with_rot([0.0, 0.0, 0.0, -1.0])).is_ok(), "w = -1 is no turn");
+    assert!(at(Transform::local([-0.0, 0.0, -0.0]).with_rot([-0.0, 0.0, 0.0, 1.0])).is_ok(), "-0 is 0");
+    assert_eq!(at(Transform::local([0.5, 0.0, 0.0])), misplaced, "offset");
+    assert_eq!(at(Transform::local([0.0; 3]).with_rot(quarter)), misplaced, "turned");
+    assert_eq!(
+        Unbuildable::Shape(ShapeReason::MisplacedMesh).to_string(),
+        "a mesh child must sit at its body's origin, unturned: snap it there, or make the mesh the body's own shape"
+    );
+
+    // A hull child, 1 m along the body's x and turned a quarter about y: (2, 0, 0) goes to (1, 0, -2).
+    let mut w = genesis_with_blob_shapes(true);
+    let hull = w.blobs().put(&hull_blob(&WEDGE));
+    object(&mut w, 2, Transform::at(pos(0.0, 1.0, 0.0)), static_body(), cuboid([0.1; 3]));
+    child(&mut w, 3, 2, Transform::local([1.0, 0.0, 0.0]).with_rot(quarter), blob_shape(shape_kind::HULL, hull));
+    let row = PeWorld::new(w, DomainId(0)).body(oid(2)).unwrap().expect("built");
+    let ShapeRow::Hull { points } = &row.shapes[1].shape else { panic!("a hull: {:?}", row.shapes[1]) };
+    assert!(close(points[1], [1.0, 0.0, -2.0]), "{points:?}");
+}
+
+/// Box3D's floor on scale (world-model.md 3.2): any axis of a mesh's or a hull's world scale, parent scales
+/// included, under 0.01 in magnitude refuses the body, naming the axis; 0.01 itself builds.
+#[test]
+fn a_scale_axis_under_the_floor_refuses_a_mesh_or_a_hull() {
+    let body_at = |kind: u32, parent: [f32; 3], own: [f32; 3]| {
+        let mut w = genesis_with_blob_shapes(true);
+        let blob = if kind == shape_kind::MESH { mesh_blob(&WEDGE, &WEDGE_FACES) } else { hull_blob(&WEDGE) };
+        let blob = w.blobs().put(&blob);
+        w.create(oid(9), None, MemberKey([1; 32]), GENESIS).expect("parent");
+        w.insert(oid(9), Transform::at(pos(0.0, 1.0, 0.0)).with_scale(parent)).expect("parent");
+        w.create(oid(2), Some(oid(9)), MemberKey([1; 32]), GENESIS).expect("create");
+        w.insert(oid(2), Transform::local([0.0; 3]).with_scale(own)).expect("transform");
+        w.insert(oid(2), static_body()).expect("body");
+        w.insert(oid(2), blob_shape(kind, blob)).expect("shape");
+        PeWorld::new(w, DomainId(0)).body(oid(2))
+    };
+    for kind in [shape_kind::MESH, shape_kind::HULL] {
+        let floor = |axis| Err(Unbuildable::Shape(ShapeReason::ScaleFloor { axis }));
+        assert_eq!(body_at(kind, [1.0; 3], [1.0, 0.005, 1.0]), floor(1));
+        assert_eq!(body_at(kind, [1.0; 3], [-0.009, 1.0, 1.0]), floor(0), "in magnitude");
+        assert_eq!(
+            body_at(kind, [1.0, 1.0, 0.05], [1.0, 1.0, 0.1]),
+            floor(2),
+            "the world scale, the parent's included"
+        );
+        assert!(body_at(kind, [1.0; 3], [0.01, 1.0, -0.01]).is_ok_and(|b| b.is_some()), "0.01 builds");
+    }
+    let why = Unbuildable::Shape(ShapeReason::ScaleFloor { axis: 2 }).to_string();
+    assert_eq!(
+        why,
+        "the shape's world scale z is under 0.01 in magnitude, Box3D's floor on scale: rescale the mesh at import"
+    );
+}
+
+/// A shape that names no blob, or a blob that can't be read or built, is the same fault on every machine
+/// (`NoBlob`, `BadBlob`). A blob this machine's store lacks is a local condition (`BlobAbsent`): the replica counts it
+/// apart from its faults, with the frame, the body and the blob, and a reason every machine finds for another shape
+/// of the body comes first.
+#[test]
+fn bad_and_absent_blobs_say_why() {
+    let mut w = genesis_with_blob_shapes(true);
+    let blobs = w.blobs().clone();
+    let reason = |w: &World, kind: u32, r: pe_world::components::BlobRef| {
+        let mut w = w.clone();
+        object(&mut w, 2, Transform::at(pos(0.0, 1.0, 0.0)), static_body(), blob_shape(kind, r));
+        PeWorld::new(w, DomainId(0)).body(oid(2))
+    };
+    let bad = Err(Unbuildable::Shape(ShapeReason::BadBlob));
+    let none = pe_world::components::BlobRef::NONE;
+    assert_eq!(reason(&w, shape_kind::MESH, none), Err(Unbuildable::Shape(ShapeReason::NoBlob)));
+    assert_eq!(reason(&w, shape_kind::HULL, none), Err(Unbuildable::Shape(ShapeReason::NoBlob)));
+    let mut magic = mesh_blob(&WEDGE, &WEDGE_FACES);
+    magic[3] = b'2';
+    assert_eq!(reason(&w, shape_kind::MESH, blobs.put(&magic)), bad, "an unknown version");
+    assert_eq!(reason(&w, shape_kind::HULL, blobs.put(&mesh_blob(&WEDGE, &WEDGE_FACES))), bad, "a mesh read as a hull");
+    let flat = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [0.5, 0.0, 0.5]];
+    assert_eq!(reason(&w, shape_kind::HULL, blobs.put(&hull_blob(&flat))), bad, "points the hull builder can't use");
+    assert_eq!(reason(&w, shape_kind::HULL, blobs.put(&hull_blob(&WEDGE[..3]))), bad, "three points");
+    assert_eq!(reason(&w, shape_kind::MESH, blobs.put(&mesh_blob(&WEDGE, &[[0, 1, 4]]))), bad, "an index past the end");
+
+    // Absent: the reference, never the bytes.
+    let lacking = pe_world::components::BlobRef::of(&sliver_box(4.0e-6));
+    let absent = Err(Unbuildable::BlobAbsent { blob: Hash(lacking.hash) });
+    assert_eq!(reason(&w, shape_kind::MESH, lacking), absent);
+    object(&mut w, 2, Transform::at(pos(0.0, 1.0, 0.0)), static_body(), blob_shape(shape_kind::MESH, lacking));
+    let pw = PeWorld::new(w.clone(), DomainId(0));
+    assert_eq!(pw.body(oid(2)), absent);
+    let r = replica_of(w.clone());
+    assert_eq!(r.faults(), 0, "not a fault");
+    assert_eq!(r.absent_blobs().count, 1);
+    assert_eq!(r.absent_blobs().recent, [(Frame(0), oid(2), Hash(lacking.hash))]);
+    assert!(!r.physics().has_body(oid(2)));
+    // A child mesh off the body's origin is every machine's reason, so it comes first.
+    let mesh = blobs.put(&mesh_blob(&WEDGE, &WEDGE_FACES));
+    child(&mut w, 3, 2, Transform::local([0.5, 0.0, 0.0]), blob_shape(shape_kind::MESH, mesh));
+    assert_eq!(PeWorld::new(w, DomainId(0)).body(oid(2)), Err(Unbuildable::Shape(ShapeReason::MisplacedMesh)));
+}
+
+/// A dynamic body with a mesh whose shapes together have no mass can't be built (world-model.md 3.2,
+/// `Unbuildable::Mass`): an open mesh, or a mesh whose too-thin triangles Box3D left out, with their count. An open
+/// mesh with a sphere beside it builds, and a static open mesh builds. A replica counts such a body as a fault at its
+/// start, and starts.
+#[test]
+fn a_dynamic_mesh_body_without_mass_says_why() {
+    let with = |body: Body, blob: Vec<u8>, sphere_child: bool| {
+        let mut w = genesis_with_blob_shapes(true);
+        let r = w.blobs().put(&blob);
+        object(&mut w, 2, Transform::at(pos(0.0, 2.0, 0.0)), body, blob_shape(shape_kind::MESH, r));
+        if sphere_child {
+            child(&mut w, 3, 2, Transform::local([0.5, 0.5, 0.5]), sphere(0.1));
+        }
+        w
+    };
+    let open = mesh_blob(&WEDGE, &WEDGE_FACES[..3]);
+    let body = |w: World| PeWorld::new(w, DomainId(0)).body(oid(2));
+    assert_eq!(body(with(dynamic(), open.clone(), false)), Err(Unbuildable::Mass { dropped: 0 }));
+    assert_eq!(body(with(dynamic(), sliver_box(2.0e-7), false)), Err(Unbuildable::Mass { dropped: 1 }), "one sliver");
+    assert!(body(with(dynamic(), sliver_box(4.0e-6), false)).is_ok_and(|b| b.is_some()), "kept, so closed");
+    assert!(body(with(dynamic(), open.clone(), true)).is_ok_and(|b| b.is_some()), "the sphere has mass");
+    assert!(body(with(static_body(), open.clone(), false)).is_ok_and(|b| b.is_some()), "a static body takes none");
+    let why = Unbuildable::Mass { dropped: 1 }.to_string();
+    assert_eq!(
+        why,
+        "1 of the mesh's triangles are under the minimum area and were left out; without them the mesh is open"
+    );
+    let r = replica_of(with(dynamic(), open, false));
+    assert_eq!((r.faults(), r.physics().has_body(oid(2))), (1, false));
+}
+
+/// @coordinator-opus, point 5: a joiner starts from a bare world, so with the switch off and an empty
+/// blob store, and imports at 32 a world that builds meshes, with the blobs its rows name (a 288-byte carried one,
+/// and an inline one): its world builds them from then on. At 40 an edit sets the dynamic mesh body's scale, which
+/// rebuilds it: the host from the mesh it already built, the joiner from the blob, which it never built before (its
+/// physics came in the transfer). The edit reaches the joiner late, after it stepped 44, so it also rolls back across
+/// the rebuild. Their roots agree from 32 on, and neither counts a fault or an absent blob.
+#[test]
+fn a_joiner_with_the_switch_off_imports_meshes_and_rebuilds_one_after_a_scale_edit() {
+    let mut world = genesis_with_blob_shapes(true);
+    let wedge = world.blobs().put(&mesh_blob(&WEDGE, &WEDGE_FACES));
+    let carried = world.blobs().put(&sliver_box(4.0e-6));
+    object(&mut world, 2, Transform::at(pos(-1.0, 0.0, -0.5)), static_body(), blob_shape(shape_kind::MESH, wedge));
+    object(&mut world, 3, Transform::at(pos(1.5, 1.5, 0.0)), dynamic(), blob_shape(shape_kind::MESH, carried));
+    let keys = keys();
+    let mut b = EntryBuilder::new(&keys, 0);
+    // Two balls dropped onto the wedge, then the scale edit.
+    let drop = |x: f64, y: f64| {
+        let rows = vec![row(Transform::at(pos(x, y, 0.0))), row(dynamic()), row(sphere(0.25))];
+        vec![Op::Create { new: 0, parent: Target::Root, index: None, rows }]
+    };
+    let scale = Op::SetField {
+        id: Target::Existing(oid(3)),
+        component: <Transform as pe_sim::Component>::ID,
+        instance: 0,
+        field: 3,
+        value: [1.5_f32; 3].iter().flat_map(|s| s.to_le_bytes()).collect(),
+    };
+    let entries =
+        vec![edit_at(&mut b, 2, drop(0.0, 1.0)), edit_at(&mut b, 5, drop(0.3, 2.0)), edit_at(&mut b, 40, vec![scale])];
+    let late = entries[2].clone();
+    let (mut host, mut hs) = reference_of(world, &entries, 32);
+    let c32 = cut_at(&entries, 4, 32);
+    let mut import = full_import(&mut host, &mut hs, &c32);
+    let keys_all: Vec<LeafKey> = import.records.iter().map(|r| r.key).collect();
+    import.blobs = host.tree(&import.target_root).expect("held").export_blobs(&keys_all);
+    assert_eq!(import.blobs.len(), 2, "the wedge's and the box's");
+
+    let bare = World::new(0, BlobStore::default());
+    let mut joiner = ReplicaImpl::new(PeWorld::new(bare, DomainId(0)), config()).expect("a replica");
+    assert!(!joiner.world().world().settings().blob_shapes, "a bare world builds no mesh");
+    let mut s = Source::default();
+    entries[..2].iter().cloned().for_each(|e| s.add(e));
+    s.take_changed_from();
+    assert_eq!(joiner.import_at_cut(&GroupSel::Domain, import.clone(), &mut s), Ok(import.target_root));
+    assert!(joiner.world().world().settings().blob_shapes, "the imported world's setting");
+    let fc32 = FinalCut { cut: c32, root: import.target_root, voters: vec![] };
+    assert_eq!(joiner.finalize(&fc32, &mut s), Finalized::Agreed);
+    joiner.advance(Frame(44), &mut s);
+    s.add(late);
+    let adv = joiner.advance(Frame(64), &mut s);
+    assert!(adv.rolled_back_to.is_some_and(|f| f.0 <= 40), "the late edit rolls back: {adv:?}");
+    host.advance(Frame(64), &mut hs);
+    assert!(
+        matches!(&host.world().body(oid(3)).unwrap().unwrap().shapes[0].shape, ShapeRow::Mesh { scale, .. } if *scale == [1.5; 3])
+    );
+    assert_eq!(from(&joiner, 32, 64), from(&host, 32, 64));
+    assert_eq!((joiner.faults(), host.faults()), (0, 0));
+    assert_eq!((joiner.absent_blobs().count, host.absent_blobs().count), (0, 0));
+}
+
+/// A body the world model builds but the physics refuses (here a mesh scaled past pe-physics's size limit, which only
+/// `add_body` checks) is a fault at the replica's start, as it is in a step, and the replica still starts.
+#[test]
+fn a_body_the_physics_refuses_is_a_fault_at_the_start() {
+    let mut w = genesis_with_blob_shapes(true);
+    let mesh = w.blobs().put(&mesh_blob(&WEDGE, &WEDGE_FACES));
+    let huge = Transform::at(pos(0.0, 0.0, 0.0)).with_scale([6000.0; 3]);
+    object(&mut w, 2, huge, static_body(), blob_shape(shape_kind::MESH, mesh));
+    assert!(PeWorld::new(w.clone(), DomainId(0)).body(oid(2)).is_ok_and(|b| b.is_some()), "the world model builds it");
+    let r = replica_of(w);
+    assert_eq!((r.faults(), r.physics().has_body(oid(2))), (1, false));
 }

@@ -618,3 +618,61 @@ fn a_dynamic_mesh_body_lands_from_any_height() {
         assert!((1.49..1.53).contains(&on_box), "dropped {drop} m onto the box, at y = {on_box}");
     }
 }
+
+/// `BodyDesc::check_mass` is `add_body`'s mass check without a world (CCD part 2 D, for pe-replica's
+/// `Unbuildable::Mass`): it refuses exactly what `add_body` refuses for want of mass, with the same dropped count, and
+/// passes any body that isn't a dynamic one with a mesh, unweighed. A closed mesh's mass is summed once per scale and
+/// density: asked again, the same bits.
+#[test]
+fn check_mass_is_add_body_s_mass_check() {
+    let (v, t) = box_parts([0.0; 3], [0.5; 3]);
+    let open = Mesh::new(&v, &t[..11]).unwrap();
+    let closed = Mesh::new(&v, &t).unwrap();
+    let mesh = |mesh: &Mesh| ShapeDesc::new(Geometry::Mesh { mesh: mesh.clone(), scale: [1.0; 3], both_sides: false });
+    let body = |kind, shapes: Vec<ShapeDesc>| {
+        shapes.into_iter().fold(BodyDesc::new(kind, [0.0, 2.0, 0.0]), |d, s| d.with_shape(s))
+    };
+    let sphere = ShapeDesc::new(Geometry::Sphere { center: [0.0; 3], radius: 0.1 });
+    let cases = [
+        (body(BodyKind::Dynamic, vec![mesh(&open)]), Err(PhysicsError::Massless { dropped: 0 })),
+        (body(BodyKind::Dynamic, vec![mesh(&open), sphere.clone()]), Ok(())),
+        (body(BodyKind::Dynamic, vec![mesh(&closed)]), Ok(())),
+        (body(BodyKind::Static, vec![mesh(&open)]), Ok(())),
+        (
+            body(BodyKind::Dynamic, vec![mesh(&open), sphere.with_density(0.0)]),
+            Err(PhysicsError::Massless { dropped: 0 }),
+        ),
+        (
+            body(BodyKind::Dynamic, vec![mesh(&Mesh::from_blob(&sliver_blob(2.0e-7)).unwrap())]),
+            Err(PhysicsError::Massless { dropped: 1 }),
+        ),
+    ];
+    for (n, (desc, want)) in cases.into_iter().enumerate() {
+        assert_eq!(desc.check_mass(), want, "case {n}");
+        let mut pw = PhysicsWorld::new(PhysicsConfig::engine()).unwrap();
+        assert_eq!(pw.add_body(id(1), &desc), want, "case {n}: add_body agrees");
+    }
+    let first = closed.mass([1.5, -1.0, 2.0], 700.0);
+    for k in 0..20 {
+        let _ = closed.mass([1.0 + k as f32, 1.0, 1.0], 700.0);
+    }
+    assert_eq!(first.to_bits(), closed.mass([1.5, -1.0, 2.0], 700.0).to_bits(), "summed again, the same bits");
+    assert_eq!(first.to_bits(), closed.mass([1.5, -1.0, 2.0], 700.0).to_bits(), "kept, the same bits");
+    assert!((closed.mass([1.5, -1.0, 2.0], 350.0) / first - 0.5).abs() < 1e-6, "each density its own");
+    assert!((first / 2100.0 - 1.0).abs() < 1e-5, "a unit box scaled to 3 m3 at 700 kg/m3: {first}");
+}
+
+/// `check_hull` is a hull shape's checks and the fork's hull builder (CCD part 2 D, for a hull blob's points):
+/// a solid's points pass; too few, flat, out of range or non-finite ones are refused.
+#[test]
+fn check_hull_refuses_what_a_hull_shape_refuses() {
+    let solid = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    assert_eq!(pe_physics::check_hull(&solid), Ok(()));
+    assert_eq!(pe_physics::check_hull(&solid[..3]), Err(PhysicsError::BadHull));
+    let flat = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 1.0]];
+    assert_eq!(pe_physics::check_hull(&flat), Err(PhysicsError::BadHull));
+    let far = [[0.0, 0.0, 0.0], [2.0e4, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    assert!(matches!(pe_physics::check_hull(&far), Err(PhysicsError::InvalidValue(_))));
+    let nan = [[0.0, 0.0, 0.0], [f32::NAN, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    assert!(pe_physics::check_hull(&nan).is_err());
+}

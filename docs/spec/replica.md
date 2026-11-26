@@ -112,12 +112,44 @@ object's world scale. pe-physics takes at most 64 shapes on one body [V `crates/
 
 Rules for shapes, as built [V `peworld.rs`]:
 - **Boxes scale per axis.**
-- **A sphere or capsule under non-uniform scale, a mesh, a hull, or an unknown kind cannot be built yet,** and the
-  object has no body. pe-world's shape kinds are box, sphere, capsule, mesh and hull; there is no plane [V
-  `components.rs`]. Meshes and hulls are **not built**.
+- **A sphere or capsule under non-uniform scale, or an unknown kind, cannot be built,** and the object has no body.
+  pe-world's shape kinds are box, sphere, capsule, mesh and hull; there is no plane [V `components.rs`].
+- **Meshes and hulls are built from their blobs** (CCD part 2 D; world-model.md 3.2), and only in a world whose
+  blob-shapes setting is on (world-model.md 6.6, config item 8: set when the world is founded, off in every preset;
+  @coordinator-opus). Off, a mesh or a hull can't be built (`SwitchOff`): it is still drawn, and nothing
+  collides with it. On [V tests/peworld.rs, "meshes and hulls built from their blobs"]:
+  - **A mesh sits at its body's origin, unturned (v1):** where its place, composed down the chain from the body, is
+    exactly the body's (the `f32` position all ±0, the rotation's x, y and z all ±0 with w ±1). Anywhere else the
+    body can't be built (`MisplacedMesh`). It takes the object's world scale with its signs, so a negative axis
+    mirrors it: Box3D scales the mesh and reads its winding back (@coordinator-opus, point 1). A ball
+    dropped onto a mirrored wedge moves as it does onto the wedge mirrored by hand, to 1 mm after 40 frames, and the
+    view draws it with the signed scale.
+  - **A hull's points** are scaled on the shape's own axes, signs included, then turned, then offset into the body's
+    frame, as an offset box's corners are; a hull has no placement limit. A mirrored hull's points are the points
+    mirrored by hand, bit for bit, and it steps the same.
+  - **The scale floor:** any axis of a mesh's or a hull's world scale, parent scales included, under 0.01 in
+    magnitude (or not a number) refuses the body (`ScaleFloor`, naming the axis); 0.01 builds.
+  - **A blob is read and built once per machine,** then kept by its hash and its reading (mesh or hull), so a
+    rebuild takes the built mesh (crate::blobs). The cache lets the least recently used builds go once their blobs
+    pass 32 MiB [I]; it is a cache of a pure function of the bytes, so what it keeps never changes a result. A hull
+    blob's points must also pass the fork's hull builder as the blob gives them, once; a placed hull its scale
+    flattens too far is refused later, by pe-physics (below).
+  - **A dynamic body with a mesh needs mass** from its shapes together (`Mass`, with the count of the triangles Box3D
+    left out when they opened a mesh): pe-physics's own check, `BodyDesc::check_mass`, which `add_body` makes again.
+  - **A blob this machine's store lacks** is a local condition, not the world's (world-model.md 3.4): the body can't
+    be built (`BlobAbsent`), and the replica counts it apart from its faults, in live steps only, with the frame, the
+    body and the blob (`ReplicaImpl::absent_blobs`, the newest 64), so the faults stay the same on every machine.
+    A reason another shape of the body gives on every machine comes first. It places no vote hold: blobs travel in
+    their entries and an import refuses one it lacks (`MissingBlob`), so only engine code that names a blob it
+    never stored makes one absent, and a repair's import brings the bytes (`export_blobs`); a hold would wait for a
+    blob transport that doesn't exist yet (@coordinator-opus, point 2, read so).
 - **Such an object is still physical, and each attempt to build it is a fault** (was O12; [V `peworld.rs`,
-  `bodies.rs` and tests/peworld.rs, added after c9e2829a]). So is an unknown body kind, or a body with no world pose.
-  `WorldModel::body` says why (`Unbuildable`: `Kind`, `Shape` or `Pose`), and `physical()` lists exactly the objects
+  `bodies.rs` and tests/peworld.rs, added after c9e2829a]), but for an absent blob (above). So is an unknown body
+  kind, a body with no world pose, or a body the physics refuses that the world model builds (a mesh scaled past
+  pe-physics's size limit, which only `add_body` checks), at the replica's start too. `WorldModel::body` says why
+  with a code the inspector can tell apart (`Unbuildable`: `Kind`; `Shape` with its reason, `UnknownKind`,
+  `NonUniformScale`, `SwitchOff`, `NoBlob`, `BadBlob`, `ScaleFloor` or `MisplacedMesh`; `Pose`; `Mass`;
+  `BlobAbsent`), and its `Display` gives the words world-model.md 3.2 gives. `physical()` lists exactly the objects
   whose `body` is not `Ok(None)`. The replica tries at its start, when an entry or a logic stage makes such an object
   physical (`Created`), and when a body it had can no longer be built (`Rebuilt`, which removes the body); one that
   stays unbuildable counts no more. The physics is what it would be without the count: the object has no body.
@@ -1270,16 +1302,16 @@ world-model.md 3.2 says what a bullet means; this is the solver's side [V `crate
     queries for its 847 triangle pairs over three steps; without the plane test, 611 in one step [V test].
   - Scenes without meshes are unchanged: the pit's final states and counters equal main's in all five runs, and so
     do the self-test digest and the stack-hit RESULT lines [V scratch/mesh/a-digest.log, a-selftest.lines].
-- **Mesh colliders in pe-physics** (CCD part 2 C; pe-replica builds them from blobs in part D, so 2.1's rule that
-  meshes are not built stands until then). `pe_physics::Mesh` builds a mesh once, Box3D's bounding volume tree with
+- **Mesh colliders in pe-physics** (CCD part 2 C; pe-replica builds them from blobs since part D, 2.1). `pe_physics::Mesh` builds a mesh once, Box3D's bounding volume tree with
   welding off, from vertices and triangles or a mesh v1 blob, and every shape with it shares the build;
   `Geometry::Mesh` adds a scale and both sides [V tests/meshes.rs]:
   - Its mass is world-model.md 3.2's, the solid a closed mesh encloses as the fork builds it, in the fork's
     `compute_shape_mass` (FORK.md). The golden sliver's mass, centre and inertia, and its verdicts with the sliver
     kept and dropped, are pinned and printed as RESULT lines, the same in debug and release here [V].
   - A dynamic body with a mesh whose shapes together have no mass is refused before anything is made
-    (`PhysicsError::Massless`, with the dropped count when dropped triangles opened a mesh); part D makes it
-    `Unbuildable::Mass`. A mesh scale axis under 0.01 in magnitude is refused, `InvalidValue` naming the axis
+    (`PhysicsError::Massless`, with the dropped count when dropped triangles opened a mesh); pe-replica says so first,
+    as `Unbuildable::Mass` (2.1), by the same check (`BodyDesc::check_mass`). A closed mesh's mass is summed once per
+    scale and density: the mesh keeps its newest 8 answers, so the checks before a build cost no second sum. A mesh scale axis under 0.01 in magnitude is refused, `InvalidValue` naming the axis
     (@coordinator-opus).
   - Both sides: a second Box3D shape, the triangles reversed, with density 0 and a name that rides in the snapshot,
     so it adds no mass and a hit on it names its front's place among the body's shapes, after a restore and on a
@@ -1297,7 +1329,11 @@ world-model.md 3.2 says what a bullet means; this is the solver's side [V `crate
     of 1,000, 10,000 and 50,000 triangles: built from its blob in 0.45, 5.2 and 22 ms, its back about as much again;
     a dynamic mesh body rebuilt with its mesh kept (a Scale edit) in 0.16, 2.4 and 8.9 ms; an image saved in 0.009,
     0.13 and 0.46 ms and restored in 0.009, 0.07 and 0.32 ms. A joiner's transfer carries the built form: 42, 381
-    and 1,819 KiB for blobs of 17, 175 and 878 KiB [V, byte counts], twice that with both sides.
+    and 1,819 KiB for blobs of 17, 175 and 878 KiB [V, byte counts], twice that with both sides. A mesh on a moving
+    body finds its triangles again at every contact update, filling a list of up to 512 of them each time, and a
+    sleeping dynamic mesh's contact that isn't touching reads as moving, so it does too although nothing moves: a
+    cost, never a state change, since the search is a function of the current poses (@design-reviewer's N1 on CCD
+    part 2 C) [read].
 - **Not yet (part 2):** height fields and compounds are neither swept nor swept against (Q5: pe-physics builds
   neither), and a hull that isn't a box takes a rounded core scaled toward its centre instead of its faces moved in.
 - **Known limit** [V swept tests' trace]: a 12 cm box bullet tumbling into a 1 cm wall at 400 m/s and 200 rad/s
@@ -1353,7 +1389,7 @@ The error should be small for an occasional impulse, and grow with how often imp
 | O11 | A body under a hand does not follow a pack's later poses: `end_frame` returning effects (a seam change, @engine-architect's call), or refusing a `Body` under a `Hand`, with a multi-pose test (@design-reviewer's Medium on e6d3ee9c; 3.2) | WS-state, WS-world |
 | O14 | Vote holds for a version whose module this machine lacks at its activation frame, and a new lineage for the resume at their catch-up (8.2, 5.3) | WS-state, after M1, before sessions of 3 or more |
 | O15 | The view's missing parts (7): effects for entry outcomes and contact begins, `trigger_arrived`, and an event for a body stopped at the write-back (3, step 7) | WS-state, with WS-render |
-| O16 | Meshes and hulls (2.1), and compacting the geometry registry after a trim (4.1) | WS-state, WS-world |
+| O16 | Compacting the geometry registry after a trim (4.1); meshes and hulls are built since CCD part 2 D (2.1) | WS-state, WS-world |
 | O17 | The grab spring's overshoot after a block and after a placement (@design-reviewer's Low on the hold bound) | WS-state, at the headset test |
 | O18 | The fault bundle records the runner's identity and the modules the replica held (`runner_identity`, `module`; divergence.md 6, 8) | WS-diverge |
 
