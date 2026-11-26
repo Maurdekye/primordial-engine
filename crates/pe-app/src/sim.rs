@@ -4113,6 +4113,14 @@ pub(crate) mod tests {
         /// Extra delay by (from, to) for a repair-lane physics image (pe-diverge's `PhysicsReply`), on top of the
         /// link's: an image slower than the rest of the repair lane, as a large one from a busy source is (F1).
         image_late: ByLink<i64>,
+        /// A dark window by (from, to), host nanoseconds [from, until): a message sent in it, or due to arrive in it,
+        /// arrives when it ends (or later, if its delay says so), in the order sent, as pe-net's reliable streams
+        /// deliver what waited once a dark path returns.
+        dark: ByLink<(i64, i64)>,
+        /// Links kept first in, first out, as pe-net's reliable streams are, by (from, to), each with its latest arrival
+        /// so far: a message on one arrives no earlier than the one sent before it. Other links deliver by arrival
+        /// time, as the jittered slow-member runs want.
+        in_order: ByLink<i64>,
         /// Messages sent, for the jitter's sequence.
         sent: Arc<std::sync::atomic::AtomicU64>,
     }
@@ -4150,7 +4158,19 @@ pub(crate) mod tests {
                 Some(late) if matches!(lane, Lane::Repair) && image(&bytes) => d + late,
                 _ => d,
             };
-            let at = HostTime(self.hub.now.load(Ordering::SeqCst) + d);
+            let now = self.hub.now.load(Ordering::SeqCst);
+            let mut at = now + d;
+            if let Some((from, until)) = self.hub.dark.lock().expect("the dark windows").get(&(self.me, to)).copied()
+                && now < until
+                && at >= from
+            {
+                at = at.max(until);
+            }
+            if let Some(last) = self.hub.in_order.lock().expect("the in-order links").get_mut(&(self.me, to)) {
+                at = at.max(*last);
+                *last = at;
+            }
+            let at = HostTime(at);
             let r = Received { from: self.me, lane, bytes, at };
             let mut boxes = self.hub.boxes.lock().expect("the hub");
             let q = boxes.entry(to).or_default();
@@ -5825,6 +5845,164 @@ pub(crate) mod tests {
         let (lead, late, current, fin, edits) = a_slow_member_run(1200, 1200, false);
         println!("no lead: lead {lead}, late voids {late}, A at present {current:.3}, finals {fin:?}, edits {edits}");
         assert!(late > 0 || fin.iter().any(|&f| f < 540), "late voids {late}, finals {fin:?}");
+    }
+
+    // ---- outages on scripted time (@item:primordial-engine/pe-app-a-scripted-clock-hub-dark-window-test-of-s) ----
+
+    /// What `outage_run` saw of each member, A first.
+    #[derive(Debug)]
+    struct OutageSeen {
+        /// Stamp-ahead's largest lead over the run and its lead at the end, in frames.
+        largest_lead: [u64; 2],
+        lead_at_end: [u64; 2],
+        /// The last frame at which each member's lead was over 12, if it ever was.
+        last_over_12: [Option<u64>; 2],
+        /// Entries voided, by the most any one member counted.
+        voids: usize,
+        /// Frames between each member's final frame and the present at the end.
+        final_behind: [u64; 2],
+    }
+
+    /// Two members of a small ball pit over the test Hub on scripted host time, so the machine's load can't move what
+    /// they see (the net tests' outages run in real time): both sweep their hands, two hand entries a frame each, 25 ms
+    /// apart each way, for `frames` frames. `dark` darkens both directions over [from, until) seconds; `slow` makes
+    /// B's messages to A `ms` later over [from, until) seconds, as a machine re-stepping a backlog sends its entries
+    /// late; `outage_silence_s` replaces pe-agree's outage mark (0.3 s) on both members. Both links are first in,
+    /// first out (@design-reviewer's L1 on c655b845): what B sends once the late stretch ends waits behind what it sent
+    /// late, so its lateness ramps down, as from a real late sender or queue.
+    ///
+    /// What these runs don't cover (@design-reviewer), so they don't replace net.rs's real-time outage
+    /// tests: a loaded receiver's lateness (main 01c77bfa samples at the network's arrival for that), and entries sent
+    /// just after a dark window queueing behind its flush on the same stream (here each arrives at its own delay; a
+    /// link rate in bytes a second would model it).
+    fn outage_run(
+        frames: u64,
+        dark: Option<(f64, f64)>,
+        slow: Option<(f64, f64, i64)>,
+        outage_silence_s: Option<f64>,
+    ) -> OutageSeen {
+        use pe_agree::{Node, NodeConfig};
+        use pe_seams::Pos;
+        use pe_seams::agree::{Cut, CutRef};
+        use pe_seams::test_util::TestKeys;
+        const LINK_NS: i64 = 25_000_000;
+        let ns = |s: f64| (s * 1e9) as i64;
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let keys = TestKeys::new(11, 2);
+        let members = keys.sorted_keys();
+        let line = pe_world::preset::m1_line();
+        let hub = Hub::default();
+        let (a, b) = (keys.key(0), keys.key(1));
+        hub.delay.lock().expect("the delays").extend([((a, b), LINK_NS), ((b, a), LINK_NS)]);
+        hub.in_order.lock().expect("the in-order links").extend([((a, b), 0), ((b, a), 0)]);
+        if let Some((from, until)) = dark {
+            let w = (ns(from), ns(until));
+            hub.dark.lock().expect("the dark windows").extend([((a, b), w), ((b, a), w)]);
+        }
+        let mut sims = Vec::new();
+        for i in 0..2 {
+            let me = keys.key(i);
+            let genesis = Cut { at: CutRef { line, height: 0, frame: Frame(0) }, heads: Vec::new() };
+            let mut config = NodeConfig::new(line, members.clone(), genesis);
+            if let Some(s) = outage_silence_s {
+                config.outage_silence_s = s;
+            }
+            let node = Node::new(config, Box::new(keys.signer(i)), Box::new(keys.clone()), HostTime(0));
+            let world = pe_world::preset::ball_pit_with(5, pe_world::BlobStore::default(), Pos::ORIGIN, 8);
+            let replica =
+                crate::world::ball_pit(world, &members, me, RATE, clock.clone(), runner()).expect("a replica");
+            let slot = Arc::new(FrameSlot::new());
+            let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let sim = Sim::new(Box::new(node), replica, clock.clone(), slot.clone(), Budget::new(RATE))
+                .with_local(me, keys.nonce(i, 0), Arc::new(SweepHands::until(HostTime(i64::MAX))))
+                .with_transport(Box::new(Port::new(me, hub.clone())), None)
+                .with_event_log(log.clone());
+            sims.push((sim, slot, log));
+        }
+        let mut last_over_12 = [None; 2];
+        for f in 1..=frames {
+            let now = clock.host_time_of(Frame(f));
+            hub.now.store(now.0, Ordering::SeqCst);
+            if let Some((from, until, ms)) = slow {
+                let d = if (ns(from)..ns(until)).contains(&now.0) { LINK_NS + ms * 1_000_000 } else { LINK_NS };
+                hub.delay.lock().expect("the delays").insert((b, a), d);
+            }
+            for (i, (sim, _, _)) in sims.iter_mut().enumerate() {
+                sim.tick(now);
+                if sim.stats().lead > 12 {
+                    last_over_12[i] = Some(f);
+                }
+            }
+        }
+        let voids = |log: &Arc<std::sync::Mutex<Vec<AgreeEvent>>>| {
+            log.lock().expect("the log").iter().filter(|e| matches!(e, AgreeEvent::Voided { .. })).count()
+        };
+        let stat = |g: fn(&SimStats) -> u64| [g(sims[0].0.stats()), g(sims[1].0.stats())];
+        let behind =
+            |i: usize| (frames + 1).saturating_sub(sims[i].1.newest().and_then(|v| v.final_frame).map_or(0, |x| x.0));
+        OutageSeen {
+            largest_lead: stat(|s| s.largest_lead),
+            lead_at_end: stat(|s| s.lead),
+            last_over_12,
+            voids: sims.iter().map(|(_, _, log)| voids(log)).max().unwrap_or(0),
+            final_behind: [behind(0), behind(1)],
+        }
+    }
+
+    /// A 0.5 s dropout and a 10 s blackout, both ways, on scripted time: neither member's stamp-ahead lead rises past
+    /// 12 frames (the net tests' bound), finality comes back to the present, and nothing is voided. The deterministic
+    /// form of net.rs's outage tests, which machine load moves (@item:primordial-engine/pe-app-s-outage-tests-the-
+    /// stamp-ahead-lead-bound). [V, release] Both leads 0 for both outages; each final frame 19 frames behind at the
+    /// end, the cut lag.
+    #[test]
+    #[cfg_attr(debug_assertions, ignore = "seconds of two members in the ball pit: release (--include-ignored)")]
+    fn an_outage_on_scripted_time_leaves_both_stamp_leads_at_or_near_0() {
+        for (dark_s, frames) in [(0.5, 9 * 60), (10.0, 25 * 60)] {
+            let seen = outage_run(frames, Some((3.0, 3.0 + dark_s)), None, None);
+            println!("dark {dark_s} s: {seen:?}");
+            for i in 0..2 {
+                assert!(seen.largest_lead[i] <= 12, "dark {dark_s} s, member {i}: {seen:?}");
+                assert!(seen.final_behind[i] <= 120, "dark {dark_s} s, member {i}'s finality didn't return: {seen:?}");
+            }
+            assert_eq!(seen.voids, 0, "dark {dark_s} s: {seen:?}");
+        }
+    }
+
+    /// The control: with pe-agree's outage mark at 1 s, as before @coordinator-opus, a 0.5 s dropout's
+    /// backlog is sampled as lateness and raises a lead past 12, so the test above bites. [V, release] Both leads 24,
+    /// still 13-14 at the end, 5.5 s later (the old 1 s mark left 20-23 after a 0.3 s blackout in real time).
+    #[test]
+    #[cfg_attr(debug_assertions, ignore = "seconds of two members in the ball pit: release (--include-ignored)")]
+    fn without_the_outage_mark_a_dropout_raises_a_stamp_lead() {
+        let seen = outage_run(9 * 60, Some((3.0, 3.5)), None, Some(1.0));
+        println!("dark 0.5 s, mark 1 s: {seen:?}");
+        assert!(seen.largest_lead.iter().any(|&l| l > 12), "{seen:?}");
+    }
+
+    /// A machine that sends late for a while, as one re-stepping a backlog does: B's messages reach A 1.2 s late for
+    /// 6 s, from 3 s. B's lead rises by about the excess, as stamp-ahead is designed to (1.225 s is 73.5 frames, less
+    /// the 6-frame margin, plus 3: the fixed-link acceptance's 66-72 at 1.2 s), A's stays 0, and nothing is voided.
+    /// Once B's messages are on time again its lead drains. The last late message lands the stretch's delay after its
+    /// end and its lateness reaches B a round trip later; then the window ages the late samples out, and the surplus
+    /// sheds one frame in `moving_every` (11) while a hand moves (@design-reviewer), plus a 1 s margin.
+    /// [V, release] B's lead 70; over 12 until 882 frames after the late stretch (873 before the links kept their
+    /// order), against a bound of 955; 5 at the end.
+    #[test]
+    #[cfg_attr(debug_assertions, ignore = "seconds of two members in the ball pit: release (--include-ignored)")]
+    fn a_late_stretch_raises_the_lead_by_the_excess_and_it_drains_after() {
+        let lead = crate::stamp::LeadConfig::m1(RATE);
+        let seen = outage_run(25 * 60, None, Some((3.0, 9.0, 1_200)), None);
+        println!("B 1.2 s late for 6 s: {seen:?}");
+        assert!((66..=74).contains(&seen.largest_lead[1]), "B's lead: {seen:?}");
+        assert_eq!(seen.largest_lead[0], 0, "A's lead: {seen:?}");
+        assert_eq!(seen.voids, 0, "{seen:?}");
+        let hz = u64::from(RATE.hz());
+        let end = 9 * hz;
+        let flight = (1.225 * hz as f64).ceil() as u64 + (2 * 25 * hz).div_ceil(1_000);
+        let bound = flight + lead.window + (seen.largest_lead[1] - 12) * lead.moving_every + hz;
+        let drained = seen.last_over_12[1].expect("B's lead rose past 12") - end;
+        assert!(drained <= bound, "B's lead over 12 until {drained} frames after the stretch, bound {bound}: {seen:?}");
+        assert!(seen.lead_at_end[1] <= 12, "B's lead hadn't drained by the end: {seen:?}");
     }
 
     fn with_replica(replica: Box<dyn Replica>, clock: Arc<dyn FrameClock>, budget: Budget) -> (Sim, Arc<FrameSlot>) {
