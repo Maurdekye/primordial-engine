@@ -501,8 +501,10 @@ which fixes the origin's role deliberately.
         tiny and scaled up loses triangles that are large in the world, an author-facing limit that the import
         warning (below) names;
       - **the scale floor:** any axis of a mesh's or a hull's world scale (parent scales included) under 0.01 in
-        magnitude is refused and the body isn't built: a mesh's by pe-physics, `InvalidValue`, "mesh scale x is
-        under 0.01 in magnitude, Box3D's floor on scale: rescale the mesh at import"; a hull's by pe-replica (below).
+        magnitude is refused and the body isn't built. Through pe-replica, a mesh's and a hull's alike are caught
+        first, as `Unbuildable::Shape(ShapeReason::ScaleFloor { axis })`; pe-physics's `InvalidValue`, "mesh scale x
+        is under 0.01 in magnitude, Box3D's floor on scale: rescale the mesh at import", stays as the backstop for
+        a direct caller (@vdw-physics, CCD part 2 D).
         The reason names the axis and the 0.01 floor (@coordinator-opus, after @vdw-physics and
         @fable-reviewer). Box3D would otherwise raise such an axis to 0.01, keeping its sign (−0 to
         +0.01) [V `box3d-fork/src/math_functions/vector.rs`, `safe_scale`], so a mesh scaled flat would collide and
@@ -580,7 +582,12 @@ which fixes the origin's role deliberately.
       read it in that order.
     - **hull v1:** the magic `PEH1` (4 bytes), a `u32` point count of 4 to 64, then the points as `f32 x3`. Each
       machine builds the hull with the fork's hull builder. Tier 2 checks that builder's output digest across
-      platforms on degenerate inputs too: coplanar points, duplicates, slivers.
+      platforms on degenerate inputs too: coplanar points, duplicates, slivers. A hull whose triangulated surface
+      is too big for Box3D is simplified to 44 vertices: Box3D keeps at most 128 edges per hull, and a hull of
+      triangles with V vertices has 3V − 6 edges. pe-physics builds every hull at 64 vertices first, and again at
+      44 only if that build is refused, so every hull that built before builds unchanged, and the blob's 64-point
+      limit is unchanged [V @vdw-physics: round clouds of 48 to 1,024 points, all refused before, build at 44; 8 to
+      32 points as before] (@coordinator-opus, CCD part 2 E).
 - **The bullet flag, `Body.bullet`** (the user's rulings answers 2 and
   4; the method @fable-reviewer's with @astra-deliberator; [I, draft for
   @fable-reviewer, built after M1 as @item:primordial-engine/pe-physics-and-box3d-fork-continuous-collision-a's parts
@@ -814,6 +821,11 @@ which fixes the origin's role deliberately.
     ones follow the rule of a late entry: a machine that lacks the bytes at the entry's frame simulates as if that change had not arrived yet, which
     is a prediction, and rewinds and replays from that frame when the bytes arrive. It does not vote for a cut that
     includes the entry until it holds the bytes. Nobody waits; only that machine's view lags.
+    - **In v1, before the blob transport** (@coordinator-opus, R1, CCD part 2 D): a machine missing a
+      mesh or hull blob holds no vote for it, since nothing fetches the bytes yet, so a hold could never be released
+      and at n = 2 it would stall finality. It leaves the body unbuilt and counts it as absent
+      (`Unbuildable::BlobAbsent`, `ReplicaImpl::absent_blobs`), not as a fault; a repair import brings the bytes.
+      The vote hold above starts with the blob transport.
   - **A compiled module is never a blob** (@iter-bench, under Q3c [U]: no machine runs another's
     build). The script's source is the simulation blob; each machine builds its own module from it, a local
     product that is never stored in the world, sent or fetched. Activation after each machine's own compile is
