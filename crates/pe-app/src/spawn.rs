@@ -268,6 +268,9 @@ pub fn parse_command(what: &str) -> Result<Command, String> {
         [w, n] => {
             let k = kind(w)?;
             match n.parse::<u32>() {
+                Ok(c) if k.heavy_half().is_some() && c > HEAVY_COUNT_MAX => Err(format!(
+                    "`spawn {what}`: at most {HEAVY_COUNT_MAX} of a heavy kind at once, so they stay on the floor"
+                )),
                 Ok(c) if (1..=COUNT_MAX).contains(&c) => Ok(Command::Many(k, c)),
                 _ => Err(format!("`spawn {what}`: a count is a whole number from 1 to {COUNT_MAX}")),
             }
@@ -297,12 +300,17 @@ pub fn console_at(k: Kind, n: u32) -> [f64; 3] {
     if k.heavy_half().is_some() {
         // A heavy one goes 1.5 m further out than the small ones' rows, its width apart, so it never lands on them.
         let step = k.spacing();
-        return [CONSOLE_AT[0] + step * f64::from(n % 3), k.on_floor().unwrap_or(0.0), CONSOLE_AT[2] - 1.5 - step];
+        let z = CONSOLE_AT[2] - 1.5 - step * (1.0 + f64::from((n / 3) % 3));
+        return [CONSOLE_AT[0] + step * f64::from(n % 3), k.on_floor().unwrap_or(0.0), z];
     }
     let x = CONSOLE_AT[0] + 0.3 * f64::from(n % 5);
     let z = CONSOLE_AT[2] - 0.4 * f64::from((n / 5) % 4);
     [x, k.on_floor().unwrap_or(CONSOLE_AT[1]), z]
 }
+
+/// The most one counted `spawn` of a heavy kind queues: four rows of the widest (the platform, three to a row, 2.5 m
+/// apart) from [`GRID_AT`] reach 10.5 m ahead, inside the plane's floor (@xr-eng's L1 on a306b59c).
+pub const HEAVY_COUNT_MAX: u32 = 12;
 
 /// A stack's root above the floor's top (at the origin's height), so its bottom box starts just clear of it.
 pub const FLOOR_GAP: f64 = 0.01;
@@ -328,14 +336,20 @@ pub fn in_front(head: [f64; 3], forward: [f64; 3], k: Kind, hands: &[[f64; 3]]) 
     // head's spot over the floor) by 0.2 m.
     let (ahead0, y) = match (k, k.heavy_half()) {
         (Kind::Stack, _) => (0.8, FLOOR_GAP),
-        (_, Some(h)) => (0.45 + f64::from(h[0].max(h[2])), k.on_floor().unwrap_or(FLOOR_GAP)),
+        // The copy is axis-aligned, so its reach back toward the player along the level forward is hx|fx| + hz|fz|.
+        (_, Some(h)) => {
+            (0.45 + f64::from(h[0]) * fx.abs() + f64::from(h[2]) * fz.abs(), k.on_floor().unwrap_or(FLOOR_GAP))
+        }
         _ => (0.5, (head[1] - 0.2).max(0.3)),
     };
     let spot = |ahead: f64, left: f64| [head[0] + fx * ahead + lx * left, y, head[2] + fz * ahead + lz * left];
+    // A heavy box is big, so a hand is measured to its surface (a point-to-box distance), a small thing's to its centre.
+    let half = k.heavy_half().map_or([0.0; 3], |h| h.map(f64::from));
     let clear = |p: &[f64; 3]| {
-        hands
-            .iter()
-            .all(|h| ((h[0] - p[0]).powi(2) + (h[1] - p[1]).powi(2) + (h[2] - p[2]).powi(2)).sqrt() > HAND_CLEAR_M)
+        hands.iter().all(|h| {
+            let d: f64 = (0..3).map(|i| ((h[i] - p[i]).abs() - half[i]).max(0.0).powi(2)).sum();
+            d.sqrt() > HAND_CLEAR_M
+        })
     };
     let tries = [(ahead0, 0.25), (ahead0, 0.55), (ahead0 + 0.3, 0.25), (ahead0 + 0.3, 0.0), (ahead0, -0.55)];
     tries.iter().map(|&(a, l)| spot(a, l)).find(clear).unwrap_or_else(|| spot(ahead0 + 0.6, 0.0))
@@ -580,6 +594,24 @@ mod tests {
             assert!((d[0] - c[0]).abs() >= 2.0 * f64::from(h[0]) + 0.5 - 1e-9 && c[1] == a[1], "{k:?} row {c:?} {d:?}");
         }
         assert!(parse_command("nonsense").unwrap_err().contains("crate, platform, slab"));
+        // Facing diagonally the axis-aligned platform's near corner still clears the body (@xr-eng's M1).
+        let r = std::f64::consts::FRAC_1_SQRT_2;
+        let at = in_front([0.0, 1.6, 0.0], [r, 0.0, -r], Kind::Platform, &[]);
+        let h = Kind::Platform.heavy_half().unwrap().map(f64::from);
+        let corner = (at[0] - h[0]).max(0.0).hypot((-at[2] - h[2]).max(0.0));
+        assert!(corner >= 0.25 + 0.2 - 1e-9 || (at[0] - h[0]) * r + (-at[2] - h[2]) * r >= 0.45 - 1e-9, "{at:?}");
+        // A hand in front at chest height moves the crate on to a spot clear of it (@xr-eng's M2).
+        let hand = [0.0, 1.0, -0.6];
+        let c = in_front([0.0, 1.6, 0.0], [0.0, 0.0, -1.0], Kind::BigCrate, &[hand]);
+        let hc = Kind::BigCrate.heavy_half().unwrap().map(f64::from);
+        let d: f64 = (0..3).map(|i| ((hand[i] - c[i]).abs() - hc[i]).max(0.0).powi(2)).sum();
+        assert!(d.sqrt() > HAND_CLEAR_M, "the crate at {c:?} is within reach of the hand");
+        // A heavy count stays on the floor, and the console's fourth crate isn't inside its first (L1, L2).
+        assert!(parse_command(&format!("crate {}", HEAVY_COUNT_MAX + 1)).is_err());
+        assert!(parse_command(&format!("crate {HEAVY_COUNT_MAX}")).is_ok());
+        let last = grid_at(Kind::Platform, HEAVY_COUNT_MAX - 1);
+        assert!(-last[2] < 11.0, "{last:?}");
+        assert_ne!(console_at(Kind::BigCrate, 0), console_at(Kind::BigCrate, 3));
     }
 
     /// The plane at frame 4 with `me` an editor, behind pe-app's own ports (no simulation: dry runs and reads).
