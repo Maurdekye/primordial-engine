@@ -311,7 +311,16 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
     mark) waited out the outage, however they come, since a transport that queues through a dark path flushes them
     before any fresh claim (@design-reviewer: unmarked, the first report after a 10 s blackout read 22 s
     and pe-app's lead jumped to its 3 s clamp; marked, the reports stay at 16-25 ms and the cut lag at 66-75 ms after
-    a held-and-flushed 10 s blackout in pe-agree's sim [V]). That biases the report low, since the entries a vote
+    a held-and-flushed 10 s blackout in pe-agree's sim [V]). A joiner's import is treated the same way
+    (@item:primordial-engine/friend-test-11-27-the-host-s-0-5-s-input-lag-at-j). It samples nothing until its replica
+    has stepped to E (the driver's stepped frame, F3 S2; a driver that never reports one counts as imported at the
+    first tick). From then on every peer's entries stamped below the present at that tick count as the import's
+    backlog: they queued behind the import's own traffic. [V, the friend test's 18:05Z joiner, kit c7cbc175] The
+    inviter's entries reached the joiner about 1 s late during the import, and the joiner reported 1,042 ms. The
+    inviter's stamp-ahead lead rose to 49 frames, so its own actions lagged 0.8 s for about 4 s.
+    [V, pe-agree sim, `a_joiner_reports_no_lateness_from_entries_that_queued_behind_its_import`] With a 1 s slow link
+    to the joiner for a 3 s import, the joiner's largest report over the next 3 s is within the fast link's 100 ms;
+    without the rule it is the import's (at least 800 ms). These exclusions bias the report low, since the entries a vote
     overtakes are the slowest; the exclusion stays, because after a real outage they would inflate the lead (measured
     negligible at n = 2, below). The 16-sample minimum and the 128-sample window assume a member that streams hands,
     as every M1 member does: a chain of edits alone would wait 16 edits for its first report, and its window would
