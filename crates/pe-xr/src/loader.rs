@@ -172,8 +172,13 @@ pub struct Manifest {
     pub negotiate_symbol: String,
 }
 
-/// Parse a manifest's text. `path` is where it was read from, for resolving a relative library path.
+/// Parse a manifest's text. `path` is where it was read from: a relative library path resolves against its folder.
 pub fn parse_manifest(path: &Path, text: &str) -> Result<Manifest, LoadError> {
+    parse_manifest_in(path, path.parent().unwrap_or(Path::new(".")), text)
+}
+
+/// [`parse_manifest`], with a relative library path resolved against `folder`.
+fn parse_manifest_in(path: &Path, folder: &Path, text: &str) -> Result<Manifest, LoadError> {
     let invalid = |why: String| LoadError::ManifestInvalid { path: path.to_path_buf(), why };
     let v: serde_json::Value = serde_json::from_str(text).map_err(|e| invalid(e.to_string()))?;
     let rt = v.get("runtime").ok_or_else(|| invalid("no \"runtime\" object".into()))?;
@@ -198,18 +203,42 @@ pub fn parse_manifest(path: &Path, text: &str) -> Result<Manifest, LoadError> {
         }
     };
     let lib = PathBuf::from(lib);
-    let library = if lib.is_relative() { path.parent().unwrap_or(Path::new(".")).join(lib) } else { lib };
+    let library = if lib.is_relative() { folder.join(lib) } else { lib };
     Ok(Manifest { path: path.to_path_buf(), name, library, negotiate_symbol })
 }
 
 /// Read and parse the manifest at `path`, which must exist: a registration is never trusted on its own.
+///
+/// A relative library path resolves against the folder of the real file, with every symlink on the way followed, as
+/// Khronos' loader does. WiVRn's manifest names `../../../lib/wivrn/libopenxr_wivrn.so` and is registered as a
+/// symlink at `~/.config/openxr/1/active_runtime.json`, so the link's own folder would name a library that isn't
+/// there (the likely cause of the friend test's first Linux run,
+/// @ticket:primordial-engine/pe-xr-resolve-a-manifest-s-relative-library-path). `Manifest::path` stays the path as
+/// registered, for the reports.
 pub fn read_manifest(path: &Path) -> Result<Manifest, LoadError> {
     if !path.is_file() {
         return Err(LoadError::ManifestMissing(path.to_path_buf()));
     }
     let text = std::fs::read_to_string(path)
         .map_err(|e| LoadError::ManifestInvalid { path: path.to_path_buf(), why: e.to_string() })?;
-    parse_manifest(path, &text)
+    let real = real_path(path).map_err(|e| LoadError::ManifestInvalid {
+        path: path.to_path_buf(),
+        why: format!("resolving its path: {e}"),
+    })?;
+    parse_manifest_in(path, real.parent().unwrap_or(Path::new(".")), &text)
+}
+
+/// The manifest's real path, with every symlink followed.
+#[cfg(unix)]
+fn real_path(path: &Path) -> std::io::Result<PathBuf> {
+    std::fs::canonicalize(path)
+}
+
+/// On Windows the registry names the manifest itself, and `canonicalize` would hand `LoadLibrary` a `\\?\` path: the
+/// path as given, as before (Virtual Desktop and SteamVR load this way [V]).
+#[cfg(not(unix))]
+fn real_path(path: &Path) -> std::io::Result<PathBuf> {
+    Ok(path.to_path_buf())
 }
 
 /// Whether a negotiated interface and API version are ones this loader accepts.
@@ -344,6 +373,39 @@ mod tests {
         assert_eq!(m.library, folder.join(&relative));
         assert_eq!(m.name, "VD");
         assert_eq!(m.negotiate_symbol, NEGOTIATE_SYMBOL);
+    }
+
+    /// A manifest registered through a symlink in another folder (WiVRn's `active_runtime.json`): a relative library
+    /// path resolves against the real file's folder, not the link's, and the reported path is the link.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_manifest_resolves_its_library_against_the_real_file() {
+        let d = fixture_dir("symlink");
+        let share = d.join("usr/share/openxr/1");
+        let lib_dir = d.join("usr/lib/wivrn");
+        let config = d.join("home/.config/openxr/1");
+        for f in [&share, &lib_dir, &config] {
+            std::fs::create_dir_all(f).unwrap();
+        }
+        let lib = write(&lib_dir, "libopenxr_wivrn.so", "not a library");
+        let real = write(
+            &share,
+            "openxr_wivrn.json",
+            r#"{"runtime":{"library_path":"../../../lib/wivrn/libopenxr_wivrn.so","name":"WiVRn"}}"#,
+        );
+        let link = config.join("active_runtime.json");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let m = read_manifest(&link).unwrap();
+        assert_eq!(m.path, link);
+        assert_eq!(std::fs::canonicalize(&m.library).unwrap(), std::fs::canonicalize(&lib).unwrap());
+        // Through the link's own folder the library isn't there: what the old resolution named.
+        assert!(!config.join("../../../lib/wivrn/libopenxr_wivrn.so").exists());
+        // A link to the link resolves the same way.
+        let link2 = d.join("active_runtime.json");
+        std::os::unix::fs::symlink(&link, &link2).unwrap();
+        assert!(read_manifest(&link2).unwrap().library.is_file());
+        // A plain file still resolves against its own folder.
+        assert!(read_manifest(&real).unwrap().library.is_file());
     }
 
     #[test]

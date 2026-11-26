@@ -59,7 +59,11 @@ macOS (flat screen only, later); a VR user interface (the UI lab follows M1, WS-
      The manifest file must exist; a registry entry is never trusted on its own (this PC lists a runtime whose
      manifest is gone, below);
   2. resolve `runtime.library_path` against the manifest's own folder when it is relative (Virtual Desktop's is
-     `.\virtualdesktop-openxr.dll` [V]), and open it with `libloading`;
+     `.\virtualdesktop-openxr.dll` [V]), and open it with `libloading`. On Linux the folder is the real file's, with
+     symlinks followed, as Khronos' loader does: WiVRn's manifest names `../../../lib/wivrn/libopenxr_wivrn.so` and is
+     registered as a symlink at `~/.config/openxr/1/active_runtime.json` [I, WiVRn's README]. Resolved from the
+     link's folder, the library isn't there and VR falls back to the desktop: the likely cause of the friend test's
+     first Linux run (@ticket:primordial-engine/pe-xr-resolve-a-manifest-s-relative-library-path);
   3. look up the negotiation entry point, under the name the manifest's optional `functions` map gives it, else
      `xrNegotiateLoaderRuntimeInterface`, and call it with the loader-info and runtime-request structs filled in,
      their struct versions included. The range offered is loader-runtime interface 1, and any API version 1.x
@@ -791,8 +795,9 @@ pe-xr's logic is written against a small backend trait, so almost all of it runs
   the ring; the ring's poses and times are the display time's while the grasp follows the reading now; a released
   object leaves the hand from its last drawn pose and velocity, never from its simulated pose.
 - **Fallback and the loader,** on injected discovery and fixture manifests only: no runtime registered, a registered
-  manifest that does not exist, a library that does not exist, a relative library path, a renamed entry point, and a
-  refused negotiation. Each reports VR unavailable with its reason, and nothing panics.
+  manifest that does not exist, a library that does not exist, a relative library path (on Linux also through a
+  symlink), a renamed entry point, and a refused negotiation. Each reports VR unavailable with its reason, and
+  nothing panics.
 - **The audit:** pe-xr adds no native build code (the gate's audit).
 
 ### 10.2 Against a simulated runtime (tier 2, if it works)
