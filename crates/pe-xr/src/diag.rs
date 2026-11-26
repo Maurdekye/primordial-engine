@@ -13,6 +13,7 @@ use crate::backend::{EyePose, SessionState};
 use crate::hands::{GraspEdge, Reading};
 use crate::seam::HandSource;
 use crate::session::{Counters, EndReason};
+use crate::space::{ChangeNote, Measured};
 
 /// The environment variable that turns the log on when it is `1`.
 pub const LOG_ENV: &str = "PE_XR_LOG";
@@ -145,6 +146,24 @@ impl Diag {
         })
     }
 
+    /// A reference-space change pe-xr applied, the `n`th: the first five and every hundredth, so a runtime that sends
+    /// many (WiVRn's STAGE, about 3.7 a second) shows what it sends without flooding the log.
+    pub fn space_change(&self, n: u64, note: &ChangeNote) -> Option<String> {
+        if !self.on || !(n <= 5 || n.is_multiple_of(100)) {
+            return None;
+        }
+        let how = match note.measured {
+            Measured::ByPose => "measured by the runtime's pose",
+            Measured::ByHead => "measured by the head",
+            Measured::Unmeasured { head_jumped: true } => "not measured; the head jumped, so the hands are marked",
+            Measured::Unmeasured { head_jumped: false } => "not measured; the head didn't jump, so nothing is done",
+        };
+        Some(format!(
+            "reference space change {n}: applied {:.1} ms after its change time, {how}",
+            note.due_before_ns as f64 / 1e6
+        ))
+    }
+
     /// Each hand's current interaction profile, `why` saying when it was read.
     pub fn profiles(&self, why: &str, profiles: &[String; 2]) -> Option<String> {
         self.on.then(|| format!("interaction profiles ({why}): Left {}, Right {}", profiles[0], profiles[1]))
@@ -176,6 +195,17 @@ impl Diag {
 mod tests {
     use super::*;
     use crate::backend::Fov;
+
+    #[test]
+    fn space_changes_log_the_first_five_and_every_hundredth() {
+        let note = ChangeNote { due_before_ns: 75_000_000, measured: Measured::Unmeasured { head_jumped: false } };
+        let d = Diag::new(true);
+        let logged: Vec<u64> = (1..=300).filter(|&n| d.space_change(n, &note).is_some()).collect();
+        assert_eq!(logged, [1, 2, 3, 4, 5, 100, 200, 300]);
+        let line = d.space_change(1, &note).unwrap();
+        assert!(line.contains("75.0 ms after its change time") && line.contains("nothing is done"), "{line}");
+        assert_eq!(Diag::new(false).space_change(1, &note), None);
+    }
 
     fn eye(x: f32) -> EyePose {
         EyePose {

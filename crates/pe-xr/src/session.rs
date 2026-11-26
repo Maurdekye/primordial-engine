@@ -484,17 +484,27 @@ impl<B: Backend> XrSession<B> {
 
         // A recentre's correction (spec 3.2): the changes due at this display time apply before any pose is read, and
         // its yaw goes into this frame's heading, in the same sample as the corrected head and hands.
+        let applied_before = {
+            let c = self.space.counters;
+            c.by_pose + c.by_head + c.unmeasured
+        };
         let applied = self.space.frame(timing.predicted_display_time, self.backend.head(timing.predicted_display_time));
         if applied.yaw != 0.0 {
             self.locomotion.turn_by(applied.yaw);
         }
         if applied.unmeasured {
-            // Not measurable: the jump goes through, so the hands say so.
+            // Not measurable, and the head jumped: the jump goes through, so the hands say so.
             for h in &mut self.hands {
                 h.recentre();
             }
         }
         self.counters.recentre = self.space.counters;
+        if let Some(note) = applied.first {
+            // The first change applied this frame, numbered as it (@chunks-reviewer's nit).
+            if let Some(line) = self.diag.space_change(applied_before + 1, &note) {
+                diag::emit(&line);
+            }
+        }
 
         // Step 3: actions and hands, whether or not this frame is drawn.
         let focused = self.state == SessionState::Focused;
