@@ -106,7 +106,10 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
       cap the rest waits for finality). Neither run voided anything.
     - **Known prototype limit: a long stall voids the overflow** (@coordinator-opus, ruling (a)). Past
       the pending cap and the queue (about 2,040 of one author's entries beyond the final cut at 60 Hz), the
-      author's further entries come back only after the cuts have passed their stamps, and end void as `Late`. That
+      author's further entries are dropped, come back only after the cuts have passed their stamps, and end void as
+      `Late`. Entries still in the queue are kept: the leader's cap holds for them (section 3, "The leader caps its
+      cut"). Until R3' (coordinator) the cap's wait ran out after a few seconds, so a slow leader's cuts
+      voided them as well, from about the pending cap on. That
       takes a finality stall of about 17 s at 60 Hz with hands at full rate, or about 26-34 s at 60-90 Hz with F3 S1's
       30 Hz floor. Old hand poses are harmless to lose. A grip is not: **a grab made during such a stall can be undone**
       when the final order replaces the prediction. The fix, a leader that caps its cut below an author's entries it
@@ -149,8 +152,9 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
       latest verified vote names (at least the final cut's). Entries younger than the vote cadence plus the timeout
       floor (0.4 s at the defaults) aren't counted, since no vote can name them yet, and nothing is counted until a
       quorum's worth of peers have named the chain once (the session's first cut lag). While the backlog is over the
-      burst (`Node::backlogged()`), pe-app makes no new hand entries; they would be refused or void as late. Edits and
-      other inputs are never held back this way. pe-agree itself never re-sends an entry; a transport that buffers
+      burst (`Node::backlogged()`), pe-app thins its hand entries to F3 S1's 30 Hz floor, and sends every grip change
+      (coordinator); more would be refused or void as late. Edits and other inputs are never held back
+      this way. pe-agree itself never re-sends an entry; a transport that buffers
       across an outage flushes at once, and the queue and the refetch absorb that.
       - **Not the entries beyond the final cut** (`Node::unfinal_own()`, kept as a diagnostic): that grows with the
         cut lag, about 400 entries at three a frame and 120 Hz with the lag at its 1 s cap, over the burst of 244, so
@@ -249,8 +253,10 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
   honest vote.
 - **The frame a leader names: its present minus the cut lag** (coordinator, @fable-reviewer). A leader that names its own present voids as late every honest entry still in flight with a stamp
   just below it (measured: 19 honest entries void in 4 s at n = 4 with 5-30 ms links). The lag starts at 0.25 s and
-  then adapts: the 95th percentile of how late other members' entries arrive at this member (present frame at
-  arrival against the stamp), plus a margin, clamped between a floor and a cap (world settings, in seconds; defaults
+  then adapts: the 95th percentile of how late other members' entries arrive at this member (the frame of the arrival
+  time pe-net hands to `receive`, against the stamp; an entry that then waits in its author's queue, over the token
+  budget or the pending cap, is sampled as of its arrival, not when it is taken in: a receiver's own deferral is no
+  lateness of the author's, coordinator), plus a margin, clamped between a floor and a cap (world settings, in seconds; defaults
   0.05 s, 1 s, margin 0.05 s). Members need not agree on it: the cut carries its frame. Past the target, a slow
   member stamps its own entries ahead (the author's side, pe-app; app.md). The other members report how late its
   entries reach them (`own_lateness`, below), and it stamps ahead by the excess, `lead = delay - target + margin`.
@@ -276,7 +282,7 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
     lead up alone. A report is a hint from an authenticated link: a wrong one moves only the author's own lead, which
     the driver clamps (a world setting of a few seconds). The samples leave out what the lag leaves out: fetched and
     hinted arrivals, a backlog a vote or timeout claimed first, and an outage's backlog: after silence from a peer
-    longer than 0.3 s (a local setting, `outage_silence_s`; coordinator), its entries stamped below this member's present frame at the first arrival after it (the outage
+    longer than 0.3 s (a local setting, `outage_silence_s`; coordinator), its entries stamped below the frame of the first arrival after it (the outage
     mark) waited out the outage, however they come, since a transport that queues through a dark path flushes them
     before any fresh claim (@design-reviewer: unmarked, the first report after a 10 s blackout read 22 s
     and pe-app's lead jumped to its 3 s clamp; marked, the reports stay at 16-25 ms and the cut lag at 66-75 ms after
@@ -418,7 +424,25 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
     entries and never sends them holds cuts back once (measured: 5.5 s at 120 Hz). "Once" is per chain and claimant
     (@design-reviewer's L3): when a claim's asks run out unanswered it is dropped with its wait, and another member's
     claim on the chain starts a fresh one; a claimant whose claim went unanswered is ignored on that chain until the
-    chain reaches it, so a chain is waited for at most f + 1 times. Only members' claims count (a
+    chain reaches it, so a chain is waited for at most f + 1 times. **The wait doesn't run out for entries the leader holds back
+    itself** (coordinator, from R3'; @design-reviewer's M1 and L1 on a3ee509d). The wait is sized for a
+    backlog still on the network; a cut past entries waiting in the leader's own queue would void them as late. So
+    past the wait the cap is the stamp of the chain's first queued entry above the final frame, while the hold is
+    engaged for the author: its held entries beyond the final cut came within a burst of its pending cap (its queue
+    waits for finality, as in a stall, not for tokens, as a flood's does), and afterwards for as long as its queue
+    takes to drain at its rate, plus 1 s (observed every tick, not only past the wait; @design-reviewer's L2 on
+    8fd00794). An entry missing between the chain's last admitted one and that first queued one, in flight or
+    dropped, isn't covered: past the wait it is taken as lost on the network, and the range refetch brings it back
+    `Late`, as the known limit below says (N1). Its whole queue, over all its chains, must also pass a full queue's rate test
+    (section 2). That test alone misses a flood split over two chains, since a full queue keeps one chain's entries
+    and so shows one chain's rate; the engagement catches it, because a flood's admitted entries become final within
+    the cut lag, far below the pending cap. The hold can't stall finality: its cap is above the final frame by at least
+    a grid step, or it doesn't apply (entries at or below the final frame void whatever the cap does), so every cut it
+    allows moves finality on and frees the pending slots the queue drains into. [V, pe-agree sim, n = 2, member 1 12 s
+    behind and then back (`a_slow_leaders_return_voids_none_of_the_healthy_members_entries`): 252 of the healthy
+    member's entries void as `Late` on main, none after; the flood tests on one and two chains finalize as before.]
+    *Residual:* an author already at its pending cap through a stall, and flooding too, keeps the hold while it stays
+    there; cuts then move at its admitted stamps. Only members' claims count (a
     removed member's don't, once membership changes, section 8). Entries on a chain claimed beyond them are left
     out of the adaptive lag, as fetched ones are.
   - **Which side does the work** (measured, sim): at n = 2 (seeds 61-64) the cap alone voids nothing and the voter

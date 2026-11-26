@@ -243,10 +243,11 @@ impl NodeConfig {
     }
 }
 
-/// One author's checked entries waiting for its budget, in chain order, with who sent each.
+/// One author's checked entries waiting for its budget, in chain order, with who sent each and when it arrived (the
+/// host time pe-net handed to `receive`: the lateness sample is taken there, not at admission).
 #[derive(Default)]
 struct Deferred {
-    entries: BTreeMap<(ChainId, u64, EntryRef), (SignedEntry, PeerId)>,
+    entries: BTreeMap<(ChainId, u64, EntryRef), (SignedEntry, PeerId, HostTime)>,
     bytes: usize,
 }
 
@@ -395,6 +396,10 @@ pub struct Node {
     /// capping its cuts for it and how long it waits. Kept once the wait runs out, so a chain is waited for once,
     /// until it reaches its claim.
     cap_wait: BTreeMap<ChainKey, (i64, i64)>,
+    /// Per author, the leader's hold for entries waiting in this member's own queue ([`Node::queued_hold`]): engaged
+    /// (`None`) while the author's held entries are near its pending cap, then until the deadline (ns) its queue takes
+    /// to drain at its rate.
+    queue_hold: BTreeMap<MemberKey, Option<i64>>,
     /// The epoch before this one, while it may still be needed (agreement.md 8).
     old_epoch: Option<OldEpoch>,
     /// The current epoch's governance state (agreement.md 8): who may admit.
@@ -744,6 +749,7 @@ impl Node {
             outage_allow: BTreeMap::new(),
             abstained: AbstainBook::default(),
             cap_wait: BTreeMap::new(),
+            queue_hold: BTreeMap::new(),
             old_epoch: None,
             start: None,
             start_root: None,
@@ -887,14 +893,14 @@ impl Node {
         {
             // Over the budget: delay it, never lose it (coordinator). It waits, checked, in the author's
             // queue, and is admitted (and relayed) in chain order as the budget refills; only an overflow is refused.
-            return self.defer(e, from);
+            return self.defer(e, from, at);
         }
         self.insert_checked(e, from, at)
     }
 
-    /// Queue a checked entry over its author's budget; refuse it only if the author's queue is full and its stamps say
-    /// it made its entries faster than its rate.
-    fn defer(&mut self, e: SignedEntry, from: PeerId) -> Result<bool, Fault> {
+    /// Queue a checked entry over its author's budget, with its arrival time `at`; refuse it only if the author's queue
+    /// is full and its stamps say it made its entries faster than its rate.
+    fn defer(&mut self, e: SignedEntry, from: PeerId, at: HostTime) -> Result<bool, Fault> {
         let id = e.id();
         let author = e.entry.author;
         let budget = self.cfg.rate_budget(self.rate_hz);
@@ -911,7 +917,7 @@ impl Node {
         while (q.entries.len() >= cap || q.bytes + size > self.cfg.defer_bytes)
             && q.entries.last_key_value().is_some_and(|(last, _)| *last > k)
         {
-            if let Some((_, (old, _))) = q.entries.pop_last() {
+            if let Some((_, (old, _, _))) = q.entries.pop_last() {
                 q.bytes = q.bytes.saturating_sub(entry_bytes(&old));
             }
         }
@@ -925,7 +931,8 @@ impl Node {
             // RateExceeded. Without a present (no tick yet) nothing is excused.
             // No earlier than the final cut: an honest stall's waiting entries are stamped after it, and a flooder that
             // back-dates one entry must not stretch the span (@design-reviewer's Low).
-            let first = q.entries.values().map(|(q, _)| q.entry.stamp).min().unwrap_or(e.entry.stamp).max(final_frame);
+            let first =
+                q.entries.values().map(|(q, _, _)| q.entry.stamp).min().unwrap_or(e.entry.stamp).max(final_frame);
             let n = q.entries.len() + 1;
             let within_rate = present.is_some_and(|p| {
                 let span_s = e.entry.stamp.min(p).0.saturating_sub(first.0) as f64 / rate_hz as f64;
@@ -940,7 +947,7 @@ impl Node {
             return Err(self.fault(from, Some(author), FaultKind::RateExceeded, detail));
         }
         q.bytes += size;
-        q.entries.insert(k, (e, from));
+        q.entries.insert(k, (e, from, at));
         Ok(false)
     }
 
@@ -951,7 +958,7 @@ impl Node {
             self.deferred.iter().filter(|(_, q)| !q.entries.is_empty()).map(|(a, _)| *a).collect();
         for a in authors {
             loop {
-                let Some((k, (e, from))) =
+                let Some((k, (e, from, arrived))) =
                     self.deferred.get(&a).and_then(|q| q.entries.iter().next().map(|(k, v)| (*k, v.clone())))
                 else {
                     break;
@@ -968,7 +975,9 @@ impl Node {
                 if held {
                     continue;
                 }
-                if let Ok(true) = self.insert_checked(e.clone(), from, at)
+                // Inserted as of its arrival, not now: this member's own deferral is no lateness of the author's
+                // (coordinator; a slow member pays its own excess).
+                if let Ok(true) = self.insert_checked(e.clone(), from, arrived)
                     && self.cfg.relay
                     && from == a
                 {
@@ -1222,7 +1231,8 @@ impl Node {
         n
     }
 
-    /// Insert an entry that passed every check and the budget.
+    /// Insert an entry that passed every check and the budget. `at` is when it arrived from the network, which the
+    /// lateness sample and `arrived_at` record, even when it waited in its author's queue since.
     fn insert_checked(&mut self, e: SignedEntry, from: PeerId, at: HostTime) -> Result<bool, Fault> {
         let id = e.id();
         let author = e.entry.author;
@@ -1246,7 +1256,7 @@ impl Node {
                 let stamp_of = self.log.get(&key, &id).map(|e| e.entry.stamp);
                 let backlog = self.vote_high.get(&key).is_some_and(|(s, _)| *s >= e_seq)
                     || self.outage_mark.get(&author).zip(stamp_of).is_some_and(|(m, st)| st < *m);
-                if let Some(p) = self.present.filter(|_| author != self.me) {
+                if let Some(p) = self.frame_of(at).filter(|_| author != self.me) {
                     let c = self.lateness_counts.entry(author).or_default();
                     if solicited || hinted {
                         c.fetched += 1;
@@ -1299,6 +1309,16 @@ impl Node {
                 Err(self.fault(from, None, kind, format!("{r:?}")))
             }
         }
+    }
+
+    /// The frame of host time `at` on the clock as of the last tick (its present at its `now`, at its rate): the frame
+    /// an entry arrived in, for the lateness sample. Not the present: an entry that waited in its author's queue, or in
+    /// this member's mail while it was slow to read it, arrived earlier than it was taken in (coordinator). `None` before the first tick.
+    fn frame_of(&self, at: HostTime) -> Option<Frame> {
+        let p = self.present?;
+        let ns = i128::from(at.0) - i128::from(self.now.0);
+        let df = (ns * i128::from(self.rate_hz.max(1))).div_euclid(1_000_000_000);
+        Some(Frame((i128::from(p.0) + df).max(0) as u64))
     }
 
     /// Whether the author's budget admits one more entry; takes it if so.
@@ -2162,8 +2182,10 @@ impl Node {
     /// The outage rule's leader side (agreement.md 3, @fable-reviewer's form in coordinator): the
     /// highest frame a cut may name, the lowest last-held stamp among other members' chains whose claimed head is
     /// ahead of what this member holds, so their backlog isn't void as late when it arrives. Each such chain is waited
-    /// for once, for its claimed backlog at the author's rate plus a second, until it reaches its claim.
+    /// for once, for its claimed backlog at the author's rate plus a second, until it reaches its claim, and for as long
+    /// as its next entries wait in this member's own deferred queue.
     fn backlog_cap(&mut self) -> Option<Frame> {
+        self.note_queue_holds();
         if self.core.mutated(Mutation::NoBacklogCap) {
             return None;
         }
@@ -2190,17 +2212,92 @@ impl Node {
             let backlog = ((claim - held) as usize).min(budget.pending);
             let (since, wait) =
                 *self.cap_wait.entry(key).or_insert((now, (backlog as f64 / per_s * 1e9) as i64 + CAP_WAIT_EXTRA_NS));
-            if now.saturating_sub(since) > wait {
-                continue;
-            }
-            let stamp = match self.pred_head.get(&key) {
-                Some((_, id)) => self.log.get(&key, id).map(|e| e.entry.stamp),
-                None => self.final_high.get(&key).copied(),
-            }
-            .unwrap_or(self.final_frame());
+            // Past the wait the backlog is taken as lost on the network (the outage rule's assumption), unless the chain's
+            // next entries are here, waiting in this member's own queue, and its author made its queue within its rate:
+            // then only this member holds them back, and a cut past them would void them as late (R3', coordinator). The cap is then the first such entry's stamp, never within a grid step of the final frame
+            // (`Node::queued_hold`), so every cut it allows moves finality on and frees pending slots for the queue.
+            let stamp = if now.saturating_sub(since) > wait {
+                match self.queued_hold(&key) {
+                    Some(s) => s,
+                    None => continue,
+                }
+            } else {
+                match self.pred_head.get(&key) {
+                    Some((_, id)) => self.log.get(&key, id).map(|e| e.entry.stamp),
+                    None => self.final_high.get(&key).copied(),
+                }
+                .unwrap_or(self.final_frame())
+            };
             cap = Some(cap.map_or(stamp, |c: Frame| c.min(stamp)));
         }
         cap
+    }
+
+    /// Past its wait, the frame the leader's cap holds at for chain `key`: the stamp of the chain's first entry waiting
+    /// in this member's own deferred queue above the final frame, while
+    /// - the hold is engaged for the author: its held entries beyond the final cut came within a burst of its pending
+    ///   cap, so its queue waits for finality, as in a stall (R3'), not for tokens, as a flood's does (a flood's
+    ///   admitted entries become final within the cut lag, far below the cap). It stays engaged while they are, and
+    ///   then for as long as the queue takes to drain at the author's rate, plus a second, sized when they fall below:
+    ///   past the stall the queue drains by tokens, and a cut past it would still void it;
+    /// - and the author's whole queue, over all its chains, passes a full queue's test in [`Node::defer`] (no more
+    ///   entries than the author's rate and burst allow over their stamps, from the final frame up to the present; the
+    ///   budget is the author's: @design-reviewer's M1 on a3ee509d). That test alone doesn't catch a flood over two
+    ///   chains: a full queue keeps the earlier chain's entries and drops the other's, so it shows one chain's rate.
+    ///   The engagement does (`a_flood_split_over_two_chains_cannot_starve_two_hands_per_frame`).
+    ///
+    /// `None` when that stamp is within a grid step of the final frame: a cap there would allow no cut, and the
+    /// pending slots that would admit the queue free only as cuts finalize (L1). The entries between are few, and
+    /// those at or below the final frame void whatever the cap does.
+    fn queued_hold(&self, key: &ChainKey) -> Option<Frame> {
+        let p = self.present?;
+        let ff = self.final_frame();
+        let budget = self.cfg.rate_budget(self.rate_hz);
+        // Engaged (see [`Node::note_queue_holds`]), else no hold.
+        if !self.queue_hold.contains_key(&key.author) {
+            return None;
+        }
+        let q = self.deferred.get(&key.author).filter(|q| !q.entries.is_empty())?;
+        let n = q.entries.len();
+        let first = q
+            .entries
+            .iter()
+            .filter(|(k, (e, _, _))| k.0 == key.chain && e.entry.stamp > ff)
+            .map(|(_, (e, _, _))| e.entry.stamp)
+            .min()?;
+        let k = self.cfg.cut_every(self.rate_hz).max(1);
+        if first.0 / k * k <= ff.0 {
+            return None;
+        }
+        let stamps = q.entries.values().map(|(e, _, _)| e.entry.stamp);
+        let (lo, hi) = stamps.fold((Frame(u64::MAX), Frame(0)), |(lo, hi), s| (lo.min(s), hi.max(s)));
+        let span_s = hi.min(p).0.saturating_sub(lo.max(ff).0) as f64 / self.rate_hz.max(1) as f64;
+        (n as f64 <= budget.per_s * span_s + budget.burst as f64).then_some(first)
+    }
+
+    /// Every tick, before the cap: each author's [`Node::queued_hold`] engagement, observed whether or not a cap wait has
+    /// run out, so a stall that fills the author's pending cap and eases within the wait still holds its queue's tail
+    /// (@design-reviewer's L2 on 8fd00794). Engaged while its held entries are within a burst of the pending cap; then
+    /// until a deadline fixed once, at the first tick below, at its queue's drain time at its rate plus a second;
+    /// dropped on expiry or when its queue is empty.
+    fn note_queue_holds(&mut self) {
+        let now = self.now.0;
+        let budget = self.cfg.rate_budget(self.rate_hz);
+        let deferred = &self.deferred;
+        self.queue_hold.retain(|a, _| deferred.get(a).is_some_and(|q| !q.entries.is_empty()));
+        let queued: Vec<(MemberKey, usize)> =
+            (self.deferred.iter()).filter(|(_, q)| !q.entries.is_empty()).map(|(a, q)| (*a, q.entries.len())).collect();
+        for (a, n) in queued {
+            let pending = self.pending_by_author.get(&a).copied().unwrap_or(0);
+            if pending + budget.burst as usize > budget.pending {
+                self.queue_hold.insert(a, None);
+            } else if let Some(d) = self.queue_hold.get_mut(&a) {
+                let drain = (n as f64 / budget.per_s.max(1.0) * 1e9) as i64 + CAP_WAIT_EXTRA_NS;
+                if now > *d.get_or_insert(now.saturating_add(drain)) {
+                    self.queue_hold.remove(&a);
+                }
+            }
+        }
     }
 
     /// This member's linked chain heads beyond the cut `at` names (for its vote).
@@ -2554,6 +2651,9 @@ impl EntrySource for Node {
         self.changed_from.take()
     }
 
+    /// The network arrival, also for an entry that then waited in its author's queue: such an entry first reaches
+    /// the replica at its admission, possibly seconds later, so a recency check on arrival would mute its effects
+    /// (@design-reviewer's N2 on 57c9b27b).
     fn arrived_at(&self, entry: &EntryRef) -> Option<HostTime> {
         self.arrived.get(entry).copied()
     }
@@ -2636,8 +2736,10 @@ impl Agreement for Node {
         // without a view after a 10 s blackout at 500 balls, @engine-architect).
         let silence = self.heard.insert(from, at).map(|t| at.0.saturating_sub(t.0));
         if let Some(ns) = silence.filter(|ns| *ns > outage_silence_ns(self.cfg.outage_silence_s))
-            && let Some(p) = self.present
+            && let Some(p) = self.frame_of(at)
         {
+            // At the arrival's frame, as the lateness sample is (@design-reviewer's N1 on 57c9b27b): on a late read
+            // the present would count entries that arrived on time as backlog.
             self.outage_mark.insert(from, p);
             let b = self.cfg.rate_budget(self.rate_hz);
             // The silence is also the author's budget's: at n >= 3 an author silent on this link but sending through a
