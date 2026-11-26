@@ -648,7 +648,9 @@ with @fable-reviewer's refinements, and):
      status line is logged too, as it changes message: `status: shown: <text>` when it shows or turns to another
      message (a number changing in it, such as how far behind, is the same message) and `status: hidden` when it
      comes down, so a headless run's log carries what the window would show (@coordinator-opus,
-     after K4's R3').
+     after K4's R3'). And each tick in which agreement voids entries writes a `voids:` line, this machine's own by
+     reason and the others' (their actions don't happen), counted in the end line's `voided_own` and
+     `voided_others`: a void of an entry no longer in view leaves no other trace (@diverge-eng).
    - **The tick trace** (`PE_TICK_TRACE=<file>`, `crate::trace`; @coordinator-opus, after the M1
      recording's 2.13 s tick, which the run's totals couldn't place). Off unless the variable names a file, and then
      the simulation thread writes a new one: a `sec` line for each second of the frame clock (its ticks' phases,
