@@ -3609,6 +3609,27 @@ fn a_scale_axis_under_the_floor_refuses_a_mesh_or_a_hull() {
     );
 }
 
+/// A hull its scale leaves unbuildable says why (@coordinator-opus, R3; CCD part 2 E): the wedge scaled
+/// past the size limit is `Unbuildable::Shape(ScaledHull)`, where before `add_body` refused it as a fault with no
+/// reason. A hull scaled 1 or -1 on every axis isn't built again to check it.
+#[test]
+fn a_hull_its_scale_leaves_unbuildable_names_the_reason() {
+    let body_at = |scale: [f32; 3]| {
+        let mut w = genesis_with_blob_shapes(true);
+        let blob = w.blobs().put(&hull_blob(&WEDGE));
+        let t = Transform::at(pos(0.0, 1.0, 0.0)).with_scale(scale);
+        object(&mut w, 2, t, static_body(), blob_shape(shape_kind::HULL, blob));
+        PeWorld::new(w, DomainId(0)).body(oid(2))
+    };
+    assert_eq!(body_at([6000.0, 1.0, 1.0]), Err(Unbuildable::Shape(ShapeReason::ScaledHull)), "12 km long");
+    assert!(body_at([4000.0, 1.0, 1.0]).is_ok_and(|b| b.is_some()), "8 km long, within the size limit");
+    assert!(body_at([-1.0, 1.0, 1.0]).is_ok_and(|b| b.is_some()), "mirrored");
+    assert_eq!(
+        Unbuildable::Shape(ShapeReason::ScaledHull).to_string(),
+        "the hull's scale flattens it too far to build, or takes it past the size limit: rescale the hull at import"
+    );
+}
+
 /// A shape that names no blob, or a blob that can't be read or built, is the same fault on every machine
 /// (`NoBlob`, `BadBlob`). A blob this machine's store lacks is a local condition (`BlobAbsent`): the replica counts it
 /// apart from its faults, with the frame, the body and the blob, and a reason every machine finds for another shape

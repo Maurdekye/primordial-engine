@@ -659,6 +659,50 @@ fn tumbling_capsule_and_box_bullets_never_cross_a_thin_wall() {
     }
 }
 
+/// A small spinning hull bullet slowed by its hit is the sweep's until the step ends (CCD part 2 E). Box3D makes
+/// contacts once a step, so a pair that meets during one has no contact for the step's later sub-steps. A 2 cm
+/// tetrahedron and a 2 cm cube spinning at 26 rad/s, fired at a 1 cm wall at 400 m/s: judged one sub-step at a time as
+/// unable to close a slop, they drifted on through the wall over the step's last sub-steps (7 of them at 8 a step).
+#[test]
+fn a_small_spinning_hull_slowed_by_its_hit_never_drifts_through_a_thin_wall() {
+    let a = 0.01;
+    let tetra = [v3(a, a, a), v3(a, -a, -a), v3(-a, a, -a), v3(-a, -a, a)];
+    let hulls = [crate::hull::create_hull(&tetra, 64).unwrap(), make_box_hull(a, a, a).base];
+    for (k, hull) in hulls.iter().enumerate() {
+        for (dt, sub_steps) in [(1.0 / 30.0, 8), (1.0 / 60.0, 4)] {
+            for aim in [-0.3f32, -0.15, 0.0, 0.15] {
+                let mut world = World::new(&no_gravity());
+                wall(&mut world, 1.0, 0.01);
+                let mut def = default_body_def();
+                def.type_ = BodyType::Dynamic;
+                def.swept = true;
+                def.linear_velocity = v3(400.0 * aim.cos(), 400.0 * aim.sin(), 0.0);
+                def.angular_velocity = v3(9.0, 20.0, -14.0);
+                let id = create_body(&mut world, &def);
+                let mut shape = default_shape_def();
+                shape.density = 7800.0;
+                create_hull_shape(&mut world, id, &shape, hull);
+                let mut last = body_get_position(&world, id);
+                for f in 0..15 {
+                    world.step(dt, sub_steps);
+                    let p = body_get_position(&world, id);
+                    if (last.x < 1.005) != (p.x < 1.005) {
+                        let s = (1.005 - last.x) / (p.x - last.x);
+                        let (y, z) = (last.y + s * (p.y - last.y), last.z + s * (p.z - last.z));
+                        assert!(
+                            y.abs() > 0.98 || z.abs() > 0.98,
+                            "hull {k}, {sub_steps} sub-steps, aim {aim}: through at frame {f}, from {last:?} to {p:?}, \
+                             {:?}",
+                            world.swept_counters
+                        );
+                    }
+                    last = p;
+                }
+            }
+        }
+    }
+}
+
 /// A scene of bullets resting and sliding on a plane and on a stack, run with and without the flag.
 fn resting_scene(swept: bool) -> (World, Vec<BodyId>) {
     let mut world = World::new(&default_world_def());

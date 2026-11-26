@@ -324,7 +324,7 @@ fn solve_stages(args: SolveArgs<'_>, stages: &dyn Stages) {
 
     // Sub-step loop
     let sub_step_count = context.sub_step_count;
-    for _sub_step_index in 0..sub_step_count {
+    for sub_step_index in 0..sub_step_count {
         // (b3_stageIntegrateVelocities)
         stages.run(body_count, BODY_BLOCK_SIZE, &|items, _| {
             // SAFETY: a body stage; this block owns these bodies. The sims are only read.
@@ -381,7 +381,7 @@ fn solve_stages(args: SolveArgs<'_>, stages: &dyn Stages) {
         if let Some(pass) = swept.as_deref_mut() {
             // SAFETY: no stage is running.
             let states = unsafe { all_states(states) };
-            pass.find(world, states);
+            pass.find(world, states, sub_step_count - 1 - sub_step_index);
         }
 
         // (b3_stageIntegratePositions)

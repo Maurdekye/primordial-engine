@@ -19,7 +19,7 @@ pub(crate) mod swept;
 use crate::math_functions::PI;
 
 pub use solve::solve;
-pub use swept::{SweptCounters, SWEPT_ITERATION_BUDGET};
+pub use swept::{sweeps_against, SweptCounters, SWEPT_ITERATION_BUDGET};
 
 /// Soft constraint coefficients. (b3Softness)
 #[derive(Debug, Clone, Copy, PartialEq, Default)]

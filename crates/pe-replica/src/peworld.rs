@@ -911,7 +911,15 @@ fn blob_part(
                 let turned = rotate(placed.rot, [0, 1, 2].map(|k| f64::from(p[k] * scale[k])));
                 [0, 1, 2].map(|k| (at[k] + turned[k]) as f32)
             };
-            Ok(ShapeRow::Hull { points: points.iter().map(place).collect() })
+            let points: Vec<[f32; 3]> = points.iter().map(place).collect();
+            // A scale other than 1 or -1 on an axis can flatten a hull past what the builder takes, or take it past
+            // the size limit: checked here as add_body checks it, so the reason is named (R3). One more build, for a
+            // scaled hull only. A turn or an offset can't flatten a hull; a child offset past the size limit (10 km
+            // out) is still refused by add_body alone, without a reason.
+            if scale.iter().any(|s| s.abs() != 1.0) && pe_physics::check_hull(&points).is_err() {
+                return refused(ShapeReason::ScaledHull);
+            }
+            Ok(ShapeRow::Hull { points })
         }
         Built::Bad => refused(ShapeReason::BadBlob),
     }
