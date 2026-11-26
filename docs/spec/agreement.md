@@ -52,9 +52,21 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
   - **It follows the world's frame rate,** so an honest player's per-frame inputs pass at any rate. World settings,
     the same on every member: `entries_per_frame` (3: two hands plus one for poses and other per-frame inputs),
     `extra_per_s` (30, for edits and governance) and `budget_slack` (1.25). The rate is `entries_per_frame × rate ×
-    budget_slack + extra_per_s` entries a second, the burst half a second of it and the pending cap four seconds,
-    each at least today's floors (150/s, 60, 600). That is 255/s, 127 and 1,020 at 60 Hz, and 480/s, 240 and 1,920
-    at 120 Hz. pe-app sends two hand entries per frame and paces its edit queue to at most one entry per frame on
+    budget_slack + extra_per_s` entries a second, the burst half a second of it and the pending cap forty seconds,
+    each at least today's floors (150/s, 60, 600). That is 255/s, 127 and 10,200 at 60 Hz, and 480/s, 240 and 19,200
+    at 120 Hz. The cap was four seconds (1,020 at 60 Hz) until the friend test's stopgap (@coordinator-opus, agreed with @world-chunks). In K4's R3', before F3 S2, a member that fell behind
+    stopped finality, and about 17 s later (at 60 entries a second) the other's entries filled its cap: it held none
+    of that author's new actions and voided them at the recovery. With S2 the cuts trail a slow member, so the cap
+    binds only once finality stands still (a dark link, a member that stops stepping) or a member lags by more than
+    the cap's worth of the other's entries. At two hands' 120 entries a second, forty seconds of the rate lasts about
+    85 s, past keep_s (70 s). The deferred queue is bounded by `defer_bytes` (2 MiB per author) before its count cap:
+    an entry counts as its payload plus 200 B, and a hand entry's payload is 55-75 B, so the queue holds about 8,000
+    of them, fewer than the cap [V, by code]. At that bound an entry later than the whole queue is dropped with no
+    fault if its author stayed within its rate (`stall_drops`; the range refetch brings it back once finality moves),
+    and refused, `RateExceeded`, if not. The costs: memory (per author, about 2.5 MB of held entries at the cap [I]
+    and at most 2 MiB queued), a deeper re-step when a late entry lands far back (with S2, bounded by the slow
+    member's lag), a joiner's longer fetch of each author's entries beyond the final cut (up to the cap), and the
+    limits below. pe-app sends two hand entries per frame and paces its edit queue to at most one entry per frame on
     the same chain (@engine-architect). The world's rate is frozen for a session, so the budget never
     changes under a member.
   - **Today these are node defaults, not yet world settings.** They are `NodeConfig` fields, like
@@ -73,16 +85,16 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
       entries faster than its rate. Waiting entries are never named in a vote's heads, since only held entries are.
     - **A full queue in a stall is no fault** (F3 K2, @coordinator-opus). While finality stands still, an
       honest author's entries pile up beyond the final cut until the pending cap and then the queue are full, however
-      slowly it made them: pe-app never holds hands (F3 S1), so a receiver whose finality trails about 17 s at 60 Hz
-      gets there. The rate is read from the stamps, not from arrival, since a flush after an outage arrives at once
-      whatever rate it was made at. If the queue's entries and the new one hold no more entries than `per_s` times
-      the span of their stamps (from the queue's earliest, but no earlier than the final cut's frame, up to the new one's, capped at this
-      member's present) plus
-      the burst, the new entry is dropped with no fault and no `Refused` event (`Node::stall_drops()` counts it), and
-      the range refetch brings it back. An author that packs more entries into its stamps than its rate allows, or
-      stamps them ahead of the present, is refused as before. Before the first tick (no present) nothing is excused.
-      [V, pe-agree sim, n = 2, 60 Hz, two hands a frame, member 1's messages held 25 s] Before: 2,060 blame events.
-      After: none, 994 stall drops. Not changed by it [V, the same run, with and without]: 2,584 (2,503 with K8 too) of the
+      slowly it made them: pe-app never holds hands (F3 S1), so a receiver whose finality trails about 150 s at 60 Hz
+      (17 s with the four-second cap) gets there. The rate is read from the stamps, not from arrival, since a flush
+      after an outage arrives at once whatever rate it was made at. If the queue's entries and the new one hold no
+      more entries than `per_s` times the span of their stamps (from the queue's earliest, but no earlier than the
+      final cut's frame, up to the new one's, capped at this member's present) plus the burst, the new entry is
+      dropped with no fault and no `Refused` event (`Node::stall_drops()` counts it), and the range refetch brings it
+      back. An author that packs more entries into its stamps than its rate allows, or stamps them ahead of the
+      present, is refused as before. Before the first tick (no present) nothing is excused. [V, pe-agree sim, n = 2,
+      60 Hz, two hands a frame, member 1's messages held 25 s, the four-second cap] Before: 2,060 blame events. After:
+      none, 994 stall drops. Not changed by it [V, the same run, with and without]: 2,584 (2,503 with K8 too) of the
       author's entries end void as `Late`, because the overflow's entries come back by range only after the cuts have
       passed their stamps.
     - **An outage's backlog is admitted outside the token budget** (F3 K8, @coordinator-opus). At the
@@ -101,28 +113,39 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
       still applies, and past the allowance the normal budget and the stall rule above do. The bound is this member's
       own measure of the link, never the author's claim: a member that goes quiet and then floods gets no more than it
       could have sent at its rate meanwhile, stamped before the mark. Local, with no wire or consensus-hash change.
-      [V, pe-agree sim, n = 2, 60 Hz, S1's floor] A 10 s outage's backlog waited 2,780 ms after the flush before,
-      and 30 ms after. A 25 s outage: 77 stall drops and over 3 s before; none and 2,150 ms after (past the pending
-      cap the rest waits for finality). Neither run voided anything.
+      [V, pe-agree sim, n = 2, 60 Hz, S1's floor, the four-second cap] A 10 s outage's backlog waited 2,780 ms after
+      the flush before, and 30 ms after. A 25 s outage: 77 stall drops and over 3 s before; none and 2,150 ms after
+      (past the pending cap the rest waits for finality). Neither run voided anything.
     - **Known prototype limit: a long stall voids the overflow** (@coordinator-opus, ruling (a)). Past
-      the pending cap and the queue (about 2,040 of one author's entries beyond the final cut at 60 Hz), the
-      author's further entries are dropped, come back only after the cuts have passed their stamps, and end void as
-      `Late`. Entries still in the queue are lost too, sooner: the leader's cap waits for a chain's claimed backlog
-      only for that backlog at the author's rate plus 1 s, so once a stall passes the pending cap (about 17 s at the
-      30 Hz floor at 60 Hz), a slow leader's cuts pass the queued entries' stamps and void them as late (R3',
-      coordinator; a fix that holds the cap for them deadlocked and was reverted, section 3). That
-      takes a finality stall of about 17 s at 60 Hz with hands at full rate, or about 26-34 s at 60-90 Hz with F3 S1's
-      30 Hz floor. Old hand poses are harmless to lose. A grip is not: **a grab made during such a stall can be undone**
-      when the final order replaces the prediction. The fix, a leader that caps its cut below an author's entries it
-      saw but dropped (as it does for heads named by votes), waits until after the friend test, after @world-chunks's
-      read. An outage under the 30 s close doesn't reach it alone: at S1's floor about 60 entries a second, it takes
-      about 33 s at 60 Hz and 49 s at 90 Hz to pass the cap plus the queue. The 10 s blackout reached it only because
-      the receiver then fell about 24 s behind working through a token-paced flush, and the allowance removes that
-      [I, until @engine-architect's k8-inproc rerun].
+      the pending cap and the queue (about 18,000 of one author's entries beyond the final cut at 60 Hz: the 10,200
+      cap and about 8,000 queued under `defer_bytes`), the author's further entries are dropped, come back only after
+      the cuts have passed their stamps, and end void as `Late`. Entries still in the queue are lost too, sooner: the
+      leader's cap waits for a chain's claimed backlog only for that backlog at the author's rate plus 1 s, so once a
+      stall passes the pending cap, a slow leader's cuts pass the queued entries' stamps and void them as late (R3',
+      coordinator; a fix that holds the cap for them deadlocked and was reverted, section 3). The cap
+      fills after a finality stall of about 85 s at 60 Hz with two hands moving (120 entries a second), about 170 s
+      with one; with the four-second cap it was about 8.5 s and 17 s. Old hand poses are harmless to lose. A grip is
+      not: **a grab made during such a stall can be undone** when the final order replaces the prediction. The fix, a
+      leader that caps its cut below an author's entries it saw but dropped (as it does for heads named by votes),
+      waits until after the friend test, after @world-chunks's read. An outage under the 30 s close doesn't come near
+      it: about 3,600 of two hands' entries at 60 Hz, against the 10,200 cap. With the four-second cap the 10 s
+      blackout reached it only because the receiver then fell about 24 s behind working through a token-paced flush,
+      and the allowance removes that [I, until @engine-architect's k8-inproc rerun].
+    - **Known prototype limit: a claimed backlog can hold cuts back longer** (@world-chunks). The leader
+      waits for a chain's claimed backlog for that backlog at the author's rate plus 1 s, at most the pending cap's
+      worth (section 3, "The leader caps its cut"): up to about 41 s with the forty-second cap, against 5 s with four.
+      A claim that only a vote's heads make is dropped once its range asks run out unanswered, so it ends sooner: a
+      claimed backlog nobody sends held the cuts back at most 1.7 s at 120 Hz, with either cap [V, debug,
+      `a_claimed_backlog_never_sent_holds_cuts_back_once_and_only_for_the_wait`, seed 91]. A gap below an entry the
+      member has checked is never given up, so an author that sends one entry far ahead and withholds the gap below it
+      can hold the leader's cuts back for the whole wait, about 41 s, once per chain until the gap is filled [I, by
+      code]: liveness only, never safety. Fine between friends.
     - **Checks are capped too:** per sender and author, twice the rate, with a burst of twice (pending cap + burst).
       Past it an entry is dropped unchecked, with no fault, so a flood can't burn a peer's CPU on signatures. An entry
       dropped unchecked raises nothing, so its gap shows only once a later checked entry or a vote's heads name a seq
-      past it; that works while the author votes (@engine-architect's nit).
+      past it; that works while the author votes (@engine-architect's nit). With the forty-second cap
+      the burst is about 21,000 signatures at 60 Hz, about 1 s of CPU [I]: fine between friends, not for an open
+      session, which needs a smaller cap or S5's overflow journal (@world-chunks).
     - **Range refetch.** For each chain with a hole (a seq beyond its linked head seen, in a checked entry or a vote's
       heads, and the next one neither held nor waiting) that has lasted 150 ms, the member asks for just the gap,
       `FetchRange { author, chain, from_seq, count }`, of the author first and of everyone on a retry, with the retry
@@ -175,14 +198,15 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
         counts. Entries that reach a member late against their stamps still pace their author: they would be void as
         late or cost abstentions.
       - **Near the pending cap.** The author also paces once its own entries beyond the final cut are within a burst of
-        the pending cap every receiver holds per author (`Node::near_pending_cap()`; 1,020 at 60 Hz, 1,920 at 120 Hz).
-        Past the cap, receivers defer its new entries (2, the queue), so they can't hold the cuts that name them and
-        can't vote, and a finality stand-still feeds itself. Found with A unpaced on a slow return link past the lead's
-        clamp [V, sim, 60 Hz, B -> A +1.2 s, no lead, seeds 301-312]: A reached B's cap about 8.5 s into the no-lead
-        stand-still, and finality stood still 21.5 s on 4 of 12 seeds, against at most 8.4 s while the old rule
-        happened to pace A (control: with `pending_s` = 30, at most 8.4 s). At the lag cap a healthy member stays far
-        below the cap (about 400 entries against 1,920 at three a frame and 120 Hz), so only a long stand-still gets
-        here.
+        the pending cap every receiver holds per author (`Node::near_pending_cap()`; 10,200 at 60 Hz and 19,200
+        at 120 Hz, 1,020 and 1,920 with the four-second cap these measurements used). Past the cap, receivers defer
+        its new entries (2, the queue), so they can't hold the cuts that name them and can't vote, and a finality
+        stand-still feeds itself. Found with A unpaced on a slow return link past the lead's clamp [V, sim, 60 Hz,
+        B -> A +1.2 s, no lead, seeds 301-312]: A reached B's cap about 8.5 s into the no-lead stand-still, and
+        finality stood still 21.5 s on 4 of 12 seeds, against at most 8.4 s while the old rule happened to pace A
+        (control: with `pending_s` = 30, at most 8.4 s). At the lag cap a healthy member stays far below the cap
+        (about 400 entries against 19,200, or 1,920 with four seconds, at three a frame and 120 Hz), so only a long
+        stand-still gets here.
       - Measured [V, pe-agree sim, n = 2, 60 Hz, two hands a frame, 30 s, seeds 301-302, B -> A one-way +D, A -> B
         fast]. Before, with no lead: A (the fast uplink) was paced on 748-890 of its 1,800 frames at D = 1.2 s and
         383-562 at 0.9 s, B on 724-750 and 481-576; at 0.3 s neither. With B stamping D + 0.1 s ahead (pe-app's case):
@@ -422,16 +446,17 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
     the longest stand-still on a 1.2 s one-way link); and if the leader proposes in it after all, its timeout grows
     as usual (@design-reviewer's L1 on b4b8bedb). The leader waits for each chain once: for its backlog when the
     wait begins (at most the author's pending cap) at the author's rate, plus 1 s, and not again until the chain reaches what was claimed, so a member that claims
-    entries and never sends them holds cuts back once (measured: 5.5 s at 120 Hz). "Once" is per chain and claimant
-    (@design-reviewer's L3): when a claim's asks run out unanswered it is dropped with its wait, and another member's
-    claim on the chain starts a fresh one; a claimant whose claim went unanswered is ignored on that chain until the
-    chain reaches it, so a chain is waited for at most f + 1 times. Past the wait the cap no longer holds for that chain, even for entries
-    waiting in the leader's own queue: those then void as late (the known limit in section 2). R3' (coordinator) tried holding the cap at the first queued stamp past the wait; it deadlocked finality once a slow
-    member returned (@engine-architect): each leader's cap fell below a block the core had already
-    certified, so no proposal could extend it, and a capped leader spares its view rather than failing it. Reverted
-    (coordinator; `finality_recovers_when_a_slow_member_returns_and_both_sides_defer`). Only members' claims count (a
-    removed member's don't, once membership changes, section 8). Entries on a chain claimed beyond them are left
-    out of the adaptive lag, as fetched ones are.
+    entries and never sends them holds cuts back once (measured: 5.5 s at 120 Hz when written; 1.7 s on 6f9b37a2, with
+    the four- or the forty-second cap). "Once" is per chain and claimant (@design-reviewer's L3): when a claim's asks
+    run out unanswered it is dropped with its wait, and another member's claim on the chain starts a fresh one; a
+    claimant whose claim went unanswered is ignored on that chain until the chain reaches it, so a chain is waited for
+    at most f + 1 times. Past the wait the cap no longer holds for that chain, even for entries waiting in the
+    leader's own queue: those then void as late (the known limit in section 2). R3' (coordinator) tried
+    holding the cap at the first queued stamp past the wait; it deadlocked finality once a slow member returned
+    (@engine-architect): each leader's cap fell below a block the core had already certified, so no
+    proposal could extend it, and a capped leader spares its view rather than failing it. Reverted (coordinator; `finality_recovers_when_a_slow_member_returns_and_both_sides_defer`). Only members' claims count (a
+    removed member's don't, once membership changes, section 8). Entries on a chain claimed beyond them are left out
+    of the adaptive lag, as fetched ones are.
   - **Which side does the work** (measured, sim): at n = 2 (seeds 61-64) the cap alone voids nothing and the voter
     side alone leaves 0-2 edits void per run; at n = 4 (seeds 81-83), where three votes make a quorum without the
     owner, the voter side alone leaves 1-8 edits void when all four come back from a 10 s outage, and the cap alone

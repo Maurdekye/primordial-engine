@@ -348,10 +348,11 @@ then arrive above the cuts' frames, are never void as late, and cost the receive
 - **Entries in a receiver's future.** On a link fast one way and slow the other, or at a third member it reaches
   quickly, an entry stamped ahead arrives before its stamp. Receivers hold it without refusing it. pe-agree bounds
   a cut's frame by the voters' present plus the tolerance (`Reject::FrameInFuture`), never an entry's stamp [V,
-  cuts.rs]. What bounds such entries is the per-author pending cap: at most `pending_s` (4 s) of the author's rate
-  budget held beyond the final cut. That's 1,020 entries at 60 Hz, 5.7 s of two hands and an edit every frame. An
-  entry stamped ahead is pending for about the lead, plus the target, plus a vote's latency, so a `max_lead` of 3 s
-  fits with room for a vote of up to a second or so.
+  cuts.rs]. What bounds such entries is the per-author pending cap: at most `pending_s` (40 s since the friend test's
+  stopgap, agreement.md 3) of the author's rate budget held beyond the final cut. That's 10,200 entries at 60 Hz,
+  about 57 s of two hands and an edit every frame. An entry stamped ahead is pending for about the lead, plus the
+  target, plus a vote's latency, so a `max_lead` of 3 s fits with ample room (the old four seconds, 5.7 s, left room
+  for a vote of up to a second or so).
 - **Attestations** go out at the stamp too, so a slow member's attestation counts later by up to its lead. `F`
   moves later by at most the lead, and the deadline `D` is at least 44 s after `c` (twice `T_module`, logic.md
   6.2a), far beyond `max_lead`.

@@ -6283,6 +6283,16 @@ pub(crate) mod tests {
         clock: &Arc<dyn FrameClock>,
         hub: &Hub,
     ) -> Vec<(Sim, Arc<FrameSlot>, MemberKey, Arc<std::sync::Mutex<Vec<NetEvent>>>)> {
+        agreeing_pair_with(clock, hub, |_| {})
+    }
+
+    /// [`agreeing_pair`] with each member's agreement settings changed by `f`.
+    #[allow(clippy::type_complexity)]
+    fn agreeing_pair_with(
+        clock: &Arc<dyn FrameClock>,
+        hub: &Hub,
+        f: impl Fn(&mut pe_agree::NodeConfig),
+    ) -> Vec<(Sim, Arc<FrameSlot>, MemberKey, Arc<std::sync::Mutex<Vec<NetEvent>>>)> {
         use pe_agree::{Node, NodeConfig};
         use pe_seams::Pos;
         use pe_seams::agree::{Cut, CutRef};
@@ -6295,7 +6305,8 @@ pub(crate) mod tests {
         for (i, feed) in at.iter().enumerate() {
             let me = keys.key(i);
             let genesis = Cut { at: CutRef { line, height: 0, frame: Frame(0) }, heads: Vec::new() };
-            let config = NodeConfig::new(line, members.clone(), genesis);
+            let mut config = NodeConfig::new(line, members.clone(), genesis);
+            f(&mut config);
             let node = Node::new(config, Box::new(keys.signer(i)), Box::new(keys.clone()), HostTime(0));
             let world = pe_world::preset::ball_pit_with(5, pe_world::BlobStore::default(), Pos::ORIGIN, 8);
             let replica =
@@ -6407,11 +6418,13 @@ pub(crate) mod tests {
     /// held, and once B is back, finality resumes on equal roots within a few seconds: the stand-still doesn't feed
     /// itself. B, behind for the freeze delay (3 s here), says so, and at n = 2 it doesn't freeze (F3 S5, ruling "2"):
     /// the notice comes once, the status says the session confirms late, and it comes down once B has caught up.
+    /// Sized for pe-agree's four-second pending cap, its default until the friend test's stopgap raised it to forty
+    /// (@coordinator-opus), so it pins that: a 20 s stall stays far inside the forty seconds' 10,200.
     #[test]
     fn a_member_stalled_past_the_pending_cap_comes_back_and_finality_resumes() {
         let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
         let hub = Hub::default();
-        let mut pair = agreeing_pair(&clock, &hub);
+        let mut pair = agreeing_pair_with(&clock, &hub, |c| c.pending_s = 4.0);
         let status = Arc::new(pe_render::notices::StatusLine::default());
         for i in 0..2 {
             let (s, slot, me, events) = pair.remove(i);

@@ -880,7 +880,8 @@ fn a_flooding_author_is_held_to_its_budget() {
     let keys = TestKeys::new(8, 3);
     let line = LineId::origin();
     let genesis = Cut { at: CutRef { line, height: 0, frame: Frame(0) }, heads: Vec::new() };
-    let cfg = NodeConfig::new(line, keys.sorted_keys(), genesis);
+    let mut cfg = NodeConfig::new(line, keys.sorted_keys(), genesis);
+    sized(&mut cfg);
     let budget = cfg.rate_budget(60);
     let (burst, cap) = (budget.burst as usize, budget.pending);
     let mut node = Node::new(cfg, Box::new(keys.signer(0)), Box::new(keys.clone()), HostTime(0));
@@ -958,11 +959,33 @@ fn a_revote_in_the_same_view_is_already_voted_and_an_unknown_cut_is_not_votable(
 }
 
 /// One node of three, fed by hand; with its rate burst.
+/// The pending cap these scenarios are sized for: four seconds of the author's rate (1,020 at 60 Hz, 1,920 at
+/// 120 Hz), the default until the friend test's stopgap raised it to forty (@coordinator-opus). Tests of
+/// what happens at and past the cap pin it, so they reach the cap within seconds.
+const SIZED_PENDING_S: f64 = 4.0;
+
+/// Pins the pending cap to [`SIZED_PENDING_S`].
+fn sized(c: &mut NodeConfig) {
+    c.pending_s = SIZED_PENDING_S;
+}
+
+/// The rate budget at `rate_hz` with the pending cap pinned to [`SIZED_PENDING_S`].
+fn sized_budget(rate_hz: u32) -> crate::RateBudget {
+    let mut c = NodeConfig::new(LineId::origin(), Vec::new(), genesis_cut());
+    sized(&mut c);
+    c.rate_budget(rate_hz)
+}
+
 fn lone_node(seed: u64) -> (TestKeys, Node, usize) {
+    lone_node_with(seed, |_| {})
+}
+
+fn lone_node_with(seed: u64, f: impl Fn(&mut NodeConfig)) -> (TestKeys, Node, usize) {
     let keys = TestKeys::new(seed, 3);
     let line = LineId::origin();
     let genesis = Cut { at: CutRef { line, height: 0, frame: Frame(0) }, heads: Vec::new() };
-    let cfg = NodeConfig::new(line, keys.sorted_keys(), genesis);
+    let mut cfg = NodeConfig::new(line, keys.sorted_keys(), genesis);
+    f(&mut cfg);
     let burst = cfg.rate_budget(60).burst as usize;
     let node = Node::new(cfg, Box::new(keys.signer(0)), Box::new(keys.clone()), HostTime(0));
     (keys, node, burst)
@@ -1309,10 +1332,11 @@ fn the_budget_follows_the_worlds_rate() {
     use crate::RateBudget;
     let cfg = NodeConfig::new(LineId::origin(), Vec::new(), genesis_cut());
     let b = |per_s, burst, pending| RateBudget { per_s, burst, pending };
-    assert_eq!(cfg.rate_budget(30), b(150.0, 75, 600), "30 Hz: the floors");
-    assert_eq!(cfg.rate_budget(60), b(255.0, 127, 1_020));
-    assert_eq!(cfg.rate_budget(90), b(367.5, 183, 1_470));
-    assert_eq!(cfg.rate_budget(120), b(480.0, 240, 1_920));
+    // The pending cap is forty seconds of the rate, the friend test's stopgap (@coordinator-opus).
+    assert_eq!(cfg.rate_budget(30), b(150.0, 75, 6_000), "30 Hz: the rate's and the burst's floors");
+    assert_eq!(cfg.rate_budget(60), b(255.0, 127, 10_200));
+    assert_eq!(cfg.rate_budget(90), b(367.5, 183, 14_700));
+    assert_eq!(cfg.rate_budget(120), b(480.0, 240, 19_200));
 }
 
 /// One change to a node's settings.
@@ -1450,11 +1474,12 @@ fn a_flood_split_over_two_chains_cannot_starve_two_hands_per_frame() {
 
 fn flood_run(two_chains: bool) {
     // Member 3 submits twice its budget every frame at 120 Hz (8 entries a frame); the others send two hands each.
-    // Peers refuse the flood beyond the budget, never an honest entry, and the honest entries all become final.
+    // Peers refuse the flood beyond the budget, never an honest entry, and the honest entries all become final. The
+    // pending cap is pinned (`SIZED_PENDING_S`), so the flood fills it and its queue within the run.
     let rate = 120;
-    let budget = NodeConfig::new(LineId::origin(), Vec::new(), genesis_cut()).rate_budget(rate);
+    let budget = sized_budget(rate);
     let flood = (2.0 * budget.per_s / rate as f64).ceil() as u32;
-    let mut s = Sim::new(4, 77);
+    let mut s = Sim::with(4, 77, sized);
     s.clock = Clock(rate);
     s.per_frame = vec![Some((2, 0)), Some((2, 0)), Some((2, 0)), Some((flood, 0))];
     s.flooder = Some(3);
@@ -1523,7 +1548,8 @@ fn stall_run_seeded(stall_ms: i64, run_ms: i64, seed: u64) -> (Sim, [usize; 4], 
 
 fn stall_run_with(stall_ms: i64, run_ms: i64, seed: u64, paced: bool) -> (Sim, [usize; 4], Option<i64>) {
     let rate = 120;
-    let mut s = Sim::new(4, seed);
+    // Sized for the four-second pending cap: a 10 s stall's 2,400 entries overflow its 1,920.
+    let mut s = Sim::with(4, seed, sized);
     if !paced {
         // Overflow refusals are expected from an unpaced author's long stall: counted, not failed on.
         s.unpaced = Some(0);
@@ -1857,7 +1883,7 @@ fn a_stall_of_25_s_drops_an_honest_authors_overflow_without_blame() {
     // 994 stall drops. In both, 2,584 of member 0's entries (stamps from 14.8 s on; 2,503 with K8 too) end void as
     // Late: the overflow's entries come back by range only after the cuts have passed their stamps. That is not this
     // fix's; it is the same with or without it (a known prototype limit, @coordinator-opus).
-    let mut s = Sim::new(2, 61);
+    let mut s = Sim::with(2, 61, sized);
     s.per_frame = vec![Some((2, 0)); 2];
     s.unpaced = Some(0);
     s.run(3_000);
@@ -1887,9 +1913,9 @@ fn an_outage_allowance_is_the_silence_at_the_authors_rate_and_no_more() {
     // tokens (refilled over the silence), 2 s x 255/s less that burst = 383 more on the allowance, the queue takes its cap, and the rest (packed into fewer
     // stamps than the rate allows) is refused as before. Then entries stamped after the mark get no allowance.
     use crate::codec::{Wire, encode};
-    let (keys, mut node, _) = lone_node(8);
+    let (keys, mut node, _) = lone_node_with(8, sized);
     let clock = Clock(60);
-    let budget = NodeConfig::new(LineId::origin(), keys.sorted_keys(), genesis_cut()).rate_budget(60);
+    let budget = sized_budget(60);
     let (burst, cap) = (budget.burst as usize, budget.pending);
     let allowance = (2.0 * budget.per_s - budget.burst as f64).ceil() as usize;
     let _ = node.tick(HostTime(0), &clock);
@@ -1984,7 +2010,8 @@ fn an_author_sending_through_a_relay_while_silent_on_the_link_gets_no_allowance(
 /// sim and how long after the flush member 1 still had member 0's entries waiting for their budget (ms, sampled every
 /// 10 ms up to 3 s).
 fn outage_flush_run(dark_ms: i64, seed: u64) -> (Sim, i64) {
-    let mut s = Sim::new(2, seed);
+    // Sized for the four-second pending cap: the outage allowance is at most the cap (1,020).
+    let mut s = Sim::with(2, seed, sized);
     s.per_frame = vec![Some((2, 0)); 2];
     s.floored = Some(0);
     s.run(3_000);
@@ -2053,7 +2080,11 @@ fn a_25_second_outage_at_the_hand_floor_voids_nothing_and_blames_no_one() {
 /// It defers them and takes them in as finality frees slots, seconds after they arrived. Returns the sim, the largest
 /// lateness member 1 reported on member 0's chain while it was behind, in frames, and the most entries it deferred.
 fn deferral_run(behind_ms: i64, seed: u64) -> (Sim, i64, usize) {
-    let mut s = Sim::new(2, seed);
+    deferral_run_with(behind_ms, seed, sized)
+}
+
+fn deferral_run_with(behind_ms: i64, seed: u64, f: impl Fn(&mut NodeConfig)) -> (Sim, i64, usize) {
+    let mut s = Sim::with(2, seed, f);
     s.per_frame = vec![Some((2, 0)); 2];
     // pe-app's pacing: while backlogged, hands go on at the 30 Hz floor, never stop (F3 S1).
     s.floored = Some(0);
@@ -2097,6 +2128,28 @@ fn a_receivers_own_deferral_is_no_lateness_of_the_author() {
 }
 
 #[test]
+fn at_the_default_pending_cap_a_member_12_s_behind_defers_none_of_the_others_entries() {
+    // The friend test's stopgap (@coordinator-opus, agreed with @world-chunks): the run
+    // above at the default pending cap, forty seconds of the author's rate (10,200 at 60 Hz). With F3 S2 member 1's
+    // final cut trails it by its lag, so member 0's entries beyond that cut come to about the lag at member 0's rate
+    // (12 s at 120 a second, about 1,440): past the four seconds' 1,020, at which member 1 deferred them (the run
+    // above), and well inside 10,200, so member 1 holds every one as it arrives.
+    let (s, _, deferred) = deferral_run_with(12_000, 81, |_| {});
+    let late = s.voids(1).iter().filter(|v| v.1 == VoidReason::Late && s.submitted[0].contains(&v.0)).count();
+    eprintln!(
+        "default cap, member 1 12 s behind: deferred up to {deferred} of member 0's entries; {late} void as late"
+    );
+    assert_eq!(deferred, 0, "member 1 deferred member 0's entries under the default cap");
+    assert_eq!(late, 0, "member 0's entries voided as late at member 1");
+    for i in 0..2 {
+        for e in &s.events[i] {
+            assert!(!matches!(e, AgreeEvent::Refused { .. } | AgreeEvent::Fault(_)), "member {i}: {e:?}");
+        }
+    }
+    s.assert_same_final_log();
+}
+
+#[test]
 fn finality_recovers_when_a_slow_member_returns_and_both_sides_defer() {
     // R3' rerun on main 01c77bfa (@engine-architect, coordinator): with (c)'s cap hold,
     // finality never came back after B caught up. Both leaders capped their cuts at the first stamp waiting in their own
@@ -2105,7 +2158,7 @@ fn finality_recovers_when_a_slow_member_returns_and_both_sides_defer() {
     // at full rate, member 0 at the 30 Hz floor) while member 1 is 20 s behind, then member 1 returns.
     // [V, release, seed 81] With the hold: final frame 162 for good. Without it: within 600 frames of the present
     // about 8 s after the return (cuts void the deferred entries as late: agreement.md's known limit).
-    let mut s = Sim::new(2, 81);
+    let mut s = Sim::with(2, 81, sized);
     s.per_frame = vec![Some((2, 0)); 2];
     s.floored = Some(0);
     s.unpaced = Some(1);
@@ -2508,7 +2561,7 @@ fn a_claimed_backlog_never_sent_holds_cuts_back_once_and_only_for_the_wait() {
     // crashes at 3 s; every other member is told (as by a vote's heads) that its chain reaches far beyond what they
     // hold. Their cuts are capped at its last held stamp for at most the wait (the pending cap at the author's rate
     // plus 1 s: 1,920 / 480 + 1 = 5 s at 120 Hz), then go on, and the claim doesn't hold them back again.
-    let mut s = Sim::new(4, 91);
+    let mut s = Sim::with(4, 91, sized);
     s.clock = Clock(120);
     s.per_frame = vec![Some((2, 0)); 4];
     s.run(3_000);
@@ -3294,7 +3347,11 @@ fn a_stalled_uplink_still_paces_on_a_slow_link() {
 /// The no-lead stand-still run (B -> A +1.2 s, no lead) for `seed`, with `f` applied to each node's configuration: the
 /// longest the final frame stood still after 5 s, and A's paced and near-cap frames.
 fn no_lead_stand_still(seed: u64, f: impl Fn(&mut NodeConfig)) -> (i64, usize, usize) {
-    let mut s = Sim::with(2, seed, f);
+    // Sized for the four-second pending cap, which A came near about 8.5 s in before S2.
+    let mut s = Sim::with(2, seed, |c| {
+        sized(c);
+        f(c)
+    });
     s.per_frame = vec![Some((2, 0)); 2];
     s.slow_link = Some((1, 0, 1_200, 0));
     let (mut last, mut since, mut worst) = (Frame(0), 5_000, 0);
