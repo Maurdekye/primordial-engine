@@ -586,7 +586,7 @@ which fixes the origin's role deliberately.
       is too big for Box3D is simplified to 44 vertices: Box3D keeps at most 128 edges per hull, and a hull of
       triangles with V vertices has 3V − 6 edges. pe-physics builds every hull at 64 vertices first, and again at
       44 only if that build is refused, so every hull that built before builds unchanged, and the blob's 64-point
-      limit is unchanged [V @vdw-physics: round clouds of 48 to 1,024 points, all refused before, build at 44; 8 to
+      limit is unchanged [V @vdw-physics: round clouds of 45 to 1,024 points, all refused before, build at 44; 8 to
       32 points as before] (@coordinator-opus, CCD part 2 E).
 - **The bullet flag, `Body.bullet`** (the user's rulings answers 2 and
   4; the method @fable-reviewer's with @astra-deliberator; [I, draft for
