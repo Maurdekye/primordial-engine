@@ -44,6 +44,8 @@ fi
 feat=()
 [ -z "$features" ] || feat=(--features "$features")
 cargo_home=$(cygpath -w "${CARGO_HOME:-$USERPROFILE/.cargo}")
+# RUSTFLAGS replaces every cargo config's build.rustflags and target.*.rustflags: none are set today [V,
+# @design-reviewer's N1]. A flag added there later must be added here too, or the kit builds without it.
 RUSTFLAGS="--remap-path-prefix=$cargo_home=/cargo" cargo build --release --locked -p pe-app "${feat[@]}"
 target=$(cargo metadata --format-version 1 --no-deps | python -c "import json,sys; print(json.load(sys.stdin)['target_directory'])")
 short=${sha:0:12}${features:+-${features//[ ,\/]/-}}
@@ -53,9 +55,10 @@ mkdir -p "$out"
 cp "$target/release/pe-app.exe" "$out/"
 profile="$(cygpath -w "$USERPROFILE")\\"
 # No -i: Git Bash's grep -i aborts on binary input (the team's scrub note); cygpath gives the profile's own case.
-named=$(grep -a -c -F "$profile" "$out/pe-app.exe" || true)
+# The profile, and the bare user name for any other spelling (forward slashes, another case; @design-reviewer's L1).
+named=$(grep -a -c -F -e "$profile" -e "$USERNAME" "$out/pe-app.exe" || true)
 if [ "${named:-0}" != 0 ]; then
-  echo "build-windows: pe-app.exe still names $profile (on $named lines)" >&2
+  echo "build-windows: pe-app.exe still names $profile or $USERNAME (on $named lines)" >&2
   exit 2
 fi
 here=$(cd "$(dirname "$0")" && pwd)

@@ -63,11 +63,16 @@ if [[ $features =~ (^|[[:space:],])(pe-app/)?steam-audio-trial($|[[:space:],]) ]
 fi
 feat=()
 [ -z "$features" ] || feat=(--features "$features")
+# RUSTFLAGS replaces every cargo config's build.rustflags and target.*.rustflags: none are set today [V,
+# @design-reviewer's N1]. A flag added there later (a target-cpu, a --cfg) must be added here too, or the kit builds
+# without it.
 CARGO_TARGET_DIR=$base/target RUSTFLAGS="--remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo" \
   nice -n 19 cargo build --release --locked -p pe-app -j "$jobs" "${feat[@]}"
-named=$(grep -a -c -F "$HOME/" "$base/target/release/pe-app" || true)
+# The home folder, and the bare user name for any other spelling (@design-reviewer's L1): a false positive only fails
+# the build.
+named=$(grep -a -c -F -e "$HOME/" -e "$USER" "$base/target/release/pe-app" || true)
 if [ "${named:-0}" != 0 ]; then
-  echo "build-linux: pe-app still names $HOME/ (on $named lines)" >&2
+  echo "build-linux: pe-app still names $HOME/ or $USER (on $named lines)" >&2
   exit 2
 fi
 
