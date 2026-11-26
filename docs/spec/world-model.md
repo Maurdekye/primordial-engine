@@ -1456,8 +1456,10 @@ bytes. `H(ctx ‖ …)` and the integer conventions are 6.2's; `lp(b)` is a `u64
   8. the **blob-shapes** setting: a byte 0 or 1, anything else refused, as the marker's is. It gates both meshes
      and hulls, the shapes built from simulation blobs (3.2): on, pe-replica builds them; off, each is
      `Unbuildable::Shape`. Set when the world is founded (`World::set_blob_shapes`, a trusted genesis call like
-     gravity's), never by an edit in v1, and off in every preset until joins carry every blob to every machine
-     (@coordinator-opus, after @vdw-physics and @fable-reviewer). Import decodes it
+     gravity's), never by an edit in v1, and off in every preset until the ruled criteria hold: a two-machine run
+     with a mesh body, a join and a repair included; an absent blob handled as its own local reason; and the join
+     transfer within the join limits (@coordinator-opus point 4, after @vdw-physics and
+     @fable-reviewer). Import decodes it
      exactly, like every item: config bytes without it are refused, with no default. When world saves exist,
      "absent means off" is the intended default for a save from before it. **Open point:** before saves exist,
      decide whether the byte stays as a world's real choice or goes once meshes are always on; an item, once

@@ -157,8 +157,9 @@ impl World {
     }
 
     /// Turns the building of meshes and hulls on or off (6.6, config item 8). A trusted call for genesis, like
-    /// gravity's: no edit, input or governance op writes it, and it stays off in every preset until the joins carry
-    /// blobs to every machine.
+    /// gravity's: no edit, input or governance op writes it. It stays off in every preset until the ruled criteria
+    /// hold (6.6, config item 8): a two-machine run with a mesh body, a join and a repair included; an absent blob
+    /// handled as its own local reason; and the join transfer within the join limits.
     pub fn set_blob_shapes(&mut self, on: bool) {
         self.blob_shapes = on;
     }
