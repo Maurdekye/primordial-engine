@@ -556,6 +556,8 @@ pub struct Sim {
     slow_frame_shown: u32,
     /// The status line's message last logged, its numbers blanked ([`status_kind`]); `None` while it is down.
     status_logged: Option<String>,
+    /// The tick trace's `others_*`: every frame up to this one is counted ([`Sim::others_due`]).
+    others_counted: u64,
     /// The local player's locomotion ([`Sim::with_moves`]), and its newest sample with the stamp it was read for.
     moves: Option<Arc<dyn MoveFeed>>,
     last_move: Option<(Frame, MoveInput)>,
@@ -854,6 +856,7 @@ impl Sim {
             slow_frame: None,
             slow_frame_shown: 0,
             status_logged: None,
+            others_counted: 0,
             moves: None,
             last_move: None,
             catching_up: false,
@@ -1413,6 +1416,30 @@ impl Sim {
         self.local.as_ref().map(|l| l.chain.me())
     }
 
+    /// For the tick trace: the other members' entries agreement holds, by class, at each frame not counted yet that
+    /// is final or a second old, whichever comes first (each frame once). A final frame's entries are its cut's, so
+    /// none is in flight; a second on, an entry in flight has arrived. So a frame short of another member's entries is
+    /// one this member hadn't admitted by then: deferred at its pending cap, fetched late, or never sent
+    /// ([`crate::trace`]). Called before the tick's finalize, which lets agreement trim the frames below the newest
+    /// agreed cut (@design-reviewer's M1 on 34372233), and from what agreement still keeps, so a joiner starts at its
+    /// import, not at frame 1.
+    fn others_due(&mut self, p: Frame) -> [u64; 4] {
+        let a_second_old = p.0.saturating_sub(u64::from(self.clock.rate_hz().max(1)));
+        // A cut at frame F covers the entries stamped below it.
+        let final_below = self.agree.final_cut().map_or(0, |fc| fc.cut.at.frame.0.saturating_sub(1));
+        let upto = a_second_old.max(final_below);
+        self.others_counted = self.others_counted.max(self.agree.kept_from().0.saturating_sub(1));
+        let me = self.local_member();
+        let mut n = [0u64; 4];
+        for f in self.others_counted + 1..=upto {
+            for e in self.agree.entries_at(Frame(f)).unwrap_or(&[]).iter().filter(|e| Some(e.entry.author) != me) {
+                n[e.entry.class as usize] += 1;
+            }
+        }
+        self.others_counted = self.others_counted.max(upto);
+        n
+    }
+
     /// The local player's chain and the seq of its last entry agreement took, if there is a local player.
     pub fn local_head(&self) -> Option<(ChainId, u64)> {
         self.local.as_ref().map(|l| l.chain.head())
@@ -1835,6 +1862,8 @@ impl Sim {
             self.notices.push(format!("FAULT: the test fault fires at the end of frame {} (--arm-fault)", at.0));
         }
         let stepped_before = self.replica.frame();
+        // The trace's `others_*`, before drive: its finalize lets agreement trim the frames below the agreed cut.
+        let others = if traced.is_some() && !self.importing() { self.others_due(p) } else { [0; 4] };
         let report = if self.importing() { DriveReport::default() } else { self.drive(ps) };
         if !self.importing() {
             self.watch_lag(p, now);
@@ -1970,6 +1999,7 @@ impl Sim {
         let tick = phases::since(tick_start);
         self.stats.phases.tick_ns += tick;
         self.stats.phases.longest_tick_ns = self.stats.phases.longest_tick_ns.max(tick);
+        let pending = if traced.is_some() { self.agree.stats().pending_entries } else { 0 };
         if let (Some(t), Some(before)) = (self.trace.as_mut(), traced) {
             let at_end = crate::trace::Tick {
                 p,
@@ -1989,6 +2019,8 @@ impl Sim {
                 thinned: self.stats.hands_floor_thinned,
                 published: self.stats.published,
                 out_of_reach: self.stats.hands_out_of_reach,
+                others,
+                pending,
             };
             t.record(&before, &self.stats.phases, self.stats.received, at_end);
         }
@@ -4421,6 +4453,18 @@ pub(crate) mod tests {
         hub: &Hub,
         status: &Arc<pe_render::notices::StatusLine>,
     ) -> Vec<(Sim, Arc<FrameSlot>, Vec<String>)> {
+        hub_session(n, clock, hub, status, Some(Frame(60)))
+    }
+
+    /// [`half_speed_session`] with the last member at half speed from `half_from`, or at full speed with `None`.
+    #[allow(clippy::type_complexity)]
+    fn hub_session(
+        n: usize,
+        clock: &Arc<dyn FrameClock>,
+        hub: &Hub,
+        status: &Arc<pe_render::notices::StatusLine>,
+        half_from: Option<Frame>,
+    ) -> Vec<(Sim, Arc<FrameSlot>, Vec<String>)> {
         use pe_agree::{Node, NodeConfig};
         use pe_seams::test_util::TestKeys;
         let keys = TestKeys::new(11, n as u32);
@@ -4437,7 +4481,7 @@ pub(crate) mod tests {
             let inner =
                 crate::world::ball_pit_replica(world, &members, me, RATE, clock.clone(), runner()).expect("a replica");
             let damaged = Arc::new(std::sync::atomic::AtomicU64::new(0));
-            let half_from = (i == n - 1).then_some(Frame(60));
+            let half_from = half_from.filter(|_| i == n - 1);
             let replica = Box::new(Damaged {
                 inner,
                 at: None,
@@ -5942,6 +5986,57 @@ pub(crate) mod tests {
         assert_eq!(text.lines().filter(|l| l.starts_with("long ")).count(), 71, "{text}");
         let last = text.lines().rfind(|l| l.starts_with("long ")).expect("a long line");
         assert!(last.contains(" p=70 ") && last.contains(" frame=71 "), "{last}");
+        for sec in text.lines().filter(|l| l.starts_with("sec ")) {
+            assert!(sec.contains(" others_input=0 others_edit=0 others_other=0 "), "alone, no other member: {sec}");
+        }
+    }
+
+    /// The trace's `others_*` at n = 2 (crate::trace): member 0's world holds member 1's hand entries, counted once
+    /// each, with both members at full speed (finality well under a second behind, so a frame is counted at its
+    /// finality, before agreement trims it: @design-reviewer's M1 on 34372233) and with member 1 at half speed
+    /// (finality more than a second behind, so a frame is counted a second on). That it never counts its own is the
+    /// solo trace test's.
+    #[test]
+    fn a_tick_trace_counts_the_other_member_s_entries_at_full_and_half_speed() {
+        for half_from in [None, Some(Frame(60))] {
+            let exe = std::env::current_exe().expect("the test executable");
+            let name = format!("pe-sim-trace-others-{}-{}.txt", std::process::id(), half_from.is_some());
+            let path = exe.parent().expect("its folder").join(name);
+            let _ = std::fs::remove_file(&path);
+            let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+            let hub = Hub::default();
+            let status = Arc::new(pe_render::notices::StatusLine::default());
+            let mut sims = hub_session(2, &clock, &hub, &status, half_from);
+            let (s0, slot0, n0) = sims.remove(0);
+            let trace = crate::trace::TickTrace::create(&path, 1_000_000, RATE.hz()).expect("a trace");
+            sims.insert(0, (s0.with_tick_trace(trace), slot0, n0));
+            for f in 1..240u64 {
+                let now = clock.host_time_of(Frame(f));
+                hub.now.store(now.0, Ordering::SeqCst);
+                for (s, _, _) in sims.iter_mut() {
+                    s.tick(now).expect("ticked");
+                }
+            }
+            let theirs = sims[1].0.stats().inputs;
+            drop(sims);
+            let text = std::fs::read_to_string(&path).expect("the trace");
+            let _ = std::fs::remove_file(&path);
+            let field = |l: &str, k: &str| -> u64 {
+                let at = l.find(&format!(" {k}=")).unwrap_or_else(|| panic!("{k} in {l}")) + k.len() + 2;
+                l[at..].split(' ').next().and_then(|v| v.parse().ok()).unwrap_or_else(|| panic!("{k} in {l}"))
+            };
+            let secs: Vec<&str> = text.lines().filter(|l| l.starts_with("sec ")).collect();
+            assert_eq!(secs.len(), 4, "{half_from:?}: {text}");
+            for sec in &secs[2..] {
+                assert!(field(sec, "others_input") > 0, "{half_from:?}: member 1's hand entries: {sec}");
+                assert!(field(sec, "inputs") > 0 && field(sec, "pending") > 0, "{half_from:?}: {sec}");
+            }
+            // Each frame once: never more of member 1's Input entries than it made.
+            let counted: u64 = secs.iter().map(|l| field(l, "others_input")).sum();
+            assert!(counted <= theirs, "{half_from:?}: counted {counted}, member 1 made {theirs}");
+            // And most of them: all but the frames not yet final or a second old at the end (about the last second).
+            assert!(2 * counted >= theirs, "{half_from:?}: counted only {counted} of member 1's {theirs}");
+        }
     }
 
     #[test]
