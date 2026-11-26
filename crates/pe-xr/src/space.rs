@@ -18,9 +18,11 @@
 //! The layer's views stay the runtime's own: the compositor needs them in its space. Only the drawn world moves.
 //!
 //! A change measured neither way goes through uncorrected. The hands then mark the frame discontinuous, but only
-//! if the raw head actually jumped between that frame and the one before it ([`head_jumped`]). WiVRn sends a STAGE
-//! change about 3.7 times a second with no valid pose, which the head can't measure; without that test, every one
-//! of them marked the hands (the friend test's first WiVRn run: 486 in 132 s, all unmeasured, @coordinator-opus).
+//! if the raw head actually jumped across the last two frames ([`head_jumped`], judged for each of the two pairs:
+//! a runtime that switches the space during `wait_frame` puts the jump one pair back, @chunks-reviewer's M1). WiVRn
+//! sends a STAGE change about 3.7 times a second with no valid pose, which the head can't measure; without that test,
+//! every one of them marked the hands (the friend test's first WiVRn run: 486 in 132 s, all unmeasured,
+//! @coordinator-opus).
 
 use std::collections::VecDeque;
 
@@ -113,6 +115,10 @@ pub struct SpaceCorrection {
     /// The last raw head located, with its time: it measures a change only if it was located before the change time
     /// and within [`MAX_HEAD_GAP_NS`] of it (@chunks-reviewer's L1).
     last_head: Option<(HostTime, RigPose)>,
+    /// The raw head before `last_head`. Events are polled before `wait_frame` and the head is located after it, so a
+    /// space switched during frame N's wait shows as a jump between heads N-1 and N, and the change applies at N+1:
+    /// an unmeasured change looks at both pairs (@chunks-reviewer's M1 on 0dc2babe).
+    prev_head: Option<(HostTime, RigPose)>,
     /// The latest applied change's time and the correction before it: a reading located before that time (a hand
     /// read at `now`, earlier than the display time) still takes the old correction (@chunks-reviewer's L2). Only the
     /// latest: with two changes due in one frame, a reading between their times gets the correction between them for
@@ -134,6 +140,7 @@ impl SpaceCorrection {
             c: RigPose::IDENTITY,
             pending: VecDeque::new(),
             last_head: None,
+            prev_head: None,
             before: None,
             mode,
             counters: SpaceCounters::default(),
@@ -177,7 +184,11 @@ impl SpaceCorrection {
             let note = |measured| ChangeNote { due_before_ns: at.0 - ch.change_time.0, measured };
             let Some(jump) = jump else {
                 self.counters.unmeasured += 1;
-                let jumped = head_jumped(self.last_head, at, raw_head);
+                let jumped = head_jumped(self.last_head, at, raw_head)
+                    || match self.last_head {
+                        Some((t1, h1)) => head_jumped(self.prev_head, t1, Some(h1)),
+                        None => true,
+                    };
                 if jumped {
                     out.unmeasured = true;
                 } else {
@@ -210,6 +221,7 @@ impl SpaceCorrection {
         // A head only counts as "before" a change while one is still pending: it's raw, in the space it was located
         // in, and the next change's measurement compares it with the first head after.
         if let Some(h) = raw_head {
+            self.prev_head = self.last_head;
             self.last_head = Some((at, h));
         }
         out
@@ -439,18 +451,21 @@ mod tests {
         let walked = pose([0.32, 1.6, 0.2], 21.0); // 2 cm and 1° in a frame: motion
         let mut still = SpaceCorrection::default();
         still.frame(HostTime(0), Some(head));
+        still.frame(HostTime(HEAD_STEP_NS), Some(head));
         still.on_change(SpaceChange { change_time: HostTime(0), previous: None });
-        let a = still.frame(HostTime(HEAD_STEP_NS), Some(walked));
+        let a = still.frame(HostTime(2 * HEAD_STEP_NS), Some(walked));
         assert!(!a.unmeasured);
-        let note = ChangeNote { due_before_ns: HEAD_STEP_NS, measured: Measured::Unmeasured { head_jumped: false } };
+        let note =
+            ChangeNote { due_before_ns: 2 * HEAD_STEP_NS, measured: Measured::Unmeasured { head_jumped: false } };
         assert_eq!(a.first, Some(note));
         assert_eq!(still.counters, SpaceCounters { by_pose: 0, by_head: 0, unmeasured: 1, unmeasured_still: 1 });
         assert_eq!(still.correction(), RigPose::IDENTITY);
 
         let mut jumped = SpaceCorrection::default();
         jumped.frame(HostTime(0), Some(head));
+        jumped.frame(HostTime(HEAD_STEP_NS), Some(head));
         jumped.on_change(SpaceChange { change_time: HostTime(0), previous: None });
-        let b = jumped.frame(HostTime(HEAD_STEP_NS), Some(compose(inverse(jump()), head)));
+        let b = jumped.frame(HostTime(2 * HEAD_STEP_NS), Some(compose(inverse(jump()), head)));
         assert!(b.unmeasured);
         assert_eq!(b.first.map(|n| n.measured), Some(Measured::Unmeasured { head_jumped: true }));
         assert_eq!((jumped.counters.unmeasured, jumped.counters.unmeasured_still), (1, 0));
@@ -503,13 +518,17 @@ mod tests {
     fn a_head_from_after_the_change_or_long_before_it_measures_nothing() {
         let head_old = pose([0.3, 1.6, 0.2], 20.0);
         let head_new = compose(inverse(jump()), head_old);
-        // Polled a frame late: the last head was already located in the new space, at the change time.
+        // Switched during frame N's wait_frame, polled at N+1 (@chunks-reviewer's M1): head N is already in the new
+        // space, so the head can't measure it, and heads N and N+1 agree. The jump is between N-1 and N, and the
+        // hands are marked for it.
+        let f = HEAD_STEP_NS;
         let mut late = SpaceCorrection::default();
-        late.frame(HostTime(1_000), Some(head_new));
-        late.on_change(SpaceChange { change_time: HostTime(1_000), previous: None });
-        // Measured neither way; the head didn't jump between the two frames (it already had), so no hand is marked.
-        assert!(!late.frame(HostTime(2_000), Some(head_new)).unmeasured, "no head before the change time");
-        assert_eq!((late.counters.unmeasured, late.counters.unmeasured_still), (1, 1));
+        late.frame(HostTime(0), Some(head_old));
+        late.frame(HostTime(f), Some(head_new));
+        late.on_change(SpaceChange { change_time: HostTime(f / 2), previous: None });
+        let a = late.frame(HostTime(2 * f), Some(head_new));
+        assert!(a.unmeasured, "no head before the change time, and the jump one pair back is marked");
+        assert_eq!((late.counters.unmeasured, late.counters.unmeasured_still), (1, 0));
         // The headset was off for a second: the player may have walked.
         let mut stale = SpaceCorrection::default();
         stale.frame(HostTime(0), Some(head_old));

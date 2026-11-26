@@ -195,8 +195,10 @@ FOCUSED, STOPPING, LOSS_PENDING and EXITING. What each state means for the engin
     keeps the old one (@chunks-reviewer's L2).
   - **Unmeasurable** (no valid pose and no head on one side): the jump goes through. If the raw head jumped at it,
     pe-xr bumps the discontinuity counter in every hand sample (section 5.1), so it is never taken as a throw.
-    A jump means it moved more than 5 cm or turned more than 3° between this frame and the one before, per 90 Hz
-    frame between them [I]. A head missing on either side, or more than 0.5 s old, counts as a jump.
+    A jump means it moved more than 5 cm or turned more than 3° per 90 Hz frame, judged for each of the last two
+    frame pairs [I]. Events are polled before `wait_frame` and the head is located after it, so a space switched
+    during a wait shows one pair back (@chunks-reviewer's M1). A head missing on either side, or more than 0.5 s
+    old, counts as a jump.
     Otherwise nothing moved and nothing is marked (`unmeasured_still`). WiVRn sends a STAGE change about 3.7 times
     a second with no valid pose. In the friend test's first WiVRn run, all 486 changes in 132 s were unmeasured,
     and each one marked the hands (@coordinator-opus).
