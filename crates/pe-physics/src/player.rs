@@ -600,9 +600,14 @@ impl PhysicsWorld {
                 let Some(&body) = self.bodies.get(&other) else { continue };
                 let there = body_get_transform(&self.world, body).p;
                 let Some((d, len)) = overlap(offset_pos(feet, out), there) else { continue };
-                // An overlap already there at the frame's start is one both players see, and each takes half of it;
-                // one this move made (walking into a standing player) is this player's alone (@vdw-physics's M2).
-                let share = if overlap(start, there).is_some() { 0.5 } else { 1.0 };
+                // An overlap already there at the frame's start is one both players see, and each takes half of it:
+                // this player aims to stand half that overlap further off, measured from the other's frame-start pose,
+                // the same on every pass (@vdw-physics's M2; @chunks-reviewer on 3bd6f768: a share applied per pass
+                // compounds). One this move made (walking into a standing player) is this player's alone.
+                let target = overlap(start, there).map_or(reach, |(_, ls)| 0.5 * (reach + ls));
+                if len >= target {
+                    continue;
+                }
                 // Two on one spot step apart by id, the lower along +x and the higher along -x: each reads the other
                 // where it stood at the frame's start, so a shared direction would carry both off together
                 // (@chunks-reviewer's M1 on a306b59c).
@@ -611,7 +616,7 @@ impl PhysicsWorld {
                     (false, true) => (1.0, 0.0),
                     (false, false) => (-1.0, 0.0),
                 };
-                let push = (reach - len) * share;
+                let push = target - len;
                 out = add(out, Vec3 { x: dir_x * push, y: 0.0, z: dir_z * push });
             }
             if out == before {
