@@ -96,7 +96,7 @@ use crate::hands;
 use crate::logic::{ScriptCounts, ScriptEvent, ScriptRunner, event_kind};
 use crate::players;
 use crate::ring::{Policy, Ring};
-use crate::world::{BodyStateRow, HandRow, PhysicsSettings, ShapePart, ShapeRow, WorldModel, apply_order};
+use crate::world::{BodyStateRow, HandRow, PhysicsSettings, ShapePart, ShapeRow, Unbuildable, WorldModel, apply_order};
 
 /// The replica's settings. Only `cut_every` follows from world state (the world's cut interval); the rest are local.
 #[derive(Clone)]
@@ -330,6 +330,8 @@ pub struct ReplicaImpl<W: WorldModel> {
     scratch_checks: BTreeMap<Frame, BTreeMap<ObjectId, Option<BodyDigest>>>,
     /// What the checks found so far ([`InteractionChecks`]).
     interactions: InteractionChecks,
+    /// The bodies a live step couldn't build for want of a blob ([`AbsentBlobs`]).
+    absent: AbsentBlobs,
     /// The change records made since the last publication, in the order they were made: the next view's `changes`
     /// (S5).
     pending: Vec<StepRecord>,
@@ -430,6 +432,31 @@ impl InteractionChecks {
     pub const RECENT: usize = 64;
 }
 
+/// The builds that met a mesh's or a hull's blob this machine's blob store lacks ([`Unbuildable::BlobAbsent`];
+/// @coordinator-opus, point 2): a local condition, not the world's (world-model.md 3.4), so counted
+/// apart from the faults, which are the same on every machine. Counted at the replica's start and in live steps, once
+/// per try, as faults are; a re-step off the live history counts none. Local counts, never world state.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AbsentBlobs {
+    /// Builds that met one.
+    pub count: u64,
+    /// The newest, at most [`AbsentBlobs::RECENT`], oldest first: the frame, the body and the blob.
+    pub recent: VecDeque<(Frame, ObjectId, Hash)>,
+}
+
+impl AbsentBlobs {
+    /// How many builds [`AbsentBlobs::recent`] keeps.
+    pub const RECENT: usize = 64;
+
+    fn note(&mut self, frame: Frame, body: ObjectId, blob: Hash) {
+        self.count += 1;
+        if self.recent.len() == Self::RECENT {
+            self.recent.pop_front();
+        }
+        self.recent.push_back((frame, body, blob));
+    }
+}
+
 /// What re-steps off the live history (`root_at_cut`'s scratch) counted.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Scratch {
@@ -444,16 +471,21 @@ pub struct Scratch {
 
 impl<W: WorldModel> ReplicaImpl<W> {
     /// A replica of `world` at frame 0: a body for each of its physical objects, in id order, in a physics world with
-    /// the world's gravity, origin and rate. Each physical object the world model cannot build gets no body and
-    /// counts a fault (2.1).
+    /// the world's gravity, origin and rate. Each physical object the world model cannot build, or whose body the
+    /// physics refuses, gets no body and counts a fault (2.1); one whose blob this machine lacks is counted apart
+    /// ([`AbsentBlobs`]).
     pub fn new(mut world: W, config: ReplicaConfig) -> Result<ReplicaImpl<W>, PhysicsError> {
         world.set_local(config.local);
         let settings = world.settings();
         let mut physics = PhysicsWorld::new(physics_config(config.physics, &settings, settings.rate)?)?;
         let mut unbuilt = 0;
+        let mut absent = AbsentBlobs::default();
         for id in world.physical() {
             match world.body(id) {
-                Ok(Some(row)) => physics.add_body(id, &bodies::desc(&row, settings.origin))?,
+                Ok(Some(row)) => {
+                    unbuilt += u64::from(physics.add_body(id, &bodies::desc(&row, settings.origin)).is_err())
+                }
+                Err(Unbuildable::BlobAbsent { blob }) => absent.note(Frame(0), id, blob),
                 Ok(None) | Err(_) => unbuilt += 1,
             }
         }
@@ -503,6 +535,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
             checks: BTreeMap::new(),
             scratch_checks: BTreeMap::new(),
             interactions: InteractionChecks::default(),
+            absent,
             pending: Vec::new(),
             recorded: BTreeMap::new(),
             unknown_to: Frame(0),
@@ -575,6 +608,21 @@ impl<W: WorldModel> ReplicaImpl<W> {
     /// What the author's checks after its own interactions found (3.4).
     pub fn interaction_checks(&self) -> &InteractionChecks {
         &self.interactions
+    }
+
+    /// The bodies this machine couldn't build for want of a blob ([`AbsentBlobs`]): never part of [`Self::faults`].
+    pub fn absent_blobs(&self) -> &AbsentBlobs {
+        &self.absent
+    }
+
+    /// What one reconcile met: its faults, and in a live step the bodies whose blob this machine lacks.
+    fn reconciled(&mut self, f: Frame, live: bool, done: bodies::Reconciled) {
+        self.faults += u64::from(done.faults);
+        if live {
+            for (body, blob) in done.absent {
+                self.absent.note(f, body, blob);
+            }
+        }
     }
 
     /// How many snapshots the replica holds (4.1): the floor's, `Cv`'s, the finals', the served roots', and those of my
@@ -704,7 +752,8 @@ impl<W: WorldModel> ReplicaImpl<W> {
             }
             ids.push(id);
             if !fx.is_empty() {
-                self.faults += u64::from(bodies::reconcile(&self.world, &mut self.physics, self.origin, &fx.changed));
+                let done = bodies::reconcile(&self.world, &mut self.physics, self.origin, &fx.changed);
+                self.reconciled(f, live, done);
                 for p in &fx.pushes {
                     self.faults += u64::from(bodies::push(&mut self.physics, self.origin, p).is_err());
                 }
@@ -775,7 +824,8 @@ impl<W: WorldModel> ReplicaImpl<W> {
         let out = self.world.logic_stage(f, stage, runner);
         if !out.effects.is_empty() {
             let changed = &out.effects.changed;
-            self.faults += u64::from(bodies::reconcile(&self.world, &mut self.physics, self.origin, changed));
+            let done = bodies::reconcile(&self.world, &mut self.physics, self.origin, changed);
+            self.reconciled(f, live, done);
         }
         self.counters.fp_resets += out.fp_resets;
         if live {
@@ -1895,6 +1945,14 @@ pub(crate) fn bounding_radius_about(shapes: &[ShapePart], about: [f32; 3]) -> f3
             ShapeRow::Sphere { center, radius } => from(center) + radius,
             ShapeRow::Capsule { center1, center2, radius } => from(center1).max(from(center2)) + radius,
             ShapeRow::Box { center, half_extents, .. } => from(center) + len(half_extents),
+            // The farthest corner of the mesh's bounding box, scaled: it sits at the body's origin, unturned.
+            ShapeRow::Mesh { ref mesh, scale } => {
+                let (lo, hi) = mesh.extent();
+                (0..8u8)
+                    .map(|i| from([0, 1, 2].map(|k| scale[k] * if i & (1 << k) == 0 { lo[k] } else { hi[k] })))
+                    .fold(0.0, f32::max)
+            }
+            ShapeRow::Hull { ref points } => points.iter().map(|&q| from(q)).fold(0.0, f32::max),
         })
         .fold(0.0, f32::max)
 }

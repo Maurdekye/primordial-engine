@@ -11,7 +11,7 @@ use box3d_rust::body::{
 };
 use box3d_rust::core::get_length_units_per_meter;
 use box3d_rust::geometry::{Capsule, ShapeType, Sphere, compute_capsule_mass, compute_sphere_mass};
-use box3d_rust::hull::{compute_hull_mass, create_hull, get_hull_points, make_box_hull};
+use box3d_rust::hull::{HullData, compute_hull_mass, create_hull, get_hull_points, make_box_hull};
 use box3d_rust::id::{BodyId, JointId, ShapeId};
 use box3d_rust::joint::{
     JointType, create_distance_joint, create_motor_joint, create_spherical_joint, create_weld_joint, destroy_joint,
@@ -39,7 +39,7 @@ use pe_sim::{SimStore, Transform, WorldTransform};
 
 use crate::config::PhysicsConfig;
 use crate::desc::limits::{MAX_DAMPING, MAX_PUSH, MAX_SIZE, MAX_SPEED};
-use crate::desc::{BodyDesc, BodyKind, Geometry, bounded, position, unit_quat};
+use crate::desc::{BodyDesc, BodyKind, Geometry, ShapeDesc, bounded, position, unit_quat};
 use crate::error::PhysicsError;
 
 pub(crate) fn vec3(v: [f32; 3]) -> Vec3 {
@@ -316,8 +316,89 @@ fn within(v: Vec3, reach: f32) -> Vec3 {
 
 /// The name of a mesh shape's back ([`Geometry::Mesh`]'s `both_sides`): the second Box3D shape, the same triangles
 /// reversed, made right after its front. Box3D keeps shape names in its images (by a hash of the name), so a restored
-/// world knows its backs; a back shares its front's place in [`BodyDesc::shapes`].
+/// world knows its backs; a back shares its front's place in [`BodyDesc::shapes`]. No other shape has a name: if a
+/// shape ever takes its name from the world, that path must refuse this one, or the shape would read as a back
+/// (@design-reviewer's note on CCD part 2 C).
 pub(crate) const BACK_NAME: &str = "pe-physics: the back of the mesh shape before this one";
+
+/// The hull each of `desc`'s shapes needs, built: a box's and a hull's, `None` for the others. A hull that can't be
+/// built refuses ([`PhysicsError::BadHull`]).
+fn hulls_of(desc: &BodyDesc) -> Result<Vec<Option<HullData>>, PhysicsError> {
+    desc.shapes
+        .iter()
+        .map(|shape| match &shape.geometry {
+            Geometry::Box { half_extents: h } => Ok(Some(make_box_hull(h[0], h[1], h[2]).base)),
+            Geometry::Hull { points } => {
+                let points: Vec<Vec3> = points.iter().map(|&p| vec3(p)).collect();
+                create_hull(&points, 64).map(Some).ok_or(PhysicsError::BadHull)
+            }
+            _ => Ok(None),
+        })
+        .collect()
+}
+
+/// A dynamic body with a mesh needs mass from its shapes together (world-model.md 3.2), as Box3D sums it: a shape of
+/// density 0 adds none, and the sum has mass if any shape has. `hulls` are [`hulls_of`]'s. Any other body has nothing
+/// to weigh, and is built as before.
+fn weigh(desc: &BodyDesc, hulls: &[Option<HullData>]) -> Result<(), PhysicsError> {
+    if desc.kind != BodyKind::Dynamic || !desc.has_mesh() {
+        return Ok(());
+    }
+    let mut mass = false;
+    let mut dropped = 0u32;
+    for (shape, hull) in desc.shapes.iter().zip(hulls) {
+        let d = shape.density;
+        let m = match (&shape.geometry, hull) {
+            _ if d == 0.0 => 0.0,
+            (Geometry::Sphere { center, radius }, _) => {
+                compute_sphere_mass(&Sphere { center: vec3(*center), radius: *radius }, d).mass
+            }
+            (Geometry::Capsule { center1, center2, radius }, _) => {
+                let capsule = Capsule { center1: vec3(*center1), center2: vec3(*center2), radius: *radius };
+                compute_capsule_mass(&capsule, d).mass
+            }
+            (Geometry::Mesh { mesh, scale, .. }, _) => {
+                if mesh.is_blob_closed() && !mesh.is_closed() {
+                    dropped += mesh.dropped() as u32;
+                }
+                mesh.mass(*scale, d)
+            }
+            (_, Some(hull)) => compute_hull_mass(hull, d).mass,
+            _ => unreachable!("a box's or a hull's hull is built"),
+        };
+        mass |= m > 0.0;
+    }
+    if mass { Ok(()) } else { Err(PhysicsError::Massless { dropped }) }
+}
+
+/// Whether a [`Geometry::Hull`] of `points` can be built: the shape's own checks (4 to 64 points, each finite and
+/// within the size limit), then the fork's hull builder. For pe-replica, which checks a hull blob's points once, as
+/// the blob gives them, before it places them (world-model.md 3.2): a placed hull its scale flattens too far can still
+/// be refused by [`PhysicsWorld::add_body`].
+pub fn check_hull(points: &[[f32; 3]]) -> Result<(), PhysicsError> {
+    ShapeDesc::new(Geometry::Hull { points: points.to_vec() }).validate()?;
+    let points: Vec<Vec3> = points.iter().map(|&p| vec3(p)).collect();
+    create_hull(&points, 64).map(|_| ()).ok_or(PhysicsError::BadHull)
+}
+
+impl BodyDesc {
+    /// Whether any of its shapes is a mesh.
+    fn has_mesh(&self) -> bool {
+        self.shapes.iter().any(|s| matches!(s.geometry, Geometry::Mesh { .. }))
+    }
+
+    /// [`PhysicsWorld::add_body`]'s mass check, without a world: `Err(Massless)` when this is a dynamic body with a
+    /// mesh whose shapes together have no mass (world-model.md 3.2), or `Err(BadHull)` when it is one and one of its
+    /// hulls can't be built. `Ok` for any other body, unweighed. For pe-replica, which says why such a body can't be
+    /// built (`Unbuildable::Mass`) before it asks for one. A closed mesh's mass is summed once per scale and density
+    /// ([`crate::Mesh::mass`]), so asking again costs little.
+    pub fn check_mass(&self) -> Result<(), PhysicsError> {
+        if self.kind != BodyKind::Dynamic || !self.has_mesh() {
+            return Ok(());
+        }
+        weigh(self, &hulls_of(self)?)
+    }
+}
 
 /// Whether `shape` is a mesh shape's back ([`BACK_NAME`]).
 fn is_back(world: &World, shape: ShapeId) -> bool {
@@ -403,57 +484,18 @@ impl PhysicsWorld {
         self.usable()?;
         let rotation = desc.validate()?;
         // Build hulls first so a bad hull refuses the call before anything is created.
-        let mut hulls = Vec::new();
-        for shape in &desc.shapes {
-            hulls.push(match &shape.geometry {
-                Geometry::Box { half_extents: h } => Some(make_box_hull(h[0], h[1], h[2]).base),
-                Geometry::Hull { points } => {
-                    let points: Vec<Vec3> = points.iter().map(|&p| vec3(p)).collect();
-                    Some(create_hull(&points, 64).ok_or(PhysicsError::BadHull)?)
-                }
-                _ => None,
-            });
-        }
-        let has_mesh = desc.shapes.iter().any(|s| matches!(s.geometry, Geometry::Mesh { .. }));
+        let hulls = hulls_of(desc)?;
+        let has_mesh = desc.has_mesh();
         for shape in &desc.shapes {
             if let Geometry::Mesh { mesh, both_sides: true, .. } = &shape.geometry {
                 mesh.back().ok_or(PhysicsError::BadMesh("Box3D could not build the mesh's back"))?;
             }
         }
-        // A dynamic body with a mesh needs mass from its shapes together (world-model.md 3.2), as Box3D sums it: a
-        // shape of density 0 adds none, and the sum has mass if any shape has. Bodies without a mesh are built as
-        // before.
-        if desc.kind == BodyKind::Dynamic && has_mesh {
-            let mut mass = false;
-            let mut dropped = 0u32;
-            for (shape, hull) in desc.shapes.iter().zip(&hulls) {
-                let d = shape.density;
-                let m = match (&shape.geometry, hull) {
-                    _ if d == 0.0 => 0.0,
-                    (Geometry::Sphere { center, radius }, _) => {
-                        compute_sphere_mass(&Sphere { center: vec3(*center), radius: *radius }, d).mass
-                    }
-                    (Geometry::Capsule { center1, center2, radius }, _) => {
-                        let capsule = Capsule { center1: vec3(*center1), center2: vec3(*center2), radius: *radius };
-                        compute_capsule_mass(&capsule, d).mass
-                    }
-                    (Geometry::Mesh { mesh, scale, .. }, _) => {
-                        if mesh.is_blob_closed() && !mesh.is_closed() {
-                            dropped += mesh.dropped() as u32;
-                        }
-                        mesh.mass(*scale, d)
-                    }
-                    (_, Some(hull)) => compute_hull_mass(hull, d).mass,
-                    _ => unreachable!("hull built above"),
-                };
-                mass |= m > 0.0;
-            }
-            if !mass {
-                return Err(PhysicsError::Massless { dropped });
-            }
-        }
+        weigh(desc, &hulls)?;
         // A body with a mesh has its mass computed once, at its last shape: each update moves the centre of mass, so
-        // a body without one keeps Box3D's update at every shape, bit for bit as before.
+        // a body without one keeps Box3D's update at every shape, bit for bit as before. Box3D's update also sets the
+        // body's centre and its extents, which sleeping and continuous collision read, so for a body with a mesh those
+        // too are set once, from all its shapes, at the last (@design-reviewer's N2 on CCD part 2 C).
         let last = desc.shapes.len().wrapping_sub(1);
 
         let mut def = default_body_def();

@@ -6,7 +6,7 @@
 //! it has no body (2.1).
 
 use pe_physics::{BodyDesc, BodyKind as PhysicsKind, Geometry, PhysicsError, PhysicsWorld, Pose, Push, ShapeDesc};
-use pe_seams::{ObjectId, Pos};
+use pe_seams::{Hash, ObjectId, Pos};
 
 use crate::world::{BodyKind, BodyRow, Change, PushFx, ShapePart, ShapeRow, Unbuildable, WorldModel};
 
@@ -43,6 +43,9 @@ fn shape(part: &ShapePart, row: &BodyRow) -> ShapeDesc {
         ShapeRow::Box { center, rotation, half_extents } => {
             Geometry::Hull { points: corners(center, rotation, half_extents) }
         }
+        // One side only: whether a mesh collides from behind too is the user's choice, not made yet (CCD part 2 C).
+        ShapeRow::Mesh { ref mesh, scale } => Geometry::Mesh { mesh: mesh.clone(), scale, both_sides: false },
+        ShapeRow::Hull { ref points } => Geometry::Hull { points: points.clone() },
     };
     let mut shape = ShapeDesc::new(geometry)
         .with_density(part.density)
@@ -74,30 +77,45 @@ fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
 }
 
-/// A refused physics call, or a physical object the world model cannot build (2.1): either is one fault.
-struct Fault;
+/// A refused physics call, or a physical object the world model cannot build (2.1): either is one fault. A body whose
+/// blob this machine lacks is not one: it is a local condition, counted apart ([`Unbuildable::BlobAbsent`]).
+enum Fault {
+    Fault,
+    Absent(Hash),
+}
 
 impl From<PhysicsError> for Fault {
     fn from(_: PhysicsError) -> Fault {
-        Fault
+        Fault::Fault
     }
 }
 
 impl From<Unbuildable> for Fault {
-    fn from(_: Unbuildable) -> Fault {
-        Fault
+    fn from(why: Unbuildable) -> Fault {
+        match why {
+            Unbuildable::BlobAbsent { blob } => Fault::Absent(blob),
+            _ => Fault::Fault,
+        }
     }
 }
 
+/// What [`reconcile`] met besides the changes it made.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Reconciled {
+    /// Physics calls refused, and bodies the world model cannot build.
+    pub faults: u32,
+    /// Bodies it could not build because this machine lacks a blob of theirs, with the blob, in the given order.
+    pub absent: Vec<(ObjectId, Hash)>,
+}
+
 /// Bring the physics in line with what an entry or a logic stage changed (3.2), in the given order (id order).
-/// Returns how many faults there were: physics calls refused, and bodies the world model cannot build.
 pub fn reconcile<W: WorldModel + ?Sized>(
     world: &W,
     physics: &mut PhysicsWorld,
     origin: Pos,
     changed: &[(ObjectId, Change)],
-) -> u32 {
-    let mut faults = 0;
+) -> Reconciled {
+    let mut out = Reconciled::default();
     for &(id, change) in changed {
         let done = match change {
             Change::Created => create(world, physics, origin, id),
@@ -109,9 +127,13 @@ pub fn reconcile<W: WorldModel + ?Sized>(
             }
             Change::Velocity { .. } | Change::Reparented => Ok(()),
         };
-        faults += u32::from(done.is_err());
+        match done {
+            Ok(()) => {}
+            Err(Fault::Fault) => out.faults += 1,
+            Err(Fault::Absent(blob)) => out.absent.push((id, blob)),
+        }
     }
-    faults
+    out
 }
 
 /// Created, or became physical: a body at its world transform, at rest. One the world model cannot build gets none.

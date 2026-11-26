@@ -21,8 +21,9 @@ use crate::world::{
 /// Farthest a body may be from the origin, in metres: pe-physics's `MAX_POSITION`.
 const RANGE: f64 = 1.0e6;
 
-/// One op of the test codec. A payload is a sequence of ops, applied all or nothing.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// One op of the test codec. A payload is a sequence of ops, applied all or nothing. The mock has no blobs, so it
+/// holds no mesh or hull: a spawn of one is malformed.
+#[derive(Clone, Debug, PartialEq)]
 pub enum MockOp {
     /// Create a physical object.
     Spawn {
@@ -50,7 +51,7 @@ pub enum MockOp {
 pub fn encode(ops: &[MockOp]) -> Vec<u8> {
     let mut out = Vec::new();
     for op in ops {
-        match *op {
+        match op.clone() {
             MockOp::Spawn { id, kind, shape, pos } => {
                 out.push(1);
                 out.extend_from_slice(&id.to_u128().to_le_bytes());
@@ -72,6 +73,8 @@ pub fn encode(ops: &[MockOp]) -> Vec<u8> {
                             out.extend_from_slice(&v.to_le_bytes());
                         }
                     }
+                    // No tag of its own: the decoder refuses it.
+                    ShapeRow::Mesh { .. } | ShapeRow::Hull { .. } => out.push(u8::MAX),
                 }
                 for p in pos {
                     out.extend_from_slice(&p.to_le_bytes());
@@ -310,10 +313,13 @@ impl MockWorld {
         let mut changed: BTreeMap<ObjectId, Change> = BTreeMap::new();
         for (i, op) in ops.iter().enumerate() {
             let i = i as u32;
-            match *op {
+            match op.clone() {
                 MockOp::Spawn { id, kind, shape, pos } => {
                     if self.bodies.contains_key(&id) {
                         return Err((i, Reason::Exists(id)));
+                    }
+                    if matches!(shape, ShapeRow::Mesh { .. } | ShapeRow::Hull { .. }) {
+                        return Err((i, Reason::Malformed));
                     }
                     let pos = at(pos).ok_or((i, Reason::OutOfRange))?;
                     self.bodies.insert(id, body(id, kind, shape, pos));
@@ -558,6 +564,8 @@ fn encode_object(b: &BodyRow, phys: Option<&BodyStateRow>) -> Vec<u8> {
                 f32s(&mut out, &rotation);
                 f32s(&mut out, &half_extents);
             }
+            // The mock never holds one (`MockOp`); the decoder refuses it.
+            ShapeRow::Mesh { .. } | ShapeRow::Hull { .. } => out.push(u8::MAX),
         }
         f32s(&mut out, &[part.density]);
     }

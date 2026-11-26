@@ -1,7 +1,8 @@
 //! Triangle meshes (world-model.md 3.2; CCD part 2 C): built once, from their vertices and triangles or from a mesh
 //! v1 blob, and shared by every shape that uses them ([`crate::Geometry::Mesh`]). Also the hull v1 blob's reader.
 
-use std::sync::{Arc, OnceLock};
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use box3d_rust::math_functions::Vec3;
 use box3d_rust::mesh::{MeshData, MeshDef, MeshTriangle, compute_closed_mesh_mass, create_mesh, is_closed_mesh};
@@ -29,7 +30,14 @@ struct Built {
     blob_triangles: usize,
     closed: bool,
     blob_closed: bool,
+    /// [`Mesh::mass`]'s newest answers, at most [`MASSES_KEPT`], by the bits of the scale and the density: each sum
+    /// runs the closedness test's sort again, and a body is weighed more than once as it is built (pe-replica's
+    /// check, then `add_body`'s). A cache of a pure function: what it keeps never changes an answer.
+    masses: Mutex<VecDeque<([u32; 4], f32)>>,
 }
+
+/// How many of [`Mesh::mass`]'s answers a mesh keeps.
+const MASSES_KEPT: usize = 8;
 
 /// A mesh v1 blob's magic (world-model.md 3.2).
 const MESH_MAGIC: [u8; 4] = *b"PEM1";
@@ -106,7 +114,8 @@ impl Mesh {
             }
         }
         let blob_triangles = triangles.len();
-        Ok(Mesh(Arc::new(Built { front, extent, back: OnceLock::new(), blob_triangles, closed, blob_closed })))
+        let masses = Mutex::new(VecDeque::new());
+        Ok(Mesh(Arc::new(Built { front, extent, back: OnceLock::new(), blob_triangles, closed, blob_closed, masses })))
     }
 
     /// Read a mesh v1 blob (world-model.md 3.2): the magic `PEM1`, a `u32` vertex count, the vertices as `f32 x3`, a
@@ -168,7 +177,18 @@ impl Mesh {
         if !self.0.closed || density == 0.0 {
             return 0.0;
         }
-        compute_closed_mesh_mass(&self.0.front.vertices, &self.0.front.triangles, vec3(scale), density).mass
+        let key = [scale[0].to_bits(), scale[1].to_bits(), scale[2].to_bits(), density.to_bits()];
+        let kept = self.0.masses.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(k, _)| *k == key).map(|e| e.1);
+        if let Some(mass) = kept {
+            return mass;
+        }
+        let mass = compute_closed_mesh_mass(&self.0.front.vertices, &self.0.front.triangles, vec3(scale), density).mass;
+        let mut masses = self.0.masses.lock().unwrap_or_else(|e| e.into_inner());
+        if masses.len() == MASSES_KEPT {
+            masses.pop_front();
+        }
+        masses.push_back((key, mass));
+        mass
     }
 
     /// The least and greatest coordinate of every vertex, before any scale.
