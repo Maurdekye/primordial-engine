@@ -199,7 +199,10 @@ FOCUSED, STOPPING, LOSS_PENDING and EXITING. What each state means for the engin
     the player's own motion, so the change is unmeasured and still. At 13 fps on WiVRn the heads were 77 ms apart
     and the last one fell before the change time, so without that test 107 no-pose STAGE changes applied the head's
     motion, vertical included, as corrections, and left the friend under an invisible ceiling (run
-    20261126T171653Z). Recentres are about gravity: `J` keeps only its yaw.
+    20261126T171653Z). So a no-pose recentre smaller than that bound goes through as the player's motion: the
+    mover takes it as an ordinary room step (at 90 Hz at most 5 cm and 3°). Recentres are about gravity: `J` keeps
+    only its yaw, and a head-measured `J` keeps no vertical part, since the heads also differ by the player's motion
+    over the gap; a runtime that moves the floor gives `poseInPreviousSpace` (@chunks-reviewer on a7a29b9e).
   - **Each reading takes the correction of its own locate time:** a hand read at `now`, before the change time,
     keeps the old one (@chunks-reviewer's L2).
   - **Unmeasurable** (no valid pose and no head on one side): the jump goes through. If the raw head jumped at it,

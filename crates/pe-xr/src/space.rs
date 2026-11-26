@@ -15,7 +15,7 @@
 //! the jump between the last head before the change time and the first one after it, so the head's world pose
 //! stays continuous across the change, but only if the head jumped between them ([`head_jumped`]); a head that
 //! moved no more than a head can in that time measures the player's motion, not the space's, and the change is
-//! left unmeasured. Recentres are about gravity, so `J` keeps only its yaw.
+//! left unmeasured. Recentres are about gravity, so `J` keeps only its yaw, and a head-measured `J` no vertical part.
 //!
 //! The layer's views stay the runtime's own: the compositor needs them in its space. Only the drawn world moves.
 //!
@@ -184,7 +184,10 @@ impl SpaceCorrection {
                     {
                         self.counters.by_head += 1;
                         let r = yaw_quat(f64::from(yaw_of(old.orientation)) - f64::from(yaw_of(new.orientation)));
-                        Some(RigPose { position: sub(old.position, rotate(r, new.position)), orientation: r })
+                        // Level only: the two heads also differ by the player's motion over the gap, and a runtime
+                        // that truly moves the floor gives its pose (@chunks-reviewer's Low on a7a29b9e).
+                        let [x, _, z] = sub(old.position, rotate(r, new.position));
+                        Some(RigPose { position: [x, 0.0, z], orientation: r })
                     }
                     _ => None,
                 },
@@ -455,6 +458,14 @@ mod tests {
         assert_eq!(c.counters.by_head, 1);
         assert!((a.yaw.to_degrees() - 90.0).abs() < 1e-3);
         assert!(close(c.pose(head_new).position, head(119).position), "the head's world pose is continuous");
+        // Measured from the head, the jump is level: a head that also rose 4 cm across it moves no floor.
+        let mut c2 = SpaceCorrection::new(RecentreYaw::Heading);
+        c2.frame(HostTime(0), Some(head(0)));
+        c2.on_change(SpaceChange { change_time: HostTime(FRAME_NS - 65_000_000), previous: None });
+        let risen = RigPose { position: add(head(0).position, [0.0, 0.04, 0.0]), ..head(0) };
+        c2.frame(HostTime(FRAME_NS), Some(compose(inverse(jump()), risen)));
+        assert_eq!(c2.counters.by_head, 1);
+        assert_eq!(c2.correction().position[1], 0.0, "no vertical part: {:?}", c2.correction());
     }
 
     #[test]
