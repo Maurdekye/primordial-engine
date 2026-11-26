@@ -4117,6 +4117,10 @@ pub(crate) mod tests {
         /// arrives when it ends (or later, if its delay says so), in the order sent, as pe-net's reliable streams
         /// deliver what waited once a dark path returns.
         dark: ByLink<(i64, i64)>,
+        /// Links kept first in, first out, as pe-net's reliable streams are, by (from, to), each with its latest arrival
+        /// so far: a message on one arrives no earlier than the one sent before it. Other links deliver by arrival
+        /// time, as the jittered slow-member runs want.
+        in_order: ByLink<i64>,
         /// Messages sent, for the jitter's sequence.
         sent: Arc<std::sync::atomic::AtomicU64>,
     }
@@ -4161,6 +4165,10 @@ pub(crate) mod tests {
                 && at >= from
             {
                 at = at.max(until);
+            }
+            if let Some(last) = self.hub.in_order.lock().expect("the in-order links").get_mut(&(self.me, to)) {
+                at = at.max(*last);
+                *last = at;
             }
             let at = HostTime(at);
             let r = Received { from: self.me, lane, bytes, at };
@@ -5859,7 +5867,14 @@ pub(crate) mod tests {
     /// they see (the net tests' outages run in real time): both sweep their hands, two hand entries a frame each, 25 ms
     /// apart each way, for `frames` frames. `dark` darkens both directions over [from, until) seconds; `slow` makes
     /// B's messages to A `ms` later over [from, until) seconds, as a machine re-stepping a backlog sends its entries
-    /// late; `outage_silence_s` replaces pe-agree's outage mark (0.3 s) on both members.
+    /// late; `outage_silence_s` replaces pe-agree's outage mark (0.3 s) on both members. Both links are first in,
+    /// first out (@design-reviewer's L1 on c655b845): what B sends once the late stretch ends waits behind what it sent
+    /// late, so its lateness ramps down, as from a real late sender or queue.
+    ///
+    /// What these runs don't cover (@design-reviewer), so they don't replace net.rs's real-time outage
+    /// tests: a loaded receiver's lateness (main 01c77bfa samples at the network's arrival for that), and entries sent
+    /// just after a dark window queueing behind its flush on the same stream (here each arrives at its own delay; a
+    /// link rate in bytes a second would model it).
     fn outage_run(
         frames: u64,
         dark: Option<(f64, f64)>,
@@ -5879,6 +5894,7 @@ pub(crate) mod tests {
         let hub = Hub::default();
         let (a, b) = (keys.key(0), keys.key(1));
         hub.delay.lock().expect("the delays").extend([((a, b), LINK_NS), ((b, a), LINK_NS)]);
+        hub.in_order.lock().expect("the in-order links").extend([((a, b), 0), ((b, a), 0)]);
         if let Some((from, until)) = dark {
             let w = (ns(from), ns(until));
             hub.dark.lock().expect("the dark windows").extend([((a, b), w), ((b, a), w)]);
@@ -5966,9 +5982,11 @@ pub(crate) mod tests {
     /// A machine that sends late for a while, as one re-stepping a backlog does: B's messages reach A 1.2 s late for
     /// 6 s, from 3 s. B's lead rises by about the excess, as stamp-ahead is designed to (1.225 s is 73.5 frames, less
     /// the 6-frame margin, plus 3: the fixed-link acceptance's 66-72 at 1.2 s), A's stays 0, and nothing is voided.
-    /// Once B's messages are on time again its lead drains: within the window, while the late samples age out, plus
-    /// one frame shed in `moving_every` (11) while a hand moves, plus 2 s for the reports to come back. [V, release]
-    /// B's lead 70; over 12 until 873 frames after the late stretch, against a bound of 938; 5 at the end.
+    /// Once B's messages are on time again its lead drains. The last late message lands the stretch's delay after its
+    /// end and its lateness reaches B a round trip later; then the window ages the late samples out, and the surplus
+    /// sheds one frame in `moving_every` (11) while a hand moves (@design-reviewer), plus a 1 s margin.
+    /// [V, release] B's lead 70; over 12 until 882 frames after the late stretch (873 before the links kept their
+    /// order), against a bound of 955; 5 at the end.
     #[test]
     #[cfg_attr(debug_assertions, ignore = "seconds of two members in the ball pit: release (--include-ignored)")]
     fn a_late_stretch_raises_the_lead_by_the_excess_and_it_drains_after() {
@@ -5978,8 +5996,10 @@ pub(crate) mod tests {
         assert!((66..=74).contains(&seen.largest_lead[1]), "B's lead: {seen:?}");
         assert_eq!(seen.largest_lead[0], 0, "A's lead: {seen:?}");
         assert_eq!(seen.voids, 0, "{seen:?}");
-        let end = 9 * u64::from(RATE.hz());
-        let bound = lead.window + (seen.largest_lead[1] - 12) * lead.moving_every + 2 * u64::from(RATE.hz());
+        let hz = u64::from(RATE.hz());
+        let end = 9 * hz;
+        let flight = (1.225 * hz as f64).ceil() as u64 + (2 * 25 * hz).div_ceil(1_000);
+        let bound = flight + lead.window + (seen.largest_lead[1] - 12) * lead.moving_every + hz;
         let drained = seen.last_over_12[1].expect("B's lead rose past 12") - end;
         assert!(drained <= bound, "B's lead over 12 until {drained} frames after the stretch, bound {bound}: {seen:?}");
         assert!(seen.lead_at_end[1] <= 12, "B's lead hadn't drained by the end: {seen:?}");
