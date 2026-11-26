@@ -3581,6 +3581,60 @@ fn an_admin_admits_an_admin_leaves_and_the_new_admin_admits_a_third() {
     assert!(fin >= s.now as f64 / 1e9 - 1.0, "B and C didn't finalize");
 }
 
+/// The largest lateness the inviter (member 0) hears from the joiner (member 1) about its own chain over `ms` more,
+/// after an import of `import_ms` during which the link to the joiner is `extra` ms slow (the import's traffic);
+/// `importing` false runs the joiner without the import rule (the control).
+fn join_import_report(seed: u64, import_ms: i64, extra: i64, importing: bool, ms: i64) -> i64 {
+    let mut s = Sim::with_joiners(2, 1, seed);
+    s.clock = Clock(120);
+    s.per_frame = vec![Some((2, 0)), None];
+    s.run(1_000);
+    admit(&mut s, 0, 1, 3);
+    s.run_to_epoch(0, 1, 3_000);
+    // The import: the joiner's replica reports frame 0 (an empty replica) and the inviter's entries reach it late.
+    s.slow_link = Some((0, 1, extra, 50));
+    s.behind[1] = u64::MAX / 2;
+    s.join(1, 0, &[0], Some((2, 0)));
+    s.nodes[1].importing = importing;
+    let end = s.now / MS + import_ms;
+    s.run(end);
+    // Imported: the replica keeps up, and the link is fast again.
+    s.behind[1] = 0;
+    s.slow_link = None;
+    let mut worst = i64::MIN;
+    let end = s.now / MS + ms;
+    while s.now / MS < end {
+        let next = s.now / MS + 10;
+        s.run(next);
+        for r in Agreement::own_lateness(&s.nodes[0]) {
+            worst = worst.max(r.frames);
+        }
+    }
+    assert_eq!(s.faults(0) + s.faults(1), 0, "seed {seed}: faults {:?} {:?}", s.events[0], s.events[1]);
+    worst
+}
+
+#[test]
+fn a_joiner_reports_no_lateness_from_entries_that_queued_behind_its_import() {
+    // The friend test's 18:05Z run (@item:primordial-engine/friend-test-11-27-the-host-s-0-5-s-input-lag-at-j): the
+    // inviter's entries reached the importing joiner about 1 s late, the joiner reported that, and the inviter's
+    // stamp-ahead lead held its own actions 0.8 s back for about 4 s. With the import rule, the joiner samples nothing
+    // until its replica has stepped to E, and the inviter's entries stamped before then are its import's backlog: what
+    // it reports afterwards is the fast link's lateness. Without it (the control), the report is the import's.
+    for seed in [611, 612] {
+        let worst = join_import_report(seed, 3_000, 1_000, true, 3_000);
+        let control = join_import_report(seed, 3_000, 1_000, false, 3_000);
+        eprintln!(
+            "seed {seed}: the joiner's largest report after a 1 s slow import: {} ms with the rule, {} ms without",
+            worst * 1000 / 120,
+            control * 1000 / 120
+        );
+        assert!(worst > i64::MIN, "seed {seed}: the joiner never reported");
+        assert!(worst * 1000 / 120 <= 100, "seed {seed}: the joiner reported {} ms", worst * 1000 / 120);
+        assert!(control * 1000 / 120 >= 800, "seed {seed}: the control no longer bites ({} ms)", control * 1000 / 120);
+    }
+}
+
 #[test]
 fn an_admit_by_a_non_admin_is_not_authorized_and_a_second_admit_changes_nothing() {
     // The governance fold's two voids: B, admitted without ADMIN, admits C: void as NotAuthorized at both members; A

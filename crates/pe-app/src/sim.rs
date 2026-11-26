@@ -2106,6 +2106,7 @@ impl Sim {
                 others,
                 pending,
                 others_late_max_ns,
+                lead: self.lead.as_ref().map_or(0, |l| l.lead()),
             };
             t.record(&before, &self.stats.phases, self.stats.received, at_end);
         }
@@ -6357,7 +6358,12 @@ pub(crate) mod tests {
                 assert!(field(sec, "others_input") > 0, "{half_from:?}: member 1's hand entries: {sec}");
                 // The hub delivers at once, so an entry arrives within about a frame of its stamp, or before it when
                 // stamped ahead: never seconds late.
-                let late: f64 = sec.rsplit("others_late_max_ms=").next().and_then(|v| v.parse().ok()).expect(sec);
+                let late: f64 = sec
+                    .rsplit("others_late_max_ms=")
+                    .next()
+                    .and_then(|v| v.split_whitespace().next())
+                    .and_then(|v| v.parse().ok())
+                    .expect(sec);
                 assert!(late.abs() < 1000.0, "{half_from:?}: receive lateness {late} ms: {sec}");
                 assert!(field(sec, "inputs") > 0 && field(sec, "pending") > 0, "{half_from:?}: {sec}");
             }

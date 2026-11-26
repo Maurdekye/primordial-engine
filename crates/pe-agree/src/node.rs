@@ -364,6 +364,13 @@ pub struct Node {
     /// The frame the driver's replica has stepped to (S3's `stepped`); none if the driver never says, which counts as
     /// keeping up with the present (F3 S2).
     stepped: Option<Frame>,
+    /// A joiner's import (agreement.md 3, the lateness samples): set by [`Node::join`], cleared at the first tick its
+    /// replica has stepped to E ([`Node::end_import`]). Meanwhile this member samples no lateness, and at the clear
+    /// every peer's outage mark rises to the present, so their entries stamped before it go unsampled too. Entries
+    /// sent to a joiner while it imports queue behind the import's own traffic: the friend test's joiner (2026-11-26
+    /// 18:05Z run) took them about 1 s late and reported that, and the inviter's stamp-ahead lead held its own actions
+    /// 0.8 s back for about 4 s.
+    pub(crate) importing: bool,
     /// Each other member's highest stepped frame, from its `Progress`.
     progress: BTreeMap<MemberKey, Frame>,
     /// When this member last sent its own `Progress` (ns).
@@ -668,6 +675,7 @@ impl Node {
         node.final_high = start.final_high.into_iter().collect();
         node.final_cut = Some(FinalCut { cut: e, root: eqc.root, voters: eqc.votes });
         node.start_root = Some(eqc.root);
+        node.importing = true;
         if !node.former.is_empty() {
             node.greet = Some((node.former.clone(), now.0 + OLD_EPOCH_KEEP_NS, i64::MIN));
         }
@@ -745,6 +753,7 @@ impl Node {
             holds: BTreeMap::new(),
             pinned_roots: BTreeMap::new(),
             stepped: None,
+            importing: false,
             progress: BTreeMap::new(),
             progress_sent: None,
             recasts: 0,
@@ -1264,7 +1273,8 @@ impl Node {
                 // Lateness from unsolicited entries only: a fetched one arrives late by construction.
                 // Nor from a claimed backlog (the outage rule): its entries arrive late by construction too.
                 let stamp_of = self.log.get(&key, &id).map(|e| e.entry.stamp);
-                let backlog = self.vote_high.get(&key).is_some_and(|(s, _)| *s >= e_seq)
+                let backlog = self.importing
+                    || self.vote_high.get(&key).is_some_and(|(s, _)| *s >= e_seq)
                     || self.outage_mark.get(&author).zip(stamp_of).is_some_and(|(m, st)| st < *m);
                 if let Some(p) = self.frame_of(at).filter(|_| author != self.me) {
                     let c = self.lateness_counts.entry(author).or_default();
@@ -2189,6 +2199,23 @@ impl Node {
         out
     }
 
+    /// A joiner whose replica has stepped to E has imported (see `importing`): from now on it samples, and each peer's
+    /// entries stamped before the present are its import's backlog, as after an outage. The mark brings no outage
+    /// allowance: those entries take tokens as before. A driver that never reports its stepped frame counts as
+    /// imported at its first tick.
+    fn end_import(&mut self) {
+        let Some(p) = self.present.filter(|_| self.importing) else { return };
+        let e = self.cfg.genesis.at.frame;
+        if self.own_stepped().is_none_or(|s| s < e) {
+            return;
+        }
+        self.importing = false;
+        for m in self.cfg.members.iter().filter(|m| **m != self.me) {
+            let mark = self.outage_mark.entry(*m).or_insert(p);
+            *mark = (*mark).max(p);
+        }
+    }
+
     /// This member's stepped frame as `Progress` reports it: the driver's, or the present if the driver never says.
     fn own_stepped(&self) -> Option<Frame> {
         self.stepped.or(self.present)
@@ -2912,6 +2939,7 @@ impl Agreement for Node {
         self.now = now;
         self.rate_hz = clock.rate_hz();
         self.present = clock.frame_at(now);
+        self.end_import();
         self.admit_deferred(now);
         self.ask_ranges();
         self.note_abstention();

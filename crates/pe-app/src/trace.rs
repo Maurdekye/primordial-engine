@@ -27,7 +27,9 @@
 //!   transport.md 9's action-latency figure). It counts refetched and backlog entries too, so after a loss a second's
 //!   largest is the refetch's: quote it over seconds without one. An entry agreement deferred at its pending cap
 //!   carries the arrival pe-agree keeps for it, its admission until @diverge-eng's arrival-time fix and its network
-//!   arrival after (@design-reviewer on d7c8e33f).
+//!   arrival after (@design-reviewer on d7c8e33f). `lead_max` is the largest stamp-ahead lead this member stamped its
+//!   own entries with that second, in frames ([`crate::stamp`]): its own actions lag by it, so a rise shows here
+//!   (the friend test's host lag, @item:primordial-engine/friend-test-11-27-the-host-s-0-5-s-input-lag-at-j).
 //! - `long`: one per tick longer than `PE_TICK_TRACE_MS` (default 50), with its every phase. `cpu_ms` against
 //!   `tick_ms` says whether the thread ran or waited: descheduled, or blocked on the console, a lock or the disk.
 //!   Windows counts thread time in clock ticks (about 15.6 ms), so `cpu_ms` is coarse below that.
@@ -96,6 +98,8 @@ pub struct Tick {
     /// The largest receive lateness among the entries in `others`, in ns: arrival (`EntrySource::arrived_at`, pe-net's
     /// receive time) less its stamp's host time; `None` when none was counted or none has an arrival time.
     pub others_late_max_ns: Option<i64>,
+    /// The stamp-ahead lead in force at the tick's end, in frames (0 without a controller).
+    pub lead: u64,
 }
 
 #[derive(Default)]
@@ -116,6 +120,7 @@ struct Second {
     out_of_reach: u64,
     others: [u64; 4],
     others_late_max_ns: Option<i64>,
+    lead_max: u64,
     phases: PhaseTimes,
 }
 
@@ -216,6 +221,7 @@ impl TickTrace {
         s.loop_max_ns = s.loop_max_ns.max(loop_ns);
         s.late_max_ns = s.late_max_ns.max(late_ns);
         s.lag_max = s.lag_max.max(lag);
+        s.lead_max = s.lead_max.max(t.lead);
         s.backlogged += u64::from(t.backlogged);
         s.received += received;
         add(&mut s.phases, &d);
@@ -280,13 +286,14 @@ impl TickTrace {
         // Last on the line, so the fields before them keep their places for the readers that match them in order.
         writeln!(
             self.out,
-            " out_of_reach={} others_input={} others_edit={} others_other={} pending={} others_late_max_ms={}",
+            " out_of_reach={} others_input={} others_edit={} others_other={} pending={} others_late_max_ms={} lead_max={}",
             s.out_of_reach,
             s.others[0],
             s.others[1],
             s.others[2] + s.others[3],
             t.pending,
-            s.others_late_max_ns.map_or("-".to_string(), |ns| format!("{:.1}", ns as f64 / 1e6))
+            s.others_late_max_ns.map_or("-".to_string(), |ns| format!("{:.1}", ns as f64 / 1e6)),
+            s.lead_max,
         )?;
         self.out.flush()
     }
@@ -447,6 +454,7 @@ mod tests {
             others: [0; 4],
             pending: 0,
             others_late_max_ns: None,
+            lead: 0,
         }
     }
 
@@ -488,7 +496,10 @@ mod tests {
                 130 => Some(30_000_000),
                 _ => None,
             };
+            // The lead: 49 frames at frame 75 of second 1, shedding a frame a frame after; none in seconds 0 and 2.
+            let lead = if (75..120).contains(&f) { 49 - (f - 75) } else { 0 };
             let at = Tick {
+                lead,
                 inputs,
                 refused,
                 thinned,
@@ -511,10 +522,10 @@ mod tests {
         // One refused entry, at frame 150: the running total goes from 0 to 1 there.
         assert!(secs[2].contains("inputs=0 refused=1 thinned=0 unpublished=0"), "{}", secs[2]);
         assert!(secs[0].contains(" out_of_reach=0 ") && secs[2].contains(" out_of_reach=60 "), "{}", secs[2]);
-        assert!(secs[0].ends_with(" others_input=0 others_edit=0 others_other=0 pending=59 others_late_max_ms=-"));
-        let s1 = " others_input=60 others_edit=0 others_other=0 pending=119 others_late_max_ms=5.0";
+        assert!(secs[0].ends_with(" others_input=0 others_edit=0 others_other=0 pending=59 others_late_max_ms=- lead_max=0"));
+        let s1 = " others_input=60 others_edit=0 others_other=0 pending=119 others_late_max_ms=5.0 lead_max=49";
         assert!(secs[1].ends_with(s1), "{}", secs[1]);
-        let s2 = " others_input=0 others_edit=1 others_other=0 pending=179 others_late_max_ms=30.0";
+        let s2 = " others_input=0 others_edit=1 others_other=0 pending=179 others_late_max_ms=30.0 lead_max=0";
         assert!(secs[2].ends_with(s2), "{}", secs[2]);
     }
 
