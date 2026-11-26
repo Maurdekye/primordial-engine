@@ -20,7 +20,10 @@
 //!   its pending cap (agreement.md 3), fetched late or never sent. The trace can't tell late from never: a deferred
 //!   entry admitted later is applied by a rollback and never counted. An author whose entries this machine defers
 //!   drops to 0 here while its own `inputs` go on. `pending` is agreement's entries pending finality at the second's
-//!   end.
+//!   end. `others_late_max_ms` is the largest receive lateness among the entries counted that second: how long after
+//!   its stamp's time an entry reached this machine's agreement (negative: before it, stamped ahead), `-` for none.
+//!   It leaves out the author's stamp-ahead lead, which this machine doesn't know, so an action's latency is it plus
+//!   that lead (@diverge-eng, for transport.md 9's action-latency figure).
 //! - `long`: one per tick longer than `PE_TICK_TRACE_MS` (default 50), with its every phase. `cpu_ms` against
 //!   `tick_ms` says whether the thread ran or waited: descheduled, or blocked on the console, a lock or the disk.
 //!   Windows counts thread time in clock ticks (about 15.6 ms), so `cpu_ms` is coarse below that.
@@ -86,6 +89,9 @@ pub struct Tick {
     pub others: [u64; 4],
     /// Agreement's entries pending finality at the tick's end (`AgreeStats::pending_entries`).
     pub pending: usize,
+    /// The largest receive lateness among the entries in `others`, in ns: arrival (`EntrySource::arrived_at`) less its
+    /// stamp's host time; `None` when none was counted or none has an arrival time.
+    pub others_late_max_ns: Option<i64>,
 }
 
 #[derive(Default)]
@@ -105,6 +111,7 @@ struct Second {
     unpublished: u64,
     out_of_reach: u64,
     others: [u64; 4],
+    others_late_max_ns: Option<i64>,
     phases: PhaseTimes,
 }
 
@@ -194,6 +201,7 @@ impl TickTrace {
         for (sum, n) in s.others.iter_mut().zip(t.others) {
             *sum += n;
         }
+        s.others_late_max_ns = s.others_late_max_ns.max(t.others_late_max_ns);
         s.refused += t.refused.saturating_sub(refused);
         s.thinned += t.thinned.saturating_sub(thinned);
         s.unpublished += u64::from(t.published == published);
@@ -268,12 +276,13 @@ impl TickTrace {
         // Last on the line, so the fields before them keep their places for the readers that match them in order.
         writeln!(
             self.out,
-            " out_of_reach={} others_input={} others_edit={} others_other={} pending={}",
+            " out_of_reach={} others_input={} others_edit={} others_other={} pending={} others_late_max_ms={}",
             s.out_of_reach,
             s.others[0],
             s.others[1],
             s.others[2] + s.others[3],
-            t.pending
+            t.pending,
+            s.others_late_max_ns.map_or("-".to_string(), |ns| format!("{:.1}", ns as f64 / 1e6))
         )?;
         self.out.flush()
     }
@@ -433,6 +442,7 @@ mod tests {
             out_of_reach: 0,
             others: [0; 4],
             pending: 0,
+            others_late_max_ns: None,
         }
     }
 
@@ -467,6 +477,13 @@ mod tests {
             // The other member's entries: an input a frame in second 1, an edit at frame 130, nothing else.
             let others = [u64::from((60..120).contains(&f)), u64::from(f == 130), 0, 0];
             let pending = f as usize;
+            // Second 1's entries arrive 5 ms after their stamps (frame 100's 20 ms early); second 2's one 30 ms late.
+            let others_late_max_ns = match f {
+                100 => Some(-20_000_000),
+                60..120 => Some(5_000_000),
+                130 => Some(30_000_000),
+                _ => None,
+            };
             let at = Tick {
                 inputs,
                 refused,
@@ -475,6 +492,7 @@ mod tests {
                 out_of_reach,
                 others,
                 pending,
+                others_late_max_ns,
                 ..tick(f, 1, f as i64 * 1000 / 60)
             };
             t.record(&Before::take(&phases, 0), &phases, 0, at);
@@ -489,9 +507,11 @@ mod tests {
         // One refused entry, at frame 150: the running total goes from 0 to 1 there.
         assert!(secs[2].contains("inputs=0 refused=1 thinned=0 unpublished=0"), "{}", secs[2]);
         assert!(secs[0].contains(" out_of_reach=0 ") && secs[2].contains(" out_of_reach=60 "), "{}", secs[2]);
-        assert!(secs[0].ends_with(" others_input=0 others_edit=0 others_other=0 pending=59"), "{}", secs[0]);
-        assert!(secs[1].ends_with(" others_input=60 others_edit=0 others_other=0 pending=119"), "{}", secs[1]);
-        assert!(secs[2].ends_with(" others_input=0 others_edit=1 others_other=0 pending=179"), "{}", secs[2]);
+        assert!(secs[0].ends_with(" others_input=0 others_edit=0 others_other=0 pending=59 others_late_max_ms=-"));
+        let s1 = " others_input=60 others_edit=0 others_other=0 pending=119 others_late_max_ms=5.0";
+        assert!(secs[1].ends_with(s1), "{}", secs[1]);
+        let s2 = " others_input=0 others_edit=1 others_other=0 pending=179 others_late_max_ms=30.0";
+        assert!(secs[2].ends_with(s2), "{}", secs[2]);
     }
 
     /// A `sec` line per frame-clock second, and a `long` line for each tick over the threshold with its phases and

@@ -1423,21 +1423,27 @@ impl Sim {
     /// ([`crate::trace`]). Called before the tick's finalize, which lets agreement trim the frames below the newest
     /// agreed cut (@design-reviewer's M1 on 34372233), and from what agreement still keeps, so a joiner starts at its
     /// import, not at frame 1.
-    fn others_due(&mut self, p: Frame) -> [u64; 4] {
+    /// And the largest receive lateness among them, in ns: an entry's arrival (`EntrySource::arrived_at`) less its
+    /// stamp's host time (@diverge-eng, transport.md 9's action latency).
+    fn others_due(&mut self, p: Frame) -> ([u64; 4], Option<i64>) {
         let a_second_old = p.0.saturating_sub(u64::from(self.clock.rate_hz().max(1)));
         // A cut at frame F covers the entries stamped below it.
         let final_below = self.agree.final_cut().map_or(0, |fc| fc.cut.at.frame.0.saturating_sub(1));
         let upto = a_second_old.max(final_below);
         self.others_counted = self.others_counted.max(self.agree.kept_from().0.saturating_sub(1));
         let me = self.local_member();
-        let mut n = [0u64; 4];
+        let (mut n, mut late_max) = ([0u64; 4], None::<i64>);
         for f in self.others_counted + 1..=upto {
+            let stamped = self.clock.host_time_of(Frame(f));
             for e in self.agree.entries_at(Frame(f)).unwrap_or(&[]).iter().filter(|e| Some(e.entry.author) != me) {
                 n[e.entry.class as usize] += 1;
+                if let Some(at) = self.agree.arrived_at(&e.id()) {
+                    late_max = late_max.max(Some(at.0 - stamped.0));
+                }
             }
         }
         self.others_counted = self.others_counted.max(upto);
-        n
+        (n, late_max)
     }
 
     /// The local player's chain and the seq of its last entry agreement took, if there is a local player.
@@ -1863,7 +1869,8 @@ impl Sim {
         }
         let stepped_before = self.replica.frame();
         // The trace's `others_*`, before drive: its finalize lets agreement trim the frames below the agreed cut.
-        let others = if traced.is_some() && !self.importing() { self.others_due(p) } else { [0; 4] };
+        let (others, others_late_max_ns) =
+            if traced.is_some() && !self.importing() { self.others_due(p) } else { ([0; 4], None) };
         let report = if self.importing() { DriveReport::default() } else { self.drive(ps) };
         if !self.importing() {
             self.watch_lag(p, now);
@@ -2021,6 +2028,7 @@ impl Sim {
                 out_of_reach: self.stats.hands_out_of_reach,
                 others,
                 pending,
+                others_late_max_ns,
             };
             t.record(&before, &self.stats.phases, self.stats.received, at_end);
         }
@@ -6028,7 +6036,12 @@ pub(crate) mod tests {
             let secs: Vec<&str> = text.lines().filter(|l| l.starts_with("sec ")).collect();
             assert_eq!(secs.len(), 4, "{half_from:?}: {text}");
             for sec in &secs[2..] {
+                println!("{half_from:?}: {sec}");
                 assert!(field(sec, "others_input") > 0, "{half_from:?}: member 1's hand entries: {sec}");
+                // The hub delivers at once, so an entry arrives within about a frame of its stamp, or before it when
+                // stamped ahead: never seconds late.
+                let late: f64 = sec.rsplit("others_late_max_ms=").next().and_then(|v| v.parse().ok()).expect(sec);
+                assert!(late.abs() < 1000.0, "{half_from:?}: receive lateness {late} ms: {sec}");
                 assert!(field(sec, "inputs") > 0 && field(sec, "pending") > 0, "{half_from:?}: {sec}");
             }
             // Each frame once: never more of member 1's Input entries than it made.
