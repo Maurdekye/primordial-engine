@@ -9,8 +9,8 @@
 //! - **The frame's move** ([`input`]): the row's stick, turned by its heading plus the stick's yaw into world axes by
 //!   the fork's trig ([`walk_axes`]), times the mover's top walk speed; the room-scale step, the head's move over the
 //!   floor since the last frame, turned by the heading; and the row's one-shot jump. The mover walks each body in id
-//!   order, treating as absent every hand (players pass through each other, the user's 3a) and what the body's owner
-//!   holds ([`ignored`]).
+//!   order, treating as absent every hand and what the body's owner holds ([`ignored`]), and shoving nothing by its
+//!   own hands ([`own_hands`]). Other players are walls to it (the friend test of 11-27, superseding 3a).
 //! - **The rig** ([`rig`]) is where the tracking space stands so that the player's tracked head is over its feet: the
 //!   feet less the head's offset over the floor, turned by the heading. It is drawing, never simulation, so it uses
 //!   the standard library's trig; pe-app turns its hands into the body's frame with the same function
@@ -58,11 +58,22 @@ pub fn input(row: &PlayerRow, params: &PlayerParams) -> MoverInput {
     // no step at all.
     let (dx, dz) = (row.head_pos[0] - row.prev_head[0], row.head_pos[2] - row.prev_head[2]);
     let room = if dx * dx + dz * dz > ROOM_JUMP * ROOM_JUMP { [0.0, 0.0] } else { walk_axes([dx, -dz], row.heading) };
-    MoverInput { walk, room, jump: row.jump }
+    MoverInput { walk, room, jump: row.jump, hands: [None; 2] }
 }
 
-/// What `row`'s move treats as absent: every hand (`hands`, the world model's), since players pass through each
-/// other and a player's own hands are never in its way, and every object its owner holds (`claims`), so a held crate
+/// Where `row`'s own hands are for its move, in the physics world (relative to `origin`): the first two of
+/// `hands` (the world model's, in id order) its owner has, at their targets. The mover shoves no light body by them, so
+/// leaning down to pick something up doesn't push it away (the friend test of 11-27 point 3).
+pub fn own_hands(row: &PlayerRow, hands: &[HandRow], origin: Pos) -> [Option<[f64; 3]>; 2] {
+    let mut out = [None; 2];
+    for (slot, h) in out.iter_mut().zip(hands.iter().filter(|h| h.owner == row.owner)) {
+        *slot = Some((h.target - origin).0);
+    }
+    out
+}
+
+/// What `row`'s move treats as absent: every hand (`hands`, the world model's): a player's own hands are never in its
+/// way, and another's are drawn at its body, which is already a wall; and every object its owner holds (`claims`), so a held crate
 /// never blocks or shoves its holder. In id order, once each.
 pub fn ignored(row: &PlayerRow, hands: &[HandRow], claims: &[ClaimRow]) -> Vec<ObjectId> {
     let mut v: Vec<ObjectId> = hands.iter().map(|h| h.hand).collect();

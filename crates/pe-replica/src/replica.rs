@@ -982,7 +982,10 @@ impl<W: WorldModel> ReplicaImpl<W> {
         let (hands, claims) = (self.world.hands(), self.world.claims());
         let mut poses = Vec::with_capacity(rows.len());
         for row in &rows {
-            let input = players::input(row, &pe_physics::PLAYER);
+            let input = pe_physics::MoverInput {
+                hands: players::own_hands(row, &hands, self.origin),
+                ..players::input(row, &pe_physics::PLAYER)
+            };
             let ignore = players::ignored(row, &hands, &claims);
             match self.physics.move_player(row.body, &input, &ignore, &pe_physics::PLAYER, self.dt) {
                 Ok(pose) => match self.origin.checked_add(Offset(pose.position)) {

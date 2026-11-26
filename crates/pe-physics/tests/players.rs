@@ -40,7 +40,7 @@ fn walking(x: f32, z: f32) -> MoverInput {
     MoverInput { walk: [x, z], ..MoverInput::default() }
 }
 
-const JUMP: MoverInput = MoverInput { walk: [0.0, 0.0], room: [0.0, 0.0], jump: true };
+const JUMP: MoverInput = MoverInput { walk: [0.0, 0.0], room: [0.0, 0.0], jump: true, hands: [None; 2] };
 
 #[test]
 fn a_player_standing_still_stays_on_the_ground() {
@@ -506,7 +506,7 @@ fn walk_and_jump(workers: i32, restore_at: Option<u32>) -> Vec<String> {
         let stick = [((f / 40) % 3) as f32 - 1.0, 1.0];
         let walk = walk_axes(stick, yaw).map(|c| 3.0 * c);
         let room = if f % 50 == 0 { [0.05, -0.03] } else { [0.0, 0.0] };
-        let input = MoverInput { walk, room, jump: f % 97 == 13 };
+        let input = MoverInput { walk, room, jump: f % 97 == 13, hands: [None; 2] };
         pw.move_player(id(ME), &input, &[], &PLAYER, DT).unwrap();
         pw.step(DT).unwrap();
         if f % 60 == 59 {
@@ -538,6 +538,7 @@ fn a_restored_image_replays_a_player_exactly() {
         walk: walk_axes([0.3, 1.0], f.wrapping_mul(40_000_000)).map(|c| 3.0 * c),
         room: [0.0; 2],
         jump: f % 45 == 7,
+        hands: [None; 2],
     };
     for f in 0..30 {
         pw.move_player(id(ME), &input(f), &[], &PLAYER, DT).unwrap();
@@ -586,4 +587,56 @@ fn a_body_crossing_the_heavy_line_under_rollback_replays_exactly() {
         script(&mut pw, f);
         assert_eq!(pw.check_hash().unwrap(), ahead[k], "frame {f} after the restore");
     }
+}
+
+/// The friend test of 11-27 (point 3): leaning down to pick a ball up carries the capsule forward under
+/// the head (the room step) over the ball. A ball by the player's own hand isn't shoved; without the hand it is.
+#[test]
+fn leaning_down_to_a_ball_by_the_hand_doesnt_shove_it() {
+    let run = |hand: Option<[f64; 3]>| {
+        let mut pw = world_at([0.0, 0.0, 0.0]);
+        ball(&mut pw, 101, [0.45, 0.1, 0.0], 0.1, 1.0);
+        for f in 0..40 {
+            // The head leans 0.4 m forward over 8 frames, then holds there.
+            let room = if f < 8 { [0.05, 0.0] } else { [0.0, 0.0] };
+            let input = MoverInput { room, hands: [hand, None], ..MoverInput::default() };
+            pw.move_player(id(ME), &input, &[], &PLAYER, DT).unwrap();
+            pw.step(DT).unwrap();
+        }
+        pw.pose(id(101)).unwrap().position
+    };
+    let free = run(None);
+    let reached = run(Some([0.45, 0.2, 0.0]));
+    assert!(free[0] > 0.6 || free[2].abs() > 0.15, "with no hand by it the ball is shoved: {free:?}");
+    assert!((reached[0] - 0.45).abs() < 0.01 && reached[2].abs() < 0.01, "the ball by the hand moved: {reached:?}");
+}
+
+/// The friend test of 11-27: players are walls to each other. One walks into the other and stops at
+/// its capsule, and the one walked into stays where it stands.
+#[test]
+fn a_player_walking_into_another_stops_at_it() {
+    let mut pw = world_at([0.0, 0.0, 0.0]);
+    pw.add_player(id(2), [1.0, 0.0, 0.0], &PLAYER).unwrap();
+    for _ in 0..90 {
+        pw.move_player(id(ME), &walking(4.0, 0.0), &[], &PLAYER, DT).unwrap();
+        pw.move_player(id(2), &MoverInput::default(), &[], &PLAYER, DT).unwrap();
+        pw.step(DT).unwrap();
+    }
+    let (a, b) = (feet(&pw), pw.pose(id(2)).unwrap().position);
+    let gap = 2.0 * f64::from(PLAYER.radius);
+    assert!(a[0] < 1.0 - gap + 6.0e-3 && a[0] > 1.0 - gap - 0.05, "the walker's feet at {a:?}");
+    assert!((b[0] - 1.0).abs() < 1.0e-3 && b[2].abs() < 1.0e-3, "the other player moved to {b:?}");
+}
+
+/// Players are walls only to each other's moves: no solver pair forms, so a heavy ball (never shoved) dropped onto a
+/// player falls through it to the floor, as before.
+#[test]
+fn a_ball_dropped_on_a_player_falls_through_it() {
+    let mut pw = world_at([0.0, 0.0, 0.0]);
+    ball(&mut pw, 101, [0.0, 2.5, 0.0], 0.1, 50.0);
+    for _ in 0..90 {
+        frame(&mut pw, MoverInput::default());
+    }
+    let b = pw.pose(id(101)).unwrap().position;
+    assert!(b[1] < 0.2, "the ball stopped at {b:?}");
 }

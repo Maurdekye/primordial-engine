@@ -100,7 +100,7 @@ pub mod id {
     pub const CLOSE: u32 = 8;
     /// The spawn panel's (S4): one per template, in `spawn::Kind::ALL`'s order, then Clear.
     pub const SPAWN: u32 = 20;
-    pub const CLEAR: u32 = 24;
+    pub const CLEAR: u32 = 30;
     pub const WRIST: u32 = 100;
 }
 
@@ -165,7 +165,7 @@ fn button_name(b: u32) -> String {
         id::QUIT => "Quit".into(),
         id::CLOSE => "Close menu".into(),
         id::CLEAR => "Clear".into(),
-        b if (id::SPAWN..id::SPAWN + 4).contains(&b) => {
+        b if (id::SPAWN..id::SPAWN + crate::spawn::Kind::ALL.len() as u32).contains(&b) => {
             crate::spawn::Kind::ALL[(b - id::SPAWN) as usize].template().into()
         }
         b => format!("button {b}"),
@@ -331,7 +331,7 @@ impl Menu {
                 self.host.log("menu: closed");
                 None
             }
-            b if (id::SPAWN..id::SPAWN + 4).contains(&b) => {
+            b if (id::SPAWN..id::SPAWN + crate::spawn::Kind::ALL.len() as u32).contains(&b) => {
                 let k = crate::spawn::Kind::ALL[(b - id::SPAWN) as usize];
                 if let Some(h) = self.head {
                     // The head's level forward, from the same helper that places the panel.

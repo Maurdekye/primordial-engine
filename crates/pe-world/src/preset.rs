@@ -191,6 +191,10 @@ pub mod plane_names {
     pub const STACK: &str = "Box stack";
     pub const STACK_BOX_PREFIX: &str = "Box ";
     pub const STACK_BOXES: usize = 5;
+    /// The heavy templates ([`super::HEAVY`]), after the stack: solid ground a player can stand and walk on.
+    pub const BIG_CRATE: &str = "Big crate";
+    pub const PLATFORM: &str = "Platform";
+    pub const SLAB: &str = "Slab";
 }
 
 /// The plane's floor: a static box this many metres on a side, 1 m thick, its top at the origin.
@@ -216,6 +220,18 @@ pub const CAPSULE_HALF: f32 = 0.1;
 pub const STACK_HALF: f32 = 0.075;
 /// The gap under each box of the stack as it is copied, in metres, so none starts in contact with the next.
 const STACK_GAP: f64 = 0.002;
+/// The heavy templates (the friend test of 11-27, @ticket:primordial-engine/friend-test-11-27-own-body-stops-pushing-objects:
+/// "larger spawnable objects that are harder to move / can be walked on top of"): each a box body's name, half
+/// extents in metres, density in kg/m³ and colour. Every one is far above the mover's `heavy_mass` (40 kg), so a
+/// player stands and walks on it as on the floor and never shoves it: a 1 m crate of 300 kg, a 2 × 0.3 × 2 m platform
+/// of 240 kg and a 1.5 × 0.2 × 1.5 m slab of 180 kg. Still dynamic and grabbable: a hold moves one slowly.
+pub const HEAVY: [(&str, [f32; 3], f32, [f32; 3]); 3] = [
+    (plane_names::BIG_CRATE, [0.5, 0.5, 0.5], 300.0, [0.55, 0.38, 0.22]),
+    (plane_names::PLATFORM, [1.0, 0.15, 1.0], 200.0, [0.3, 0.32, 0.36]),
+    (plane_names::SLAB, [0.75, 0.1, 0.75], 400.0, [0.6, 0.6, 0.62]),
+];
+/// The heavy templates' friction: higher than the light ones' 0.6, so a player's weight doesn't slide one along.
+pub const HEAVY_FRICTION: f32 = 0.9;
 
 /// The friend test's flat plane at frame 0 on line `line` (world-model.md 2.4, "The plane"; the friend-test
 /// prototype): a root `Plane` holding a static floor [`PLANE_SIDE`] m square with its top at `origin`, and a lamp; an
@@ -245,9 +261,13 @@ pub fn plane_on(line: LineId, seed: u64, blobs: BlobStore, origin: Pos) -> World
 }
 
 fn dynamic_body() -> Row {
+    dynamic_body_with(0.6)
+}
+
+fn dynamic_body_with(friction: f32) -> Row {
     row(Body {
         kind: body_kind::DYNAMIC,
-        friction: 0.6,
+        friction,
         linear_damping: 0.1,
         angular_damping: 0.3,
         rolling_resistance: 0.05,
@@ -319,6 +339,20 @@ fn plane_transaction(blobs: &BlobStore, origin: Pos) -> Transaction {
             template_shape(shape_kind::BOX, [STACK_HALF; 3]),
         ];
         create(&mut ops, Target::New(stack), rows);
+    }
+    // The heavy templates, after the stack so that every earlier object keeps its id, spaced along +x in the folder.
+    let mut x = 3.0;
+    for (label, half, density, rgb) in HEAVY {
+        x += f64::from(half[0]);
+        let rows = vec![
+            row(Transform::local([x, f64::from(half[1]), 0.0])),
+            name(blobs, &mut used, label),
+            colour(rgb),
+            dynamic_body_with(HEAVY_FRICTION),
+            row(Shape { kind: shape_kind::BOX, density, size: half, ..Shape::default() }),
+        ];
+        create(&mut ops, under, rows);
+        x += f64::from(half[0]) + 1.0;
     }
     Transaction {
         inline: vec![],

@@ -119,7 +119,17 @@ fn the_plane_has_its_floor_an_empty_spawned_root_and_inert_templates() {
     assert!(snap.children(spawned).is_empty(), "nothing is spawned at genesis");
     // The templates, in order: three single bodies and a stack of five.
     let names: Vec<_> = snap.children(folder).into_iter().map(|c| snap.name(c).expect("named")).collect();
-    assert_eq!(names, [n::BOX, n::SPHERE, n::CAPSULE, n::STACK]);
+    assert_eq!(names, [n::BOX, n::SPHERE, n::CAPSULE, n::STACK, n::BIG_CRATE, n::PLATFORM, n::SLAB]);
+    // The heavy templates: box bodies far above the mover's 40 kg `heavy_mass`, so a player stands on them.
+    for (label, half, density, _) in pe_world::preset::HEAVY {
+        let id = get(label);
+        let shape = w.store().get::<Shape>(id).expect("a shape");
+        assert_eq!((shape.kind, shape.size, shape.density), (shape_kind::BOX, half, density));
+        let kg = density * 8.0 * half[0] * half[1] * half[2];
+        assert!(kg >= 150.0, "{label} weighs {kg} kg");
+        let body = w.store().get::<Body>(id).expect("a body");
+        assert_eq!((body.kind, body.grabbable), (pe_world::components::body_kind::DYNAMIC, 1));
+    }
     let stack = get(n::STACK);
     assert!(w.store().get::<Body>(stack).is_none(), "the stack's parent is a plain frame");
     let boxes = snap.children(stack);

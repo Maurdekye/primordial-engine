@@ -110,7 +110,7 @@ fn run(at: Where) -> Run {
                 let (_, r) = circle(at, k);
                 let angle = 2.0 * f64::from(f as u32) * f64::from(DT) / r;
                 let walk = [(-angle.sin() * 2.0) as f32, (angle.cos() * 2.0) as f32];
-                let input = MoverInput { walk, room: [0.0; 2], jump: f % 120 == 60 };
+                let input = MoverInput { walk, room: [0.0; 2], jump: f % 120 == 60, hands: [None; 2] };
                 pw.move_player(id(5_000 + k), &input, &[], &PLAYER, DT).expect("a move");
             }
         }

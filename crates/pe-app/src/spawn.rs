@@ -31,10 +31,15 @@ pub enum Kind {
     Sphere,
     Capsule,
     Stack,
+    /// The heavy templates (pe-world `preset::HEAVY`, the friend test of 11-27): solid ground a player stands on.
+    BigCrate,
+    Platform,
+    Slab,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 4] = [Kind::Box, Kind::Sphere, Kind::Capsule, Kind::Stack];
+    pub const ALL: [Kind; 7] =
+        [Kind::Box, Kind::Sphere, Kind::Capsule, Kind::Stack, Kind::BigCrate, Kind::Platform, Kind::Slab];
 
     /// The template's name, which is also the copy's.
     pub fn template(self) -> &'static str {
@@ -44,6 +49,9 @@ impl Kind {
             Kind::Sphere => n::SPHERE,
             Kind::Capsule => n::CAPSULE,
             Kind::Stack => n::STACK,
+            Kind::BigCrate => n::BIG_CRATE,
+            Kind::Platform => n::PLATFORM,
+            Kind::Slab => n::SLAB,
         }
     }
 
@@ -54,7 +62,32 @@ impl Kind {
             Kind::Sphere => "sphere",
             Kind::Capsule => "capsule",
             Kind::Stack => "stack",
+            Kind::BigCrate => "crate",
+            Kind::Platform => "platform",
+            Kind::Slab => "slab",
         }
+    }
+
+    /// A heavy template's half extents, m (pe-world `preset::HEAVY`); `None` for the small ones.
+    pub fn heavy_half(self) -> Option<[f32; 3]> {
+        let name = self.template();
+        pe_world::preset::HEAVY.iter().find(|h| h.0 == name).map(|h| h.1)
+    }
+
+    /// The root's height when it stands on the floor: a stack's root just above it, a heavy box's centre at its half
+    /// height and the same gap; `None` for what appears in the air.
+    pub fn on_floor(self) -> Option<f64> {
+        match (self, self.heavy_half()) {
+            (Kind::Stack, _) => Some(FLOOR_GAP),
+            (_, Some(h)) => Some(f64::from(h[1]) + FLOOR_GAP),
+            _ => None,
+        }
+    }
+
+    /// How far apart two of it go on a grid or a row, m: the small ones' [`GRID_STEP`], a heavy one's width and
+    /// 0.5 m more.
+    pub fn spacing(self) -> f64 {
+        self.heavy_half().map_or(GRID_STEP, |h| 2.0 * f64::from(h[0].max(h[2])) + 0.5)
     }
 
     pub fn parse(w: &str) -> Option<Kind> {
@@ -228,8 +261,7 @@ pub enum Command {
 /// The console's `spawn` arguments: `clear`, a kind, or a kind and a count.
 pub fn parse_command(what: &str) -> Result<Command, String> {
     let words: Vec<&str> = what.split_whitespace().collect();
-    let kind =
-        |w: &str| Kind::parse(w).ok_or_else(|| format!("`spawn {what}`: say box, sphere, capsule, stack or clear"));
+    let kind = |w: &str| Kind::parse(w).ok_or_else(|| format!("`spawn {what}`: say {} or clear", words_list()));
     match words[..] {
         ["clear"] => Ok(Command::Clear),
         [w] => Ok(Command::One(kind(w)?)),
@@ -240,23 +272,36 @@ pub fn parse_command(what: &str) -> Result<Command, String> {
                 _ => Err(format!("`spawn {what}`: a count is a whole number from 1 to {COUNT_MAX}")),
             }
         }
-        _ => Err(format!("`spawn {what}`: say box, sphere, capsule, stack [count] or clear")),
+        _ => Err(format!("`spawn {what}`: say {} [count] or clear", words_list())),
     }
+}
+
+/// The kinds' console words, comma-separated.
+fn words_list() -> String {
+    Kind::ALL.map(Kind::word).join(", ")
 }
 
 /// The counted spawn's `n`-th place: [`GRID_ACROSS`] to a row from [`GRID_AT`], [`GRID_STEP`] apart, rows going
 /// away from the origin; a stack on the floor.
 pub fn grid_at(k: Kind, n: u32) -> [f64; 3] {
-    let x = GRID_AT[0] + GRID_STEP * f64::from(n % GRID_ACROSS);
-    let z = GRID_AT[2] - GRID_STEP * f64::from(n / GRID_ACROSS);
-    [x, if k == Kind::Stack { FLOOR_GAP } else { GRID_AT[1] }, z]
+    let step = k.spacing();
+    // A heavy kind's rows are as wide as the small ones' (GRID_ACROSS × GRID_STEP), so fewer to a row.
+    let across = ((f64::from(GRID_ACROSS) * GRID_STEP / step) as u32).max(1);
+    let x = GRID_AT[0] + step * f64::from(n % across);
+    let z = GRID_AT[2] - step * f64::from(n / across);
+    [x, k.on_floor().unwrap_or(GRID_AT[1]), z]
 }
 
 /// The console's `n`-th spawn's place: a row of five in front of the origin, a stack on the floor.
 pub fn console_at(k: Kind, n: u32) -> [f64; 3] {
+    if k.heavy_half().is_some() {
+        // A heavy one goes 1.5 m further out than the small ones' rows, its width apart, so it never lands on them.
+        let step = k.spacing();
+        return [CONSOLE_AT[0] + step * f64::from(n % 3), k.on_floor().unwrap_or(0.0), CONSOLE_AT[2] - 1.5 - step];
+    }
     let x = CONSOLE_AT[0] + 0.3 * f64::from(n % 5);
     let z = CONSOLE_AT[2] - 0.4 * f64::from((n / 5) % 4);
-    [x, if k == Kind::Stack { FLOOR_GAP } else { CONSOLE_AT[1] }, z]
+    [x, k.on_floor().unwrap_or(CONSOLE_AT[1]), z]
 }
 
 /// A stack's root above the floor's top (at the origin's height), so its bottom box starts just clear of it.
@@ -279,7 +324,13 @@ pub fn in_front(head: [f64; 3], forward: [f64; 3], k: Kind, hands: &[[f64; 3]]) 
     let (fx, fz) = if len > 1e-6 { (fx / len, fz / len) } else { (0.0, -1.0) };
     // Left of the level forward: for forward -Z, left is -X.
     let (lx, lz) = (fz, -fx);
-    let (ahead0, y) = if k == Kind::Stack { (0.8, FLOOR_GAP) } else { (0.5, (head[1] - 0.2).max(0.3)) };
+    // A heavy box stands on the floor far enough ahead that its near side clears the player's body (0.25 m around the
+    // head's spot over the floor) by 0.2 m.
+    let (ahead0, y) = match (k, k.heavy_half()) {
+        (Kind::Stack, _) => (0.8, FLOOR_GAP),
+        (_, Some(h)) => (0.45 + f64::from(h[0].max(h[2])), k.on_floor().unwrap_or(FLOOR_GAP)),
+        _ => (0.5, (head[1] - 0.2).max(0.3)),
+    };
     let spot = |ahead: f64, left: f64| [head[0] + fx * ahead + lx * left, y, head[2] + fz * ahead + lz * left];
     let clear = |p: &[f64; 3]| {
         hands
@@ -510,6 +561,25 @@ mod tests {
         assert_eq!(low[1], 0.3, "never below the floor");
         let up = in_front([0.0, 1.6, 0.0], [0.0, 1.0, 0.0], Kind::Box, &[]);
         assert!((up[0] + 0.25).abs() < 1e-9 && (up[2] + 0.5).abs() < 1e-9, "looking straight up: ahead is -Z");
+    }
+
+    /// The heavy templates (the friend test of 11-27) stand on the floor, their near side clear of the player's body, and
+    /// a grid or a row of them never overlaps.
+    #[test]
+    fn heavy_things_stand_on_the_floor_clear_of_the_player() {
+        for k in [Kind::BigCrate, Kind::Platform, Kind::Slab] {
+            let h = k.heavy_half().expect("a heavy kind");
+            assert_eq!(Kind::parse(k.word()), Some(k));
+            let at = in_front([0.0, 1.6, 0.0], [0.0, 0.0, -1.0], k, &[]);
+            assert!((at[1] - (f64::from(h[1]) + FLOOR_GAP)).abs() < 1e-9, "{k:?} on the floor: {at:?}");
+            let near = -at[2] - f64::from(h[2]);
+            assert!(near >= 0.25 + 0.2 - 1e-9, "{k:?}'s near side is {near} m ahead");
+            let (a, b) = (grid_at(k, 0), grid_at(k, 1));
+            assert!((b[0] - a[0]).abs() >= 2.0 * f64::from(h[0]) + 0.5 - 1e-9, "{k:?} grid {a:?} {b:?}");
+            let (c, d) = (console_at(k, 0), console_at(k, 1));
+            assert!((d[0] - c[0]).abs() >= 2.0 * f64::from(h[0]) + 0.5 - 1e-9 && c[1] == a[1], "{k:?} row {c:?} {d:?}");
+        }
+        assert!(parse_command("nonsense").unwrap_err().contains("crate, platform, slab"));
     }
 
     /// The plane at frame 4 with `me` an editor, behind pe-app's own ports (no simulation: dry runs and reads).

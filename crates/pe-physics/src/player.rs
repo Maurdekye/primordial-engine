@@ -6,14 +6,19 @@
 //!   ([`PlayerParams::capsule`]) floats [`PlayerParams::ride`] above them. One downward probe, a sphere cast from
 //!   inside the bottom of the capsule, finds the ground (the closest hit not too steep to stand on), so steps and bumps
 //!   lower than the ride pass beneath the capsule. The body's shape touches nothing in the solver and no query sees
-//!   it: players pass through each other (the user's 3a), and everything the body does to the world is
-//!   done here, in the move.
+//!   it, and everything the body does to the world is done here, in the move.
+//! * **Players are walls to each other** (the friend test of 11-27, superseding 3a's pass-through):
+//!   after its slide, a move steps the capsule out of every other player's it overlaps ([`PhysicsWorld::apart`]),
+//!   across the floor, then slides that step too, so a wall still holds. Each move sees the others where they stood at
+//!   the frame's start. A player is never ground: one that lands on a head slides off it.
 //! * **Solid and light** (user 5c; @coordinator-opus): static and kinematic bodies, and dynamic bodies of
 //!   at least [`PlayerParams::heavy_mass`] (each body's own mass, read when the move runs), are walls and ground: the
 //!   capsule slides on them and the probe stands on them. Lighter dynamic bodies are neither. They are shoved, each by
 //!   one capped impulse a move, when they are inside the player's push volume (the capsule and the push capsule below
 //!   it, [`PlayerParams::push_capsule`]), in object-id order. What the move is told to ignore (what the player holds,
-//!   and every player's hands, since players pass through each other) is neither solid nor shoved.
+//!   and every player's hands) is neither solid nor shoved. **Nor is a light body by the player's own hands**
+//!   ([`MoverInput::hands`], [`PlayerParams::hand_clear`]): leaning down to pick something up carries the capsule
+//!   forward under the head, and it would shove away what the hand reaches for (the user point 3).
 //! * **Out of walls** (the user's 6, "your body is pushed out the wall"): the capsule never stays inside something
 //!   solid. Box3D's mover gives no plane for a hull whose shape the capsule's core is inside, so the move adds one, the
 //!   hull's face that needs the least push.
@@ -37,7 +42,7 @@ use box3d_rust::body::{
     body_get_type, body_set_target_transform, create_body,
 };
 use box3d_rust::distance::make_proxy;
-use box3d_rust::geometry::{Capsule, CollisionPlane};
+use box3d_rust::geometry::{Capsule, CollisionPlane, ShapeType};
 use box3d_rust::hull::get_hull_planes;
 use box3d_rust::id::{BodyId, ShapeId};
 use box3d_rust::math_functions::{
@@ -46,7 +51,7 @@ use box3d_rust::math_functions::{
     rotate_vector, sub, sub_pos,
 };
 use box3d_rust::mover::{clip_vector, solve_planes};
-use box3d_rust::shape::{create_capsule_shape, shape_get_body, shape_get_hull};
+use box3d_rust::shape::{create_capsule_shape, shape_get_body, shape_get_hull, shape_get_type};
 use box3d_rust::types::{BodyType, QueryFilter, default_body_def, default_query_filter, default_shape_def};
 use box3d_rust::world::{World, world_cast_mover, world_cast_shape, world_collide_mover, world_overlap_shape};
 use pe_core::ids::ObjectId;
@@ -109,11 +114,15 @@ pub struct PlayerParams {
     /// The caps on one shove: the speed it may give a light body, m/s, and its impulse, N s.
     pub max_shove_speed: f32,
     pub max_shove_impulse: f32,
+    /// A light body whose centre, or whose touch with the push volume, is within this of one of the player's own
+    /// hands ([`MoverInput::hands`]) is not shoved, m.
+    pub hand_clear: f32,
 }
 
 /// The first mover's tuning [I, to tune with the user]: a 1.7 m player with a 0.25 m radius, steps up to 0.3 m, a
 /// 5 m/s walk at most, a 0.9 m jump (5.2 m/s against 15 m/s²), 0.1 s of coyote time and of press buffer, slopes up to
-/// about 50°, bodies from 40 kg solid, a 75 kg player, and shoves of at most 10 m/s and 200 N s.
+/// about 50°, bodies from 40 kg solid, a 75 kg player, shoves of at most 10 m/s and 200 N s, and none within 0.35 m
+/// of the player's own hands.
 pub const PLAYER: PlayerParams = PlayerParams {
     radius: 0.25,
     height: 1.7,
@@ -137,6 +146,7 @@ pub const PLAYER: PlayerParams = PlayerParams {
     push_floor: 0.02,
     max_shove_speed: 10.0,
     max_shove_impulse: 200.0,
+    hand_clear: 0.35,
 };
 
 impl PlayerParams {
@@ -144,7 +154,7 @@ impl PlayerParams {
     /// capsule above the ride, the push capsule below it, and lengths, speeds and masses within pe-physics's limits.
     pub fn validate(&self) -> Result<(), PhysicsError> {
         let p = self;
-        let lengths = [p.radius, p.height, p.ride, p.snap, p.probe_radius, p.max_room_step, p.push_floor];
+        let lengths = [p.radius, p.height, p.ride, p.snap, p.probe_radius, p.max_room_step, p.push_floor, p.hand_clear];
         let rates = [
             p.rise_speed,
             p.drop_speed,
@@ -203,12 +213,21 @@ pub struct MoverInput {
     pub room: [f32; 2],
     /// Whether jump was pressed this frame (a press, not a hold: a held or re-sent sample never presses twice).
     pub jump: bool,
+    /// Where the player's own hands are, in the physics world as the feet are: no light body within
+    /// [`PlayerParams::hand_clear`] of one is shoved. `None` for a hand the player hasn't got.
+    pub hands: [Option<[f64; 3]>; 2],
 }
 
 impl MoverInput {
     fn validate(&self) -> Result<(), PhysicsError> {
         let ok = self.walk.iter().chain(&self.room).all(|v| v.is_finite() && v.abs() <= MAX_SPEED);
-        if ok { Ok(()) } else { Err(PhysicsError::InvalidValue("move input")) }
+        if !ok {
+            return Err(PhysicsError::InvalidValue("move input"));
+        }
+        for h in self.hands.iter().flatten() {
+            position(h, "move input hand")?;
+        }
+        Ok(())
     }
 }
 
@@ -395,6 +414,10 @@ fn mover_plane(plane: Plane, limit: f32, min_ground_normal: f32, level_steep: bo
 /// mover leaves without one (hull/queries.rs, "deep overlap on hulls is intentionally not handled"): of the hull's
 /// faces, the one whose push clears the capsule's deeper end by its radius is the least. `None` for other shapes.
 fn push_out(world: &World, shape: ShapeId, at: Pos, capsule: &Capsule) -> Option<Plane> {
+    // Only a hull has planes to push out along (a heavy sphere or capsule inside the core gives none).
+    if shape_get_type(world, shape) != ShapeType::Hull {
+        return None;
+    }
     let hull = shape_get_hull(world, shape)?;
     let xf = body_get_transform(world, shape_get_body(world, shape));
     // The core's ends in the hull's frame (a hull shape is in its body's frame).
@@ -425,7 +448,7 @@ struct Probe {
 impl PhysicsWorld {
     /// Make `id`'s body a player standing with its feet at `feet`: a kinematic body whose one shape is the mover's
     /// capsule ([`PlayerParams::capsule`]), in [`PLAYER_CATEGORY`] with an empty mask, so it touches nothing in the
-    /// solver and no query sees it. Like [`Self::add_body`], refused for `ObjectId::NONE`, a bound object or a bad
+    /// solver and no query sees it (other players' moves step around it, [`Self::apart`]). Like [`Self::add_body`], refused for `ObjectId::NONE`, a bound object or a bad
     /// tuning, with nothing created.
     pub fn add_player(&mut self, id: ObjectId, feet: [f64; 3], params: &PlayerParams) -> Result<(), PhysicsError> {
         if id.is_none() {
@@ -522,13 +545,19 @@ impl PhysicsWorld {
             _ => {}
         }
 
-        let (end, planes) = self.slide(start, delta, params, &solid, want.grounded || v.y > 0.0);
+        let level_steep = want.grounded || v.y > 0.0;
+        let (mut end, mut planes) = self.slide(start, delta, params, &solid, level_steep);
+        let apart = self.apart(id, end, params);
+        if apart != VEC3_ZERO {
+            (end, planes) = self.slide(end, apart, params, &solid, level_steep);
+        }
         let velocity = clip_vector(v, &planes);
         let moved = sub_pos(end, start);
         let target = BoxWorldTransform { p: end, q: QUAT_IDENTITY };
         body_set_target_transform(&mut self.world, body, target, dt, moved != VEC3_ZERO);
 
-        self.shove(end, mul_sv(1.0 / dt, moved), params, &ignored, dt);
+        let hands: Vec<Pos> = input.hands.iter().flatten().map(|&h| pos(h)).collect();
+        self.shove(end, mul_sv(1.0 / dt, moved), params, &ignored, &hands, dt);
         if let (true, Some(p)) = (want.grounded, ground)
             && body_get_type(&self.world, p.body) == BodyType::Dynamic
         {
@@ -539,6 +568,37 @@ impl PhysicsWorld {
         let next = PlayerState { velocity: [velocity.x, velocity.y, velocity.z], ..want.state };
         self.players.insert(id, next);
         Ok(Pose { position: from_pos(end), rotation: [0.0, 0.0, 0.0, 1.0] })
+    }
+
+    /// How far across the floor player `me`'s capsule, with its feet at `feet`, must step to leave every other
+    /// player's (the friend test of 11-27: players are walls to each other). For each other player whose capsule's
+    /// height overlaps this one's and whose feet are nearer than two radii across the floor, in object-id order, the
+    /// step out along the line between their feet (along +x when they stand on the same spot). Each other player is
+    /// where it stood at the frame's start: its body's pose, which the step hasn't moved yet.
+    fn apart(&self, me: ObjectId, feet: Pos, params: &PlayerParams) -> Vec3 {
+        let reach = 2.0 * params.radius;
+        let mut out = VEC3_ZERO;
+        for (&other, _) in self.players.iter() {
+            if other == me {
+                continue;
+            }
+            let Some(&body) = self.bodies.get(&other) else { continue };
+            let there = body_get_transform(&self.world, body).p;
+            let d = sub_pos(offset_pos(feet, out), there);
+            // Both capsules span the same heights over their feet: they meet in height if the feet are within it.
+            if d.y.abs() >= params.height - params.ride {
+                continue;
+            }
+            let across = d.x * d.x + d.z * d.z;
+            if across >= reach * reach {
+                continue;
+            }
+            let len = across.sqrt();
+            let (dir_x, dir_z) = if len > 0.0 { (d.x / len, d.z / len) } else { (1.0, 0.0) };
+            let push = reach - len;
+            out = add(out, Vec3 { x: dir_x * push, y: 0.0, z: dir_z * push });
+        }
+        out
     }
 
     /// The ground under feet at `feet`, at most `below` under them: a sphere of [`PlayerParams::probe_radius`] cast
@@ -666,11 +726,22 @@ impl PhysicsWorld {
     /// Shove the light bodies in a player's push volume with its feet at `feet`, moving at `velocity`: each, in
     /// object-id order, gets one impulse at its deepest point, away from the player, enough to stop closing on it and
     /// to clear the overlap in `dt`, capped at [`PlayerParams::max_shove_speed`] and
-    /// [`PlayerParams::max_shove_impulse`]. Ignored bodies are skipped.
-    fn shove(&mut self, feet: Pos, velocity: Vec3, params: &PlayerParams, ignored: &BTreeSet<i32>, dt: f32) {
+    /// [`PlayerParams::max_shove_impulse`]. Ignored bodies are skipped, and so is a body by one of `hands` (its centre
+    /// or its touch within [`PlayerParams::hand_clear`]).
+    fn shove(
+        &mut self,
+        feet: Pos,
+        velocity: Vec3,
+        params: &PlayerParams,
+        ignored: &BTreeSet<i32>,
+        hands: &[Pos],
+        dt: f32,
+    ) {
         let world = &self.world;
         let filter = player_query_filter();
         let solid = Solid { heavy_mass: params.heavy_mass, ignored };
+        let clear = params.hand_clear * params.hand_clear;
+        let by_hand = |p: Pos| hands.iter().any(|&h| length_squared(sub_pos(p, h)) <= clear);
         // Per object: depth, shape, plane order, push direction and point; the deepest plane wins, ties by shape.
         let mut touched: BTreeMap<ObjectId, (f32, i32, i32, Vec3, Pos)> = BTreeMap::new();
         for capsule in [params.capsule(), params.push_capsule()] {
@@ -682,7 +753,13 @@ impl PhysicsWorld {
                 let Some(&object) = self.objects.get(&body.index1) else {
                     return true;
                 };
+                if by_hand(body_get_transform(world, body).p) {
+                    return true;
+                }
                 for (k, r) in results.iter().enumerate() {
+                    if by_hand(offset_pos(feet, r.point)) {
+                        continue;
+                    }
                     let key = (r.plane.offset, shape.index1, k as i32);
                     let deeper = touched
                         .get(&object)
