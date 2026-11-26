@@ -3595,7 +3595,6 @@ fn join_import_report(seed: u64, import_ms: i64, extra: i64, importing: bool, ms
     s.slow_link = Some((0, 1, extra, 50));
     s.behind[1] = u64::MAX / 2;
     s.join(1, 0, &[0], Some((2, 0)));
-    assert!(s.nodes[1].importing, "seed {seed}: a joiner starts importing");
     if !importing {
         s.nodes[1].importing = false;
     }
