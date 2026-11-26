@@ -784,8 +784,8 @@ from a menu instead of the console (crate::menu, on pe-render's panels, render.m
   friend copies the invite, and the invite lets the joiner in. The joiner's reply code is only saved and printed
   once, the fallback. Join reads an invite the same way and relaunches only with one that decodes and hasn't
   expired, and never with the opener's own invite, which would rejoin the session it leaves; otherwise it says why
-  and the session stays (@engine-architect's L1, @api-eng's 2). A relaunched process (`PE_RELAUNCHED=1`) waits up to 5 s for the
-  old one to let go of the UDP port before calling it in use.
+  and the session stays (@engine-architect's L1, @api-eng's 2). A relaunched process (`PE_RELAUNCHED=1`) waits up
+  to 5 s for the old one to let go of the UDP port before calling it in use.
 - **Copy and paste** (ruling (b)): the system clipboard through arboard (default features off;
   Wayland through the data-control protocol, X11 otherwise), and every time also a file, `<what>.txt` in a
   `friend-test` folder beside the identity file, with a console line giving the text and the path. The menu says
