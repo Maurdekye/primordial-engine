@@ -53,9 +53,10 @@ fn an_agent_on_a_edits_the_lamp_and_b_sees_it_at_the_agreed_frame() {
 
     let (mut a, mut a_in, a_out) = start(&dir, "a", "author", &["--open", "--check-replay"]);
     let invite = line_after(&a_out, "invite: ", until, &dir);
-    let (mut b, _b_in, b_out) = start(&dir, "b", "observer", &["--join", &invite]);
-    let reply = line_after(&b_out, "reply code for the opener: ", until, &dir);
-    writeln!(a_in, "{reply}").and_then(|()| a_in.flush()).expect("A reads B's reply code");
+    // B joins on the invite alone (invite-only, the user's ruling): no reply code to paste. A's console
+    // names the join as it starts.
+    let (mut b, _b_in, _b_out) = start(&dir, "b", "observer", &["--join", &invite]);
+    line_with(&a_out, " is joining with your invite…", until, &dir);
     // A's agent commits a script only once the join has ended (app.md 4, "A world with scripts: an M1 limit"): a
     // commit before the `Admit` fails the join, and one stamped between it and E leaves E's state holding a version
     // whose archive B's import doesn't carry. A's console says B joined at the new epoch's first final cut, after E.
@@ -248,7 +249,7 @@ async fn call(c: &Client, name: &str, args: Value) -> Result<Value, Value> {
 }
 
 /// Waits until this machine's `session_info` lists both members as here (pe-net's links): A opens alone, and B joins
-/// at a cut once the test pastes its reply code (app.md 4, "Joining from a cut").
+/// at a cut on the invite alone (app.md 4, "Joining from a cut"; invite-only).
 async fn both_here(c: &Client) {
     let until = Instant::now() + Duration::from_secs(60);
     loop {

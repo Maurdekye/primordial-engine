@@ -761,7 +761,9 @@ from a menu instead of the console (crate::menu, on pe-render's panels, render.m
   @coordinator-opus, after a joiner was left running in the background on 2026-11-26): the same process
   id, so the terminal's `run.sh` still waits for it, Ctrl-C and the console's `quit` still reach it, and nothing
   outlives the terminal. Every file and socket of the old run is close-on-exec. Windows has no exec: the new process
-  shares the console, and the kit's `run-windows.ps1` waits for every `pe-app.exe` of its kit before it ends.
+  shares the console, and the kit's `run-windows.ps1` waits for every `pe-app.exe` of its kit before it ends. The
+  console's `relaunch` (undocumented in the kit's READMEs) does what the menu's New session does, so the no-orphan
+  check of a relaunch, and of a relaunch of a relaunch, runs without a menu press (@coordinator-opus).
 - **A joiner waiting** reads the console from its start, so `quit` (and Ctrl-C, or SIGTERM) end it while it waits
   to be let in. A joiner started for VR has no XR session until it is in (the join comes first, main.rs), so the
   headset shows the runtime's own screen meanwhile. When VR then doesn't start, or its session ends, it tries again

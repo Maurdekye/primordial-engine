@@ -293,6 +293,13 @@ fn read_console(replies: Option<std::sync::mpsc::Sender<Reply>>, replay: bool, q
             if cfg!(debug_assertions) && line == "panic" {
                 panic!("the console's test panic (`panic`, debug builds only)");
             }
+            // Undocumented: the menu's New session from the console, for the no-orphan check of a relaunch and a
+            // relaunch of a relaunch without a menu press (@coordinator-opus; app.md 4.1).
+            if line == "relaunch" {
+                pe_app::menu::ask_relaunch(&pe_app::menu::Relaunch::NewSession);
+                quit.request_from_app("the console: restarting");
+                continue;
+            }
             if line == "replay" {
                 if replay {
                     pe_app::replay::request();
