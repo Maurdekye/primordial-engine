@@ -6,10 +6,16 @@
 #   MSYS_NO_PATHCONV=1 bash "<team folder>/heavy.sh" wsl.exe -d Ubuntu-24.04 -- \
 #     bash <repo>/scripts/friend-kit/build-linux.sh <full sha> [jobs]
 #
-# The sources are a git checkout in WSL's home (~/pe-friend-kit/src), fetched from the repo on S:, so a rebuild
-# touches only the files that changed (an archive copy would reset every mtime, or keep stale ones). The cargo
-# target is ~/pe-friend-kit/target, on WSL's own disk. The kit is written to ~/pe-friend-kit/out and copied to
+# The sources are a git checkout on WSL's own disk (/var/tmp/pe-friend-kit/src, or $PE_KIT_BASE/src), fetched from
+# the repo on S:, so a rebuild touches only the files that changed (an archive copy would reset every mtime, or keep
+# stale ones). The cargo target is beside it (target/). The kit is written to out/ and copied to
 # <work>\friend-kit\pe-friend-kit-<sha12>.tar.gz.
+#
+# No path in the build machine's home goes into the binary, which the friend runs and whose messages and logs they
+# see (the friend's first run showed /home/<builder>/...; @coordinator-opus): the build folder is
+# outside home, because pe-logic and pe-app keep their crate folders (env!("CARGO_MANIFEST_DIR")), and cargo's home
+# (the registry's sources, named by panic locations) is remapped to /cargo. The build fails if the binary still names
+# $HOME.
 #
 # Optional, for a trial build (@audio-eval's Steam Audio trial):
 #   PE_KIT_FEATURES   cargo features for pe-app, e.g. steam-audio-trial; the kit's name gets them as a suffix
@@ -20,7 +26,8 @@ sha=${1:?usage: build-linux.sh <full sha> [jobs]}
 jobs=${2:-3}
 repo=${PE_KIT_REPO:-<repo>}
 drop=${PE_KIT_DROP:-<work>/friend-kit}
-base=$HOME/pe-friend-kit
+base=${PE_KIT_BASE:-/var/tmp/pe-friend-kit}
+case "$base/" in "$HOME"/*) echo "build-linux: PE_KIT_BASE must be outside $HOME (the binary keeps its path)" >&2; exit 2 ;; esac
 # run.sh, collect-logs.sh and the README: the built commit's, or (a commit from before the kit, e.g. a trial branch)
 # the ones beside this script.
 here=$(cd "$(dirname "$0")" && pwd)
@@ -56,7 +63,13 @@ if [[ $features =~ (^|[[:space:],])(pe-app/)?steam-audio-trial($|[[:space:],]) ]
 fi
 feat=()
 [ -z "$features" ] || feat=(--features "$features")
-CARGO_TARGET_DIR=$base/target nice -n 19 cargo build --release --locked -p pe-app -j "$jobs" "${feat[@]}"
+CARGO_TARGET_DIR=$base/target RUSTFLAGS="--remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo" \
+  nice -n 19 cargo build --release --locked -p pe-app -j "$jobs" "${feat[@]}"
+named=$(grep -a -c -F "$HOME/" "$base/target/release/pe-app" || true)
+if [ "${named:-0}" != 0 ]; then
+  echo "build-linux: pe-app still names $HOME/ (on $named lines)" >&2
+  exit 2
+fi
 
 short=${sha:0:12}${features:+-${features//[ ,\/]/-}}
 out=$base/out/pe-friend-kit-$short

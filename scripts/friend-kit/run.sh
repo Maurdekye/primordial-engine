@@ -54,14 +54,15 @@ report() {
     echo "vulkaninfo: not installed (optional: sudo dnf install vulkan-tools)"
   fi
   echo "== OpenXR runtime"
-  echo "XR_RUNTIME_JSON=${XR_RUNTIME_JSON:-<unset>}"
+  echo "XR_RUNTIME_JSON=${XR_RUNTIME_JSON-<unset>}"
   # The manifests in pe-app's order (pe-xr's loader.rs): XR_RUNTIME_JSON if set, else the first file under the XDG
   # config paths. "pe-app reads" marks the one it opens. The library line gives the path it opens: a relative
   # library_path resolves against the real file's folder, symlinks followed, as pe-app does since
   # @ticket:primordial-engine/pe-xr-resolve-a-manifest-s-relative-library-path (before it, run.sh said "present"
   # while pe-app looked beside the link and found nothing).
   local dirs="${XDG_CONFIG_HOME:-$HOME/.config}:${XDG_CONFIG_DIRS:-/etc/xdg}" d f tag="pe-app reads"
-  if [ -n "${XR_RUNTIME_JSON:-}" ]; then
+  # Set but empty counts as set, as in pe-xr (var_os): an empty path, a missing manifest (@design-reviewer's N1).
+  if [ "${XR_RUNTIME_JSON+set}" = set ]; then
     show_manifest "$XR_RUNTIME_JSON" "$tag (XR_RUNTIME_JSON)"
     tag="not read (XR_RUNTIME_JSON is set)"
   fi

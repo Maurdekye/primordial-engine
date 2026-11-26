@@ -16,6 +16,11 @@
 # For the Steam Audio trial (features.txt; docs/steam-audio-trial.md), give Valve's files, which are never in Git:
 #   PE_KIT_EXTRA      files (Git Bash paths, space-separated) copied into the kit beside pe-app.exe: phonon.dll and
 #                     its LICENSE.md and THIRDPARTY.md. run-windows.ps1 points PE_STEAM_AUDIO_LIB at phonon.dll.
+#
+# No path in this PC's user profile goes into the binary: cargo's home (the registry's sources, named by panic
+# locations) is remapped to /cargo, and the build fails if the binary still names the profile (as in build-linux.sh,
+# @coordinator-opus). The worktree's own path stays, because pe-logic and pe-app keep their crate
+# folders.
 set -euo pipefail
 sha=${1:?usage: build-windows.sh <full sha>}
 drop=${PE_KIT_DROP:-<work>/friend-kit}
@@ -38,13 +43,21 @@ if [[ $features =~ (^|[[:space:],])(pe-app/)?steam-audio-trial($|[[:space:],]) ]
 fi
 feat=()
 [ -z "$features" ] || feat=(--features "$features")
-cargo build --release --locked -p pe-app "${feat[@]}"
+cargo_home=$(cygpath -w "${CARGO_HOME:-$USERPROFILE/.cargo}")
+RUSTFLAGS="--remap-path-prefix=$cargo_home=/cargo" cargo build --release --locked -p pe-app "${feat[@]}"
 target=$(cargo metadata --format-version 1 --no-deps | python -c "import json,sys; print(json.load(sys.stdin)['target_directory'])")
 short=${sha:0:12}${features:+-${features//[ ,\/]/-}}
 out=$drop/pe-friend-win-$short
 rm -rf "$out"
 mkdir -p "$out"
 cp "$target/release/pe-app.exe" "$out/"
+profile="$(cygpath -w "$USERPROFILE")\\"
+# No -i: Git Bash's grep -i aborts on binary input (the team's scrub note); cygpath gives the profile's own case.
+named=$(grep -a -c -F "$profile" "$out/pe-app.exe" || true)
+if [ "${named:-0}" != 0 ]; then
+  echo "build-windows: pe-app.exe still names $profile (on $named lines)" >&2
+  exit 2
+fi
 here=$(cd "$(dirname "$0")" && pwd)
 cp "$here/run-windows.ps1" "$here/README-windows.md" "$out/"
 extra=()
