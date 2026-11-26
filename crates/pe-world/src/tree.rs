@@ -346,6 +346,7 @@ impl World {
         for v in [s.claim_ms, s.cooldown_ms, s.push_budget, s.reach_mm, s.slack_mm] {
             b.extend_from_slice(&v.to_le_bytes());
         }
+        b.push(u8::from(self.blob_shapes));
         b
     }
 

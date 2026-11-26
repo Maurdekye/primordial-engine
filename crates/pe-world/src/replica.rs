@@ -18,6 +18,9 @@ pub struct Settings {
     pub gravity: [f32; 3],
     /// The domain's physics origin (4.2): bodies are simulated at `pos - origin`.
     pub origin: Pos,
+    /// Whether meshes and hulls, the shapes built from simulation blobs (3.2), are built (6.6, config item 8). Off,
+    /// a mesh or hull shape is unbuildable.
+    pub blob_shapes: bool,
 }
 
 /// The default gravity: 9.81 m/s² down the world's y axis.
@@ -150,7 +153,14 @@ impl World {
     }
 
     pub fn settings(&self) -> Settings {
-        Settings { rate: self.rate, gravity: self.gravity, origin: self.origin }
+        Settings { rate: self.rate, gravity: self.gravity, origin: self.origin, blob_shapes: self.blob_shapes }
+    }
+
+    /// Turns the building of meshes and hulls on or off (6.6, config item 8). A trusted call for genesis, like
+    /// gravity's: no edit, input or governance op writes it, and it stays off in every preset until the joins carry
+    /// blobs to every machine.
+    pub fn set_blob_shapes(&mut self, on: bool) {
+        self.blob_shapes = on;
     }
 
     pub fn set_gravity(&mut self, gravity: [f32; 3]) {
@@ -210,6 +220,7 @@ impl World {
             None => h.write_u8(0),
             Some(line) => h.write_u8(1).write_hash(&line.0),
         };
+        h.write_u8(u8::from(self.blob_shapes));
         // Slice D's tables (7.9): which assets registered which components, and the modules rows. Appended only when
         // a script exists, so a world without scripts keeps the root it had.
         if !self.modules.is_empty() || !self.pending.is_empty() || !self.script_ids.is_empty() {

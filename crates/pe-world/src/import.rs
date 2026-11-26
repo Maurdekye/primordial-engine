@@ -191,6 +191,7 @@ struct Config {
     gravity: [f32; 3],
     origin: Pos,
     input_settings: InputSettings,
+    blob_shapes: bool,
 }
 
 /// Decodes 6.6's config bytes exactly: every item present, nothing after the last, and each value one the world's own
@@ -225,8 +226,25 @@ fn decode_config(bytes: &[u8]) -> Option<Config> {
     if !input_settings.valid() {
         return None;
     }
+    // Config item 8: a byte 0 or 1, like the marker's; no default when it is absent.
+    let blob_shapes = match r.u8()? {
+        0 => false,
+        1 => true,
+        _ => return None,
+    };
     r.end()?;
-    Some(Config { seed, line, m1_marker, agree_settings, rate, depth_limit, gravity, origin, input_settings })
+    Some(Config {
+        seed,
+        line,
+        m1_marker,
+        agree_settings,
+        rate,
+        depth_limit,
+        gravity,
+        origin,
+        input_settings,
+        blob_shapes,
+    })
 }
 
 fn check_table(target: Hash, index: u8, bytes: &[u8], proof: &[Node]) -> Option<()> {
@@ -421,6 +439,7 @@ impl World {
             w.gravity = c.gravity;
             w.origin = c.origin;
             w.input_settings = c.input_settings;
+            w.blob_shapes = c.blob_shapes;
         }
         if let Some(img) = &import.physics {
             if physics_leaf.is_some_and(|p| p != img.global) {
@@ -655,5 +674,31 @@ impl World {
         }
         r.end()?;
         Some(Tombstone { by, frame, expires, parent, place, world, node, rows })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_config;
+    use crate::{BlobStore, World};
+
+    /// Config item 8 (6.6): the last byte is 0 or 1; any other value, a missing byte or one after it is refused.
+    #[test]
+    fn the_blob_shapes_byte_decodes_exactly() {
+        let mut w = World::new(3, BlobStore::default());
+        let off = w.config_bytes();
+        assert_eq!(off.last(), Some(&0));
+        assert!(!decode_config(&off).unwrap().blob_shapes);
+        w.set_blob_shapes(true);
+        let on = w.config_bytes();
+        assert_eq!(on.len(), off.len());
+        assert!(decode_config(&on).unwrap().blob_shapes);
+        let mut bad = on.clone();
+        *bad.last_mut().unwrap() = 2;
+        assert!(decode_config(&bad).is_none());
+        assert!(decode_config(&on[..on.len() - 1]).is_none(), "no default when the byte is absent");
+        let mut long = on.clone();
+        long.push(0);
+        assert!(decode_config(&long).is_none());
     }
 }

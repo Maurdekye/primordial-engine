@@ -459,6 +459,22 @@ which fixes the origin's role deliberately.
   - **a mesh shape may be on any body, moving ones included** (the user answer 1; [I, draft for
     @fable-reviewer, built in the bullet work's part 2 after M1, with hulls, which can't be built today either
     (replica.md 2.1)]; @coordinator-opus's decisions, after @fable-reviewer):
+    - **only in a world that builds them:** meshes and hulls are built only where the world's blob-shapes setting
+      (6.6, config item 8) is on. It is set when the world is founded and is off in every preset; off, a mesh or
+      hull shape is `Unbuildable::Shape`, as before blobs (@coordinator-opus, after @vdw-physics and
+      @fable-reviewer);
+    - **it sits at its body's origin, unturned (v1):** Box3D's mesh shape has no local transform, only a per-axis
+      scale in the body's frame, and baking a child's offset or turn into the vertices would change their bits
+      (and baking its scale would judge the drop after scale, against (a) below). So a mesh is built only where its
+      shape's transform, **composed down the chain** from the body to the shape, is exactly the body's: the
+      position as the build uses it (the `f32` that pe-replica's `part()` casts from `f64`) all ±0, and the
+      rotation's x, y and z all ±0 with w ±1 (the composed rotation's sign is not canonical, so (0, 0, 0, −1)
+      passes). That is the body's own `Shape`, or a child at its origin, unturned. Anywhere else the body is
+      `Unbuildable::Shape`, with the reason: "a mesh child must sit at its body's origin, unturned: snap it there,
+      or make the mesh the body's own shape". The limit is wide: one misplaced mesh child makes the whole body
+      unbuildable, and imported models usually carry their meshes on child nodes. Today's workarounds are the
+      body's own shape, or one static body per mesh node. The lasting lift is at import, which bakes a node's
+      offset and turn into a new blob in the body's frame, not baking at build;
     - **it never collides with another mesh.** It collides with spheres, capsules, boxes and hulls: Box3D has no
       mesh-against-mesh contact [V `box3d-fork/src/contact/lifecycle.rs`, `can_collide`]. So two moving meshes pass
       through each other, and a moving object made only of meshes falls through mesh scenery, a mesh floor included;
@@ -544,7 +560,9 @@ which fixes the origin's role deliberately.
   - a hull is a convex `SimBlobRef`, on any body, its mass Box3D's. The mesh's scale floor (above) holds for it
     too, but there it is pe-replica's: pe-replica passes a hull's points already scaled into the body's frame and
     pe-physics never scales a hull, so the refusal is `Unbuildable::Shape` at pe-replica's build, with the same
-    reason (@vdw-physics).
+    reason (@vdw-physics). A hull has no placement limit: a child hull's points are scaled on the shape's own axes,
+    then turned, then offset into the body's frame, as an offset box is; the scale floor is judged on those axes
+    of the world scale.
   - **The blob formats** (@coordinator-opus, Q2, after @vdw-physics's proposal and @fable-reviewer's
     points). `Shape.mesh` names a mesh or a hull blob by `Shape.kind`; both travel inside their entry (3.4, carried
     blobs). Common to both: little-endian; coordinates are `f32` metres in the shape's local frame, before the
@@ -1434,11 +1452,20 @@ bytes. `H(ctx ‖ …)` and the integer conventions are 6.2's; `lp(b)` is a `u64
      at genesis and changed only by an agreed entry at a frame (no such entry in M1: below) (@engine-architect);
   5. the tick rate (`u32` Hz) and the depth limit (`u32`);
   6. gravity (3 × `f32` bits) and the physics origin (4.5's canonical `Pos` encoding);
-  7. the input settings of 8.1: `claim_ms`, `cooldown_ms`, `push_budget`, `reach_mm`, `slack_mm`, each `u32`.
+  7. the input settings of 8.1: `claim_ms`, `cooldown_ms`, `push_budget`, `reach_mm`, `slack_mm`, each `u32`;
+  8. the **blob-shapes** setting: a byte 0 or 1, anything else refused, as the marker's is. It gates both meshes
+     and hulls, the shapes built from simulation blobs (3.2): on, pe-replica builds them; off, each is
+     `Unbuildable::Shape`. Set when the world is founded (`World::set_blob_shapes`, a trusted genesis call like
+     gravity's), never by an edit in v1, and off in every preset until joins carry every blob to every machine
+     (@coordinator-opus, after @vdw-physics and @fable-reviewer). Import decodes it
+     exactly, like every item: config bytes without it are refused, with no default. When world saves exist,
+     "absent means off" is the intended default for a save from before it. **Open point:** before saves exist,
+     decide whether the byte stays as a world's real choice or goes once meshes are always on; an item, once
+     appended, stays for good.
 
   A new setting is appended, never inserted, and that is a world-format version change. The agent-powers slice
-  (8.1) appends `max_claims` (without and with the right), `max_chunkloaders`, `max_push_dv` and `max_push_speed`,
-  in that order; its per-member override row extends the governance value, also a format change.
+  (8.1) appends, after item 8, `max_claims` (without and with the right), `max_chunkloaders`, `max_push_dv` and
+  `max_push_speed`, in that order; its per-member override row extends the governance value, also a format change.
 - **The config record** (S2 v1.3's `LeafKey::Config`, @engine-architect): the config bytes, with the
   proof `[Node::World]`; it checks as `H("pe.config" ‖ bytes) == World.config`. Import decodes it exactly (every
   item, nothing after, each value one the world's setters accept: a rate of 30 - 120 Hz, a depth limit of
@@ -1448,10 +1475,11 @@ bytes. `H(ctx ‖ …)` and the integer conventions are 6.2's; `lp(b)` is a `u64
 - **Simulation settings live in the world, and the replica reads them from it** (@coordinator-opus,
   after @design-reviewer's Medium on ce6b13f0 and @fable-reviewer). Every setting that changes what a
   simulation computes is in the config record, under the root, and the replica reads it from the world it holds.
-  It keeps no copy taken at construction. Today that means the rate, gravity, the physics origin and 8.1's input
-  settings (the push and speed limits among them); physics settings that a world may choose (CCD switches, solver
-  settings) join the config the same way, appended, while those fixed by the engine build are not world state.
-  **In M1 a world chooses none beyond the rate, gravity and the origin** (@vdw-physics). The Box3D
+  It keeps no copy taken at construction. Today that means the rate, gravity, the physics origin, the blob-shapes
+  setting (item 8) and 8.1's input settings (the push and speed limits among them); physics settings that a world
+  may choose (CCD switches, solver settings) join the config the same way, appended, while those fixed by the
+  engine build are not world state. **In M1 a world chooses none beyond the rate, gravity, the origin and the
+  blob-shapes setting, which stays off** (@vdw-physics). The Box3D
   solver constants, CCD, sleep and contact recycling are fixed by the build (`PhysicsConfig::engine()`); sub-steps
   follow from the rate (ceil(240 / hz)); worker count, capacity and event thresholds don't change results (worker
   count [V]: pe-physics tests/api.rs runs `with_workers(2)`, `(3)` and a worker sweep against one result, and
@@ -1469,8 +1497,9 @@ bytes. `H(ctx ‖ …)` and the integer conventions are 6.2's; `lp(b)` is a `u64
     into a joiner at another rate ends as `RootMismatch` instead (the root check catches it), which pe-diverge's
     stop-at-once rule does not cover; a repair never does this, since the rate is in the config record, so a
     differing rate always makes the config leaf differ and rung 2 sends it (@design-reviewer's nit on a60dac0d).
-  - **No change mid-session in M1.** No M1 entry can change gravity, the origin or the rate: pe-world's setters for
-    them are trusted calls for genesis, and no edit, input or governance op writes the config. A later slice that
+  - **No change mid-session in M1.** No M1 entry can change gravity, the origin, the rate or the blob-shapes
+    setting: pe-world's setters for them are trusted calls for genesis, and no edit, input or governance op writes
+    the config. A later slice that
     adds such an entry applies it at its frame, replays included.
   - **Tests:** a 30 Hz world into a 60 Hz bare joiner (refused at the welcome and at import); non-default gravity
     into a default joiner; non-default gravity, an import, then a rung-1 replay on the joiner, its root compared with

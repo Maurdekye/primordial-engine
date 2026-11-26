@@ -140,6 +140,9 @@ pub struct World {
     /// World settings the physics takes (replica.md 8.1).
     pub(crate) gravity: [f32; 3],
     pub(crate) origin: Pos,
+    /// Whether shapes built from simulation blobs, meshes and hulls (3.2), are built at all (6.6, config item 8):
+    /// set when the world is founded, off by default. Off, a mesh or hull shape is unbuildable, as before blobs.
+    pub(crate) blob_shapes: bool,
     /// The domain's `physics_global` record, from the last `write_physics` (replica.md 3.4).
     pub(crate) physics_global: Hash,
     /// The input tables (8.1): cooldowns, pending hand packs, push windows.
@@ -179,6 +182,7 @@ impl World {
             rate: SimRate::DEFAULT,
             gravity: crate::replica::GRAVITY,
             origin: Pos::ORIGIN,
+            blob_shapes: false,
             physics_global: Hash::ZERO,
             inputs: Arc::new(InputTables::default()),
             input_settings: InputSettings::default(),

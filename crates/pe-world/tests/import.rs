@@ -52,6 +52,7 @@ fn a_joiner_imports_the_whole_world_from_its_base() {
     target.set_origin(Pos::ORIGIN.checked_add(pe_core::Offset([100.0, 2.0, -7.0])).unwrap());
     let s = pe_world::InputSettings { claim_ms: 900, cooldown_ms: 50, push_budget: 1234, reach_mm: 700, slack_mm: 30 };
     target.set_input_settings(s).unwrap();
+    target.set_blob_shapes(true);
     let base = bare(&target);
     assert_ne!(base.root_hash(D), target.root_hash(D));
     let mut got = base.import(D, &full_import(&target)).unwrap();
@@ -61,6 +62,7 @@ fn a_joiner_imports_the_whole_world_from_its_base() {
     assert_eq!(got.agree_settings(), target.agree_settings());
     assert_eq!(got.settings().gravity, target.settings().gravity);
     assert_eq!(got.input_settings(), target.input_settings());
+    assert!(got.settings().blob_shapes);
     assert_eq!(
         got.object_record(find(&got, "Ball 3").unwrap()),
         target.object_record(find(&target, "Ball 3").unwrap())
