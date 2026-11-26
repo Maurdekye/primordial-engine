@@ -10,7 +10,8 @@
 //! * **Players are walls to each other** (the friend test of 11-27, superseding 3a's pass-through):
 //!   after its slide, a move steps the capsule out of every other player's it overlaps ([`PhysicsWorld::apart`]),
 //!   across the floor, then slides that step too, so a wall still holds. Each move sees the others where they stood at
-//!   the frame's start. A player is never ground: one that lands on a head slides off it.
+//!   the frame's start: a player walking into a standing one steps back alone, and an overlap both start in (two on
+//!   one spot, one landed on a head) is split, each taking half, by id where they coincide. A player is never ground.
 //! * **Solid and light** (user 5c; @coordinator-opus): static and kinematic bodies, and dynamic bodies of
 //!   at least [`PlayerParams::heavy_mass`] (each body's own mass, read when the move runs), are walls and ground: the
 //!   capsule slides on them and the probe stands on them. Lighter dynamic bodies are neither. They are shoved, each by
@@ -547,7 +548,7 @@ impl PhysicsWorld {
 
         let level_steep = want.grounded || v.y > 0.0;
         let (mut end, mut planes) = self.slide(start, delta, params, &solid, level_steep);
-        let apart = self.apart(id, end, params);
+        let apart = self.apart(id, start, end, params);
         if apart != VEC3_ZERO {
             (end, planes) = self.slide(end, apart, params, &solid, level_steep);
         }
@@ -556,7 +557,9 @@ impl PhysicsWorld {
         let target = BoxWorldTransform { p: end, q: QUAT_IDENTITY };
         body_set_target_transform(&mut self.world, body, target, dt, moved != VEC3_ZERO);
 
-        let hands: Vec<Pos> = input.hands.iter().flatten().map(|&h| pos(h)).collect();
+        // The hand points come from the pose before the move; the hands go with the body, so they move by `moved`
+        // too (@vdw-physics's Low 6).
+        let hands: Vec<Pos> = input.hands.iter().flatten().map(|&h| offset_pos(pos(h), moved)).collect();
         self.shove(end, mul_sv(1.0 / dt, moved), params, &ignored, &hands, dt);
         if let (true, Some(p)) = (want.grounded, ground)
             && body_get_type(&self.world, p.body) == BodyType::Dynamic
@@ -576,35 +579,44 @@ impl PhysicsWorld {
     /// step out along the line between their feet (on the same spot, along +x for the lower id and -x for the higher).
     /// Each other player is
     /// where it stood at the frame's start: its body's pose, which the step hasn't moved yet.
-    fn apart(&self, me: ObjectId, feet: Pos, params: &PlayerParams) -> Vec3 {
+    fn apart(&self, me: ObjectId, start: Pos, feet: Pos, params: &PlayerParams) -> Vec3 {
         let reach = 2.0 * params.radius;
-        let mut out = VEC3_ZERO;
-        for (&other, _) in self.players.iter() {
-            if other == me {
-                continue;
-            }
-            let Some(&body) = self.bodies.get(&other) else { continue };
-            let there = body_get_transform(&self.world, body).p;
-            let d = sub_pos(offset_pos(feet, out), there);
+        // Whether capsules with feet at `a` and `b` overlap, and if so the across-floor offset and its length.
+        let overlap = |a: Pos, b: Pos| {
+            let d = sub_pos(a, b);
             // Both capsules span the same heights over their feet: they meet in height if the feet are within it.
-            if d.y.abs() >= params.height - params.ride {
-                continue;
-            }
             let across = d.x * d.x + d.z * d.z;
-            if across >= reach * reach {
-                continue;
+            (d.y.abs() < params.height - params.ride && across < reach * reach).then(|| (d, across.sqrt()))
+        };
+        let mut out = VEC3_ZERO;
+        // Up to three passes, so a step out of one player that lands in another is looked at again
+        // (@vdw-physics's Low 4 on a306b59c); a crowd still settles over frames, never all at once.
+        for _ in 0..3 {
+            let before = out;
+            for (&other, _) in self.players.iter() {
+                if other == me {
+                    continue;
+                }
+                let Some(&body) = self.bodies.get(&other) else { continue };
+                let there = body_get_transform(&self.world, body).p;
+                let Some((d, len)) = overlap(offset_pos(feet, out), there) else { continue };
+                // An overlap already there at the frame's start is one both players see, and each takes half of it;
+                // one this move made (walking into a standing player) is this player's alone (@vdw-physics's M2).
+                let share = if overlap(start, there).is_some() { 0.5 } else { 1.0 };
+                // Two on one spot step apart by id, the lower along +x and the higher along -x: each reads the other
+                // where it stood at the frame's start, so a shared direction would carry both off together
+                // (@chunks-reviewer's M1 on a306b59c).
+                let (dir_x, dir_z) = match (len > 0.0, me < other) {
+                    (true, _) => (d.x / len, d.z / len),
+                    (false, true) => (1.0, 0.0),
+                    (false, false) => (-1.0, 0.0),
+                };
+                let push = (reach - len) * share;
+                out = add(out, Vec3 { x: dir_x * push, y: 0.0, z: dir_z * push });
             }
-            let len = across.sqrt();
-            // Two on one spot step apart by id, the lower along +x and the higher along -x: each reads the other
-            // where it stood at the frame's start, so a shared direction would carry both off together
-            // (@chunks-reviewer's M1 on a306b59c).
-            let (dir_x, dir_z) = match (len > 0.0, me < other) {
-                (true, _) => (d.x / len, d.z / len),
-                (false, true) => (1.0, 0.0),
-                (false, false) => (-1.0, 0.0),
-            };
-            let push = reach - len;
-            out = add(out, Vec3 { x: dir_x * push, y: 0.0, z: dir_z * push });
+            if out == before {
+                break;
+            }
         }
         out
     }
@@ -761,13 +773,13 @@ impl PhysicsWorld {
                 let Some(&object) = self.objects.get(&body.index1) else {
                     return true;
                 };
-                if by_hand(body_get_transform(world, body).p) {
+                // By a hand, the whole body is left alone: its origin, or any of its touches (@vdw-physics's Low 5).
+                if by_hand(body_get_transform(world, body).p)
+                    || results.iter().any(|r| by_hand(offset_pos(feet, r.point)))
+                {
                     return true;
                 }
                 for (k, r) in results.iter().enumerate() {
-                    if by_hand(offset_pos(feet, r.point)) {
-                        continue;
-                    }
                     let key = (r.plane.offset, shape.index1, k as i32);
                     let deeper = touched
                         .get(&object)

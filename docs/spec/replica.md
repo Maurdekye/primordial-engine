@@ -1143,8 +1143,10 @@ body object, the `Player` row and the Move input) is walked over the world once 
   pass-through): after its slide, a move steps the capsule out of every other player's it overlaps across the floor
   (`PhysicsWorld::apart`: along the line between the feet, for capsules whose heights meet; two on one spot step
   apart by id, the lower along +x and the higher along −x), then slides that step too, so a wall still holds. Each
-  move sees the others where they stood at the frame's start, so of two walking into each other both step out, at
-  most one overlap's worth more apart than needed (about 2 cm a frame at walking speed). A player is never
+  move sees the others where they stood at the frame's start: a player walking into a standing one steps back alone
+  (the other never sees the overlap), and an overlap both start in (two on one spot, one landed on a head, a
+  rollback's correction) is split, each taking half, so they end touching. Up to three passes look again at a step
+  that lands in another player, so a crowd settles over a few frames. A player is never
   ground: one that lands on a head slides off it. The solver never pairs players with anything (a filter bit can't do
   it: Box3D's default category is every bit, so any mask bit pairs a player with every shape). Under network delay
   each machine predicts the other player and corrects it by rollback: measured in pe-replica `tests/players.rs`,

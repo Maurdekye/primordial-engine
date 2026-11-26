@@ -654,6 +654,52 @@ fn two_players_on_one_spot_step_apart_and_stay() {
     }
     let (a, b) = (feet(&pw), pw.pose(id(2)).unwrap().position);
     let apart = ((a[0] - b[0]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
-    assert!(apart >= 2.0 * f64::from(PLAYER.radius) - 0.01 && apart <= 1.1, "{a:?} {b:?}");
+    let reach = 2.0 * f64::from(PLAYER.radius);
+    assert!((apart - reach).abs() < 0.02, "an overlap both start in is split, so they end touching: {a:?} {b:?}");
     assert!(a[0].abs() <= 0.6 && b[0].abs() <= 0.6, "they ran off: {a:?} {b:?}");
+}
+
+/// The walker is the higher id this time: it still stops at the one standing, which stays (@vdw-physics's tests note).
+#[test]
+fn the_higher_id_walking_into_a_lower_one_stops_at_it_too() {
+    let mut pw = world_at([0.0, 0.0, 0.0]);
+    pw.add_player(id(2), [-1.0, 0.0, 0.0], &PLAYER).unwrap();
+    for _ in 0..90 {
+        pw.move_player(id(ME), &MoverInput::default(), &[], &PLAYER, DT).unwrap();
+        pw.move_player(id(2), &walking(4.0, 0.0), &[], &PLAYER, DT).unwrap();
+        pw.step(DT).unwrap();
+    }
+    let (a, b) = (feet(&pw), pw.pose(id(2)).unwrap().position);
+    let gap = 2.0 * f64::from(PLAYER.radius);
+    assert!(a[0] - b[0] > gap - 0.01 && a[0] - b[0] < gap + 0.05, "{a:?} {b:?}");
+    assert!(a[0].abs() < 1.0e-3, "the one standing was pushed: {a:?}");
+}
+
+/// Three players walking into one spot settle apart: no two overlap, and none runs off.
+#[test]
+fn three_players_crowding_one_spot_settle_apart() {
+    let mut pw = world_at([0.0, 0.0, 0.0]);
+    pw.add_player(id(2), [1.5, 0.0, 0.0], &PLAYER).unwrap();
+    pw.add_player(id(3), [0.75, 0.0, 1.3], &PLAYER).unwrap();
+    let toward = |from: [f64; 3]| {
+        let (dx, dz) = (0.75 - from[0], 0.43 - from[2]);
+        let l = (dx * dx + dz * dz).sqrt().max(1e-9);
+        walking((3.0 * dx / l) as f32, (3.0 * dz / l) as f32)
+    };
+    for _ in 0..120 {
+        for n in [ME, 2, 3] {
+            let at = pw.pose(id(n)).unwrap().position;
+            pw.move_player(id(n), &toward(at), &[], &PLAYER, DT).unwrap();
+        }
+        pw.step(DT).unwrap();
+    }
+    let at: Vec<[f64; 3]> = [ME, 2, 3].iter().map(|&n| pw.pose(id(n)).unwrap().position).collect();
+    let reach = 2.0 * f64::from(PLAYER.radius);
+    for i in 0..3 {
+        for j in i + 1..3 {
+            let d = ((at[i][0] - at[j][0]).powi(2) + (at[i][2] - at[j][2]).powi(2)).sqrt();
+            assert!(d > reach - 0.03, "players {i} and {j} overlap: {at:?}");
+        }
+        assert!((at[i][0] - 0.75).abs() < 1.5 && (at[i][2] - 0.43).abs() < 1.5, "one ran off: {at:?}");
+    }
 }
