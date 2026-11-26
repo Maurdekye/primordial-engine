@@ -127,6 +127,14 @@ Write-Host "== pe-app $($argv -join ' ') (logs: $logs)"
 $quoted = ($argv | ForEach-Object { if ($_ -match '[\s"]') { '"' + ($_ -replace '"', '\"') + '"' } else { $_ } }) -join ' '
 $p = Start-Process -FilePath $Exe -ArgumentList $quoted -NoNewWindow -Wait -PassThru `
     -RedirectStandardError (Join-Path $logs 'stderr.txt')
+# The menu's New session and Join start a new pe-app.exe as this one ends (Windows has no exec): wait for every
+# pe-app.exe of this kit, so nothing outlives this window's script and start.cmd's pause comes only at the very end
+# (@coordinator-opus).
+$waited = 0
+while ($left = @(Get-Process -Name pe-app -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $Exe })) {
+    if ($waited -eq 0) { Write-Host 'pe-app restarted itself from the menu: waiting for it to end.' }
+    $waited++
+    $left | Wait-Process -ErrorAction SilentlyContinue
+}
 Write-Host "pe-app ended ($($p.ExitCode)). Logs: $logs"
-Write-Host '(If it restarted itself from the menu, the new one is still running and writes to the same folder.)'
 exit $p.ExitCode

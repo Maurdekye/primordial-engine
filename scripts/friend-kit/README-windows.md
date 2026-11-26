@@ -27,10 +27,15 @@ powershell -ExecutionPolicy Bypass -File .\run-windows.ps1
 ```
 
 It opens a session of your own on the flat plane, in VR, with the menu open. In the menu, **Invite a friend** copies
-the invite (also saved to a file, and printed); send it to the friend. When they send their reply code back, copy it
-and press **Paste reply**. The spawn panel beside the menu makes boxes, spheres, capsules and stacks.
+the invite (also saved to a file, and printed); send it to the friend. The invite lets them in by itself, for one
+player and for 60 minutes: you'll see "<player> is joining with your invite…" and then "<player> joined the
+session." in this window and in VR. The spawn panel beside the menu makes boxes, spheres, capsules and stacks.
 
-The left controller's menu button opens and closes the menu. Quit is in the menu, or type `quit` in this window.
+If the friend runs an older build and sends a reply code (`pe1r:`), paste it into this window and press Enter.
+
+The left controller's menu button opens and closes the menu. **Quit** in the menu asks once more before it quits, or
+type `quit` in this window. After **New session** or **Join** in the menu, the program restarts itself, and this
+window stays until the last run ends.
 
 Other ways: `-Window` (the desktop window, no VR), `-Headless` (no window, a check), `-Join '<invite>'` (join
 someone else's session). Any other pe-app option passes through.

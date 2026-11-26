@@ -567,12 +567,25 @@ therefore writes the `Admit` only once B has shown it can start (@design-reviewe
   root `T_keep` (1.5 s) older than its newest, so E can stop being servable while B fetches it: pe-diverge then
   reports `JoinFailed` (overtaken). Keeping E at the sources until the join ends, or joining at a newer cut, comes
   with joins at n >= 3, after M1.
-- **The paste.** When the user pastes B's reply code by hand, B's first hello may come from its early dial. While
-  the invite is open and no join is in flight, A holds a hello from a key that isn't a member undecided, since it
-  may be the next reply's, and welcomes it when that reply comes. If the paste takes longer than `T_welcome` (10 s),
-  A closes that dial with close code 8, B waits through it, and A's own dial carries the join. A welcomes B on
-  whichever dial completes, and writes the `Admit` only after its `JoinReady`. A reply that answers another invite,
-  names a member, or comes while a join is in flight is refused on A's console.
+- **Invite-only** (the user's ruling, 2026-11-26, after the friend test's first attempts). pe-net's
+  dial puts the invite's id in B's hello (`token`). While the invite is open, its pin holds and no join is in flight,
+  A's inviter starts the join on a hello carrying that id at once, as a pasted reply would: no reply, and A never
+  dials B, so a one-way path (a Tailscale share, B reaches A) is enough. A's console and status line say
+  "<player> is joining with your invite…", then "<player> joined the session." (10 s on the status line, in VR too).
+  The invite stays single-use: once B is a member, the pin no longer holds and a third hello with the same id is
+  refused saying the players changed; one while B's join is in flight is refused as not admitted. Past its 60 min,
+  B's dial refuses the invite itself. A leaked invite lets one player in within its life; the invite's id travels
+  only inside QUIC's encryption to the key the invite pins, so it can't be taken off the network.
+- **The paste, now the fallback** (a hello without the id, from an older build). B prints its reply code once, as a
+  fallback. A holds a hello from a key that isn't a member undecided while the invite is open and no join is in
+  flight, since it may be the next reply's, and welcomes it when that reply comes on A's console. If the paste takes
+  longer than `T_welcome` (10 s), A closes that dial with close code 8 and B waits through it. **B dials again**
+  (R, @coordinator-opus): 5 s after its last dial once that dial was closed for want of a decision
+  (`REDIAL_GAP`; a second close within 1 s of a redial is the old dial's other side), and at the latest 15 s after
+  it (`REDIAL_EVERY`). So A always holds a dial of B's under 10 s old when the reply comes, and a join never needs A
+  to reach B; A's own dial still runs, and A welcomes B on whichever dial completes. A writes the `Admit` only after
+  B's `JoinReady`. A reply that answers another invite, names a member, or comes while a join is in flight is
+  refused on A's console.
 - **A quit during a join** (@design-reviewer's Low 1): A never writes its `Leave` while a join it admitted is in
   flight. A quit then waits, within the leave's bound (shutdown, step 2), for the new epoch's first final cut, and
   then leaves as usual. If B quits or fails before it starts, A is stranded as above.
@@ -744,22 +757,34 @@ from a menu instead of the console (crate::menu, on pe-render's panels, render.m
   run, after the graceful leave, after VR has shut down and the port is closed (Fable's condition 3). `--log`'s file
   and the files `PE_CUT_LOG` and `PE_TICK_TRACE` name are renamed with `-r<unix seconds>`, so no log is overwritten.
   Everything from `--agent` on is the agent's command and is copied through unchanged, after the session flags.
-  Leaving a joined session relaunches into one of its own. Started from a terminal, the new process shares the
-  console with the shell once the old one ends, so after a restart use the menu (its Paste reply), or start pe-app
-  again by hand, rather than typing a reply code into the console (@design-reviewer's note on S3).
+  Leaving a joined session relaunches into one of its own. **On unix the relaunch replaces the process** (`exec`,
+  @coordinator-opus, after a joiner was left running in the background on 2026-11-26): the same process
+  id, so the terminal's `run.sh` still waits for it, Ctrl-C and the console's `quit` still reach it, and nothing
+  outlives the terminal. Every file and socket of the old run is close-on-exec. Windows has no exec: the new process
+  shares the console, and the kit's `run-windows.ps1` waits for every `pe-app.exe` of its kit before it ends.
+- **A joiner waiting** reads the console from its start, so `quit` (and Ctrl-C, or SIGTERM) end it while it waits
+  to be let in. A joiner started for VR has no XR session until it is in (the join comes first, main.rs), so the
+  headset shows the runtime's own screen meanwhile. When VR then doesn't start, or its session ends, it tries again
+  every 5 s for 3 minutes, a console line each time, before the desktop (@coordinator-opus).
 - **The panel** (plain, the coordinator's working default): the title, one button per row, then status lines.
-  - The opener: **Invite a friend**, **Paste reply**, **Join a session**, **New session**; its status gives the
-    invite's minutes left, or says it has expired and New session makes another.
-  - A joiner: **Copy my reply code**, **Leave (back to my own session)**; "In someone else's session".
+  - The opener: **Invite a friend**, **Join a session**, **New session**; its status gives the invite's minutes
+    left, or says it has expired and New session makes another. (Paste reply is the console's alone since
+    invite-only; the menu's press still works, for the fallback.)
+  - A joiner: **Leave (back to my own session)**; "In someone else's session".
   - Alone: **New session**, **Join a session**.
   - Always: **Quit** (the graceful quit, as the console's `quit`) and **Close menu**. A press's result shows as the
-    last line ("Invite copied (52 min left); also saved to ...", "That reply code was refused: ...").
-- **The code exchange**: the opener does everything in VR: Invite a friend copies the invite, Paste
-  reply hands a joiner's reply code to the same admission as the console's. The joiner's exchange is a desktop step:
-  at start its reply code is copied, saved, shown on the console and on the status line, before the headset is
-  needed. Join reads an invite the same way and relaunches only with one that decodes and hasn't expired, and never
-  with the opener's own invite, which would rejoin the session it leaves; otherwise it says why and the session
-  stays (@engine-architect's L1, @api-eng's 2). A relaunched process (`PE_RELAUNCHED=1`) waits up to 5 s for the
+    last lines ("Invite copied (52 min left); also saved to ...").
+  - **Quit and Join ask first** (@coordinator-opus): the first press says what happens and its button
+    reads "Press again to quit" or "Press again to join"; only a second press of the same button within 10 s does it.
+    Any other button, closing the menu or the 10 s take the question back. Join's first press says that VR goes off
+    for a few seconds and comes back in the other session.
+  - **Every action is logged:** each button pressed, with what it said, and the menu opened or closed, as `menu: …`
+    lines in the run's log.
+- **The code exchange** (invite-only since): the opener does everything in VR: Invite a
+  friend copies the invite, and the invite lets the joiner in. The joiner's reply code is only saved and printed
+  once, the fallback. Join reads an invite the same way and relaunches only with one that decodes and hasn't
+  expired, and never with the opener's own invite, which would rejoin the session it leaves; otherwise it says why
+  and the session stays (@engine-architect's L1, @api-eng's 2). A relaunched process (`PE_RELAUNCHED=1`) waits up to 5 s for the
   old one to let go of the UDP port before calling it in use.
 - **Copy and paste** (ruling (b)): the system clipboard through arboard (default features off;
   Wayland through the data-control protocol, X11 otherwise), and every time also a file, `<what>.txt` in a
