@@ -135,7 +135,10 @@ impl NodeConfig {
             extra_per_s: 30,
             budget_slack: 1.25,
             burst_s: 0.5,
-            pending_s: 4.0,
+            // Forty seconds, not four: the friend test's stopgap (@coordinator-opus, agreed with
+            // @world-chunks). Two tracked hands' 120 entries a second then fill an author's cap only
+            // past keep_s's 70 s, so a member that falls behind keeps applying the other's actions (K4's R3').
+            pending_s: 40.0,
             min_rate_per_s: 150,
             min_burst: 60,
             min_pending: 600,
@@ -231,7 +234,8 @@ impl NodeConfig {
 
     /// The budget at the world's frame rate: `entries_per_frame × rate_hz × budget_slack + extra_per_s` entries per
     /// second, a burst of `burst_s` of that and a pending cap of `pending_s`, each at least its floor. With the
-    /// defaults: 255/s, 127 and 1,020 at 60 Hz; 480/s, 240 and 1,920 at 120 Hz; at 30 Hz the rate's floor applies: 150/s, a burst of 75 and 600 pending.
+    /// defaults: 255/s, 127 and 10,200 at 60 Hz; 480/s, 240 and 19,200 at 120 Hz; at 30 Hz the rate's floor applies:
+    /// 150/s, a burst of 75 and 6,000 pending.
     /// Every member must use the same settings, or some would refuse an honest member's entries.
     pub fn rate_budget(&self, rate_hz: u32) -> RateBudget {
         let per_frame = self.entries_per_frame as f64 * rate_hz as f64 * self.budget_slack;
