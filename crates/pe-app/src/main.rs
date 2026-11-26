@@ -784,6 +784,8 @@ fn main() {
                 console.quitting();
                 shutdown();
                 console.finished();
+                // As every quit path does: a relaunch asked for (the console's `relaunch`) runs now.
+                pe_app::menu::relaunch_if_asked();
                 return;
             }
         }
@@ -881,6 +883,8 @@ fn main() {
                 console.quitting();
                 shutdown();
                 console.finished();
+                // A relaunch asked for while VR is retried (the console's `relaunch`) runs now, as on every quit path.
+                pe_app::menu::relaunch_if_asked();
                 return;
             }
         }
@@ -893,6 +897,7 @@ fn main() {
     if let Some(now) = console.arm(shutdown) {
         now();
         console.finished();
+        pe_app::menu::relaunch_if_asked();
         return;
     }
     let cfg = DesktopConfig {
