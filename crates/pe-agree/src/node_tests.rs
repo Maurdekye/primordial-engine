@@ -3595,7 +3595,10 @@ fn join_import_report(seed: u64, import_ms: i64, extra: i64, importing: bool, ms
     s.slow_link = Some((0, 1, extra, 50));
     s.behind[1] = u64::MAX / 2;
     s.join(1, 0, &[0], Some((2, 0)));
-    s.nodes[1].importing = importing;
+    assert!(s.nodes[1].importing, "seed {seed}: a joiner starts importing");
+    if !importing {
+        s.nodes[1].importing = false;
+    }
     let end = s.now / MS + import_ms;
     s.run(end);
     // Imported: the replica keeps up, and the link is fast again.
