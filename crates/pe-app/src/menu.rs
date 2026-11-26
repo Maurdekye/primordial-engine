@@ -743,6 +743,18 @@ pub fn relaunch_if_asked() {
             cmd.env(var, renamed(&p.to_string_lossy(), stamp));
         }
     }
+    // On unix the new run replaces this process (@coordinator-opus): the same process id, so the
+    // terminal's run.sh still waits for it, Ctrl-C still reaches it, and nothing is left running when it ends. Every
+    // file and socket of this run is close-on-exec. Windows has no exec: the new process shares this console, and
+    // run-windows.ps1 waits for every pe-app.exe of its kit.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        crate::out!("pe-app: restarting in place (process {}) with {}", std::process::id(), args.join(" "));
+        let e = cmd.exec();
+        crate::err!("pe-app: couldn't restart ({e}): start it again by hand");
+    }
+    #[cfg(not(unix))]
     match cmd.spawn() {
         Ok(child) => crate::out!("pe-app: restarted as process {} with {}", child.id(), args.join(" ")),
         Err(e) => crate::err!("pe-app: couldn't restart ({e}): start it again by hand"),

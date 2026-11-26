@@ -476,7 +476,13 @@ fn shared_sim(
             if let Err(e) = pe_app::menu::copy_out(&files, "reply", &reply) {
                 pe_app::err!("pe-app: the reply code couldn't be saved ({e}); copy it from the line above");
             }
-            pe_app::out!("waiting for {} to let you in: send them the reply code", short(MemberKey(invite.key)));
+            pe_app::out!(
+                "waiting for {} to let you in. Send them the reply code above, put the headset on, then tell them \
+                 you're ready: they paste it, and VR starts once you're in. Type quit to stop waiting.",
+                short(MemberKey(invite.key))
+            );
+            // The console from now (@coordinator-opus): `quit` ends a joiner that is still waiting.
+            read_console(None, false, console.clone());
             let seed = MenuSeed { role: pe_app::menu::Role::Joiner { reply }, replies: None, files };
             ep.dial(invite).unwrap_or_else(|e| fail(&e.to_string()));
             let cj = ep
@@ -495,7 +501,6 @@ fn shared_sim(
                     cj.e.at.frame.0
                 );
             }
-            read_console(None, false, console.clone());
             let replica = cj
                 .record
                 .empty_replica(cj.me, cj.frames.clone(), runner)
@@ -789,17 +794,15 @@ fn main() {
         hands.use_vr(true);
         moves.use_vr(true);
         let guard = Guard::from_env(true);
-        let effects = Box::new(LogEffects);
         let report = vr::ReportSlot::default();
         // B (render.md 7, app.md 3): the world at the moment shown, less the user's delay setting (0 by default).
         let drawn_time = options.drawn_time.unwrap_or_else(|| DrawnTime::shown(display_delay, rate.hz()));
-        match vr::start(
-            &SystemDiscovery,
-            &guard,
-            ring,
-            vr_moves.clone(),
-            slot.clone(),
-            vr::Drawing {
+        // A joiner started for VR tries again while VR doesn't start or ends (`VR_RETRY_*`): its person may still have
+        // the headset off from sending the reply code (@coordinator-opus).
+        let retries = if matches!(options.shared, Some(Shared::Join(_))) { VR_RETRIES } else { 0 };
+        let mut tries = 0;
+        loop {
+            let drawing = vr::Drawing {
                 presenter: presenter(
                     rate,
                     drawn_time,
@@ -812,7 +815,7 @@ fn main() {
                     audio.as_ref(),
                 ),
                 render: RenderSettings::default(),
-                effects,
+                effects: Box::new(LogEffects),
                 captures: captures.clone(),
                 report: report.clone(),
                 shown: Some(display_lead.clone()),
@@ -824,33 +827,56 @@ fn main() {
                 // same Arc the simulation samples.
                 // L4c: the sink's drawn rig reads the same ring the simulation does.
                 moves: Some(vr_moves.clone()),
-            },
-        ) {
-            Ok(xr) => {
-                // TODO(pe-render): in VR mode the main thread pumps a window's events and input, the desktop window
-                // draws on the XR device while the session is idle or stopping (xr.md 3.1), and the XR thread draws
-                // the desktop mirror (app.md 1, render.md 10). Until pe-render has that window the main thread waits
-                // here; xr.md 3.3's retry after a lost session comes with it.
-                let waited = wait_vr(&xr, run_for.map(|d| started + d), &console);
-                pe_app::out!("vr: {waited:?}; at its end {:?}", xr.stop());
-                match report.lock().ok().and_then(|mut r| r.take()) {
-                    Some(r) => {
-                        pe_app::out!("vr display lead (ms): {:?}", r.lead_ms);
-                        pe_app::out!("display (vr, {drawn_time:?}): {:?}", r.render);
+            };
+            let why = match vr::start(&SystemDiscovery, &guard, ring.clone(), vr_moves.clone(), slot.clone(), drawing) {
+                Ok(xr) => {
+                    // TODO(pe-render): in VR mode the main thread pumps a window's events and input, the desktop
+                    // window draws on the XR device while the session is idle or stopping (xr.md 3.1), and the XR
+                    // thread draws the desktop mirror (app.md 1, render.md 10). Until pe-render has that window the
+                    // main thread waits here; xr.md 3.3's retry after a lost session comes with it (a joiner's
+                    // retry below is the friend test's stand-in).
+                    let waited = wait_vr(&xr, run_for.map(|d| started + d), &console);
+                    pe_app::out!("vr: {waited:?}; at its end {:?}", xr.stop());
+                    match report.lock().ok().and_then(|mut r| r.take()) {
+                        Some(r) => {
+                            pe_app::out!("vr display lead (ms): {:?}", r.lead_ms);
+                            pe_app::out!("display (vr, {drawn_time:?}): {:?}", r.render);
+                        }
+                        None => pe_app::out!("display (vr): no report (the XR thread has not ended)"),
                     }
-                    None => pe_app::out!("display (vr): no report (the XR thread has not ended)"),
+                    if waited == XrWait::Running || console.requested() {
+                        console.quitting();
+                        shutdown();
+                        console.finished();
+                        // After the XR thread stopped (the session and instance gone) and the quit closed the port.
+                        pe_app::menu::relaunch_if_asked();
+                        return;
+                    }
+                    "the VR session ended".to_string()
                 }
-                if waited == XrWait::Running || console.requested() {
-                    console.quitting();
-                    shutdown();
-                    console.finished();
-                    // After the XR thread stopped (the session and instance gone) and the quit closed the port.
-                    pe_app::menu::relaunch_if_asked();
-                    return;
-                }
-                pe_app::err!("pe-app: the VR session ended; the desktop instead");
+                Err(why) => why.to_string(),
+            };
+            vr_moves.clear();
+            let over = run_for.is_some_and(|d| started.elapsed() >= d);
+            if tries >= retries || over || console.requested() {
+                pe_app::err!("pe-app: {why}; the desktop instead");
+                break;
             }
-            Err(why) => pe_app::err!("pe-app: {why}; the desktop instead"),
+            tries += 1;
+            pe_app::err!(
+                "pe-app: {why}; trying VR again in {} s ({tries} of {retries}): put the headset on, or type quit",
+                VR_RETRY_EVERY.as_secs()
+            );
+            let again = Instant::now() + VR_RETRY_EVERY;
+            while Instant::now() < again && !console.requested() {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            if console.requested() {
+                console.quitting();
+                shutdown();
+                console.finished();
+                return;
+            }
         }
         hands.use_vr(false);
         moves.use_vr(false);
@@ -912,6 +938,11 @@ fn main() {
         }
     }
 }
+
+/// A joiner started for VR tries VR again this often, and this many times (3 minutes), before the desktop: while it
+/// doesn't start (no headset yet), or after its session ends (@coordinator-opus).
+const VR_RETRY_EVERY: Duration = Duration::from_secs(5);
+const VR_RETRIES: u32 = 36;
 
 /// VR's wait (app.md 4): until the session ends, `--seconds` passes or the console asks to quit, in short slices so a
 /// request is seen within one.

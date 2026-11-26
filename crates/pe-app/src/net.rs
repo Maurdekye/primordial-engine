@@ -159,6 +159,23 @@ pub const EPOCH_PAST_MAX: Duration = Duration::from_secs(20);
 /// How far ahead frame 0 may be when B's clock converges: A's lead is 2 s; more is a welcome B shouldn't sit on.
 pub const EPOCH_AHEAD_MAX: Duration = Duration::from_secs(10);
 
+/// B dials A again this long after its last dial when that dial was closed for want of a decision (`T_welcome`, 10 s)
+/// (R, @coordinator-opus): A then always holds a dial of B's under 10 s old when its person pastes the
+/// reply, so the join never needs A to reach B. A one-way path (a Tailscale share: B reaches A, A can't reach B) then
+/// joins at any paste time.
+pub const REDIAL_GAP: Duration = Duration::from_secs(5);
+/// Both sides close the same undecided dial at once (each side's `T_welcome`, a round trip apart): a close this soon
+/// after a redial is the old dial's other side, and starts no second redial.
+pub const CLOSE_ECHO: Duration = Duration::from_secs(1);
+/// And at the latest this long after it, if no close came (a dial that never got through).
+pub const REDIAL_EVERY: Duration = Duration::from_secs(15);
+
+/// When B dials again (`REDIAL_GAP`, `REDIAL_EVERY`): `since` its last dial, and whether a close for want of a decision
+/// came since then.
+pub fn redial_due(since: Duration, closed: bool) -> bool {
+    (closed && since >= REDIAL_GAP) || since >= REDIAL_EVERY
+}
+
 /// B's bound on the welcome's epoch, once its clock has converged and can say when frame 0 is on this machine
 /// (host clocks differ per machine, so not before).
 pub fn check_epoch(frame_0_at: HostTime, now: HostTime) -> Result<(), NetError> {
@@ -740,8 +757,18 @@ impl Endpoint {
     /// B: the welcome from `opener`, awaited until `deadline`, and whether the clock was ready by then. A final
     /// refusal, by either side, ends the wait and names its reason ([`welcome_refusal`]); a close for want of a
     /// decision (`T_welcome`) is not final, since A dials again when it takes the reply.
-    fn await_welcome(&mut self, opener: MemberKey, deadline: Instant) -> Result<(Welcome, bool), NetError> {
+    /// While it waits, B dials `invite` again when [`redial_due`] says so (R).
+    fn await_welcome(
+        &mut self,
+        invite: &Invite,
+        opener: MemberKey,
+        deadline: Instant,
+    ) -> Result<(Welcome, bool), NetError> {
         let mut clock_ready = false;
+        // `join_at_cut` follows the first dial.
+        let mut dialled = Instant::now();
+        let mut redialled: Option<Instant> = None;
+        let mut closed = false;
         loop {
             if Instant::now() >= deadline {
                 return Err(NetError::Timeout("the welcome"));
@@ -756,7 +783,10 @@ impl Endpoint {
                     Lifecycle::Refused { peer, ref refusal, by_me } if !by_me || peer == opener => {
                         match welcome_refusal(refusal, by_me) {
                             Some(e) => return Err(e),
-                            None => log_lifecycle(&l),
+                            None => {
+                                log_lifecycle(&l);
+                                closed |= redialled.is_none_or(|t| t.elapsed() >= CLOSE_ECHO);
+                            }
                         }
                     }
                     other => log_lifecycle(&other),
@@ -764,6 +794,16 @@ impl Endpoint {
             }
             if let Some(w) = got {
                 return Ok((w, clock_ready));
+            }
+            if redial_due(dialled.elapsed(), closed) {
+                crate::out!(
+                    "net: dialling {} again: still waiting to be let in (they paste your reply code)",
+                    short(&opener)
+                );
+                self.dial(invite)?;
+                dialled = Instant::now();
+                redialled = Some(dialled);
+                closed = false;
             }
             std::thread::sleep(Duration::from_millis(2));
         }
@@ -786,7 +826,7 @@ impl Endpoint {
     ) -> Result<CutJoin, NetError> {
         let opener = MemberKey(invite.key);
         let deadline = Instant::now() + timeout;
-        let (welcome, mut ready) = self.await_welcome(opener, deadline)?;
+        let (welcome, mut ready) = self.await_welcome(invite, opener, deadline)?;
         let (record, members) = match check_join_welcome(&welcome, self.me, invite, rate_pin) {
             Ok(r) => r,
             Err(e) => return self.fail(e),
@@ -882,7 +922,7 @@ impl Endpoint {
     ) -> Result<Session, NetError> {
         let opener = MemberKey(invite.key);
         let deadline = Instant::now() + timeout;
-        let (welcome, mut clock_ready) = self.await_welcome(opener, deadline)?;
+        let (welcome, mut clock_ready) = self.await_welcome(invite, opener, deadline)?;
         let genesis = match check_welcome(&welcome, self.me, opener, rate_pin) {
             Ok(g) => g,
             Err(e) => return self.fail(e),
@@ -2119,6 +2159,41 @@ mod tests {
         let sa = a.open_session(&invite, &reply, &params(), Duration::from_secs(10), runner()).expect("A's session");
         let sb = joiner.join().unwrap().expect("B's session");
         assert_eq!(sa.members, sb.members);
+    }
+
+    /// R (@coordinator-opus): a slow paste where A can't reach B, as over a one-way Tailscale share. The
+    /// reply names an address nothing answers on, so A's own dial goes nowhere; B dials again after its first dial
+    /// closed for want of a decision, and A admits that dial. Without the redial, A's wait runs out.
+    #[test]
+    fn a_slow_paste_opens_even_when_a_cannot_reach_b_since_b_dials_again() {
+        let host = crate::clock::shared();
+        let t_welcome = Duration::from_millis(300);
+        let short = |c: &mut Config| c.t_welcome = t_welcome;
+        let a = Endpoint::bind_with([21; 32], loopback(), Vec::new(), true, host.clone(), None, short).unwrap();
+        let mut b = Endpoint::bind_with([22; 32], loopback(), Vec::new(), false, host.clone(), None, short).unwrap();
+        let invite = a.invite(Duration::from_secs(600), None).unwrap();
+        let mut reply = b.reply(&invite);
+        reply.addrs = vec![SocketAddr::from((Ipv4Addr::LOCALHOST, 9))];
+        b.dial(&invite).unwrap();
+        let theirs = invite.clone();
+        let joiner = std::thread::spawn(move || b.join_session(&theirs, RATE, Duration::from_secs(30), runner()));
+        // The paste comes after B's first dial closed, and before its redial.
+        std::thread::sleep(Duration::from_secs(1));
+        let started = Instant::now();
+        let sa = a
+            .open_session(&invite, &reply, &params(), REDIAL_GAP * 2, runner())
+            .expect("A's session, on B's second dial");
+        let sb = joiner.join().unwrap().expect("B's session");
+        assert_eq!(sa.members, sb.members);
+        println!("opened {:?} after the paste", started.elapsed());
+    }
+
+    #[test]
+    fn b_dials_again_after_a_close_for_want_of_a_decision_or_at_the_latest_every_15_s() {
+        assert!(!redial_due(Duration::from_secs(1), true), "the same dial's second close");
+        assert!(redial_due(REDIAL_GAP, true));
+        assert!(!redial_due(Duration::from_secs(14), false), "a dial still open");
+        assert!(redial_due(REDIAL_EVERY, false), "a dial that never got through");
     }
 
     #[test]
