@@ -573,7 +573,8 @@ impl PhysicsWorld {
     /// How far across the floor player `me`'s capsule, with its feet at `feet`, must step to leave every other
     /// player's (the friend test of 11-27: players are walls to each other). For each other player whose capsule's
     /// height overlaps this one's and whose feet are nearer than two radii across the floor, in object-id order, the
-    /// step out along the line between their feet (along +x when they stand on the same spot). Each other player is
+    /// step out along the line between their feet (on the same spot, along +x for the lower id and -x for the higher).
+    /// Each other player is
     /// where it stood at the frame's start: its body's pose, which the step hasn't moved yet.
     fn apart(&self, me: ObjectId, feet: Pos, params: &PlayerParams) -> Vec3 {
         let reach = 2.0 * params.radius;
@@ -594,7 +595,14 @@ impl PhysicsWorld {
                 continue;
             }
             let len = across.sqrt();
-            let (dir_x, dir_z) = if len > 0.0 { (d.x / len, d.z / len) } else { (1.0, 0.0) };
+            // Two on one spot step apart by id, the lower along +x and the higher along -x: each reads the other
+            // where it stood at the frame's start, so a shared direction would carry both off together
+            // (@chunks-reviewer's M1 on a306b59c).
+            let (dir_x, dir_z) = match (len > 0.0, me < other) {
+                (true, _) => (d.x / len, d.z / len),
+                (false, true) => (1.0, 0.0),
+                (false, false) => (-1.0, 0.0),
+            };
             let push = reach - len;
             out = add(out, Vec3 { x: dir_x * push, y: 0.0, z: dir_z * push });
         }

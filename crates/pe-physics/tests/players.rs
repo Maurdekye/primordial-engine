@@ -640,3 +640,20 @@ fn a_ball_dropped_on_a_player_falls_through_it() {
     let b = pw.pose(id(101)).unwrap().position;
     assert!(b[1] < 0.2, "the ball stopped at {b:?}");
 }
+
+/// Two players on one spot (a respawn to a fixed point, say) step apart by id and stay near it, instead of both
+/// stepping the same way every frame (@chunks-reviewer's M1 on a306b59c).
+#[test]
+fn two_players_on_one_spot_step_apart_and_stay() {
+    let mut pw = world_at([0.0, 0.0, 0.0]);
+    pw.add_player(id(2), [0.0, 0.0, 0.0], &PLAYER).unwrap();
+    for _ in 0..30 {
+        pw.move_player(id(ME), &MoverInput::default(), &[], &PLAYER, DT).unwrap();
+        pw.move_player(id(2), &MoverInput::default(), &[], &PLAYER, DT).unwrap();
+        pw.step(DT).unwrap();
+    }
+    let (a, b) = (feet(&pw), pw.pose(id(2)).unwrap().position);
+    let apart = ((a[0] - b[0]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+    assert!(apart >= 2.0 * f64::from(PLAYER.radius) - 0.01 && apart <= 1.1, "{a:?} {b:?}");
+    assert!(a[0].abs() <= 0.6 && b[0].abs() <= 0.6, "they ran off: {a:?} {b:?}");
+}
