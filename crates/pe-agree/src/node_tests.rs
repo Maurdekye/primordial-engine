@@ -168,6 +168,9 @@ struct Sim {
     /// Per member: its replica steps this many frames behind its present, so it roots (and votes) a cut only once its
     /// present is that far past the cut's frame (a member that can't simulate in real time; default path only).
     behind: Vec<u64>,
+    /// Per member: if set, the stepped frame it reports in `Progress` is its present plus this (a false or stale
+    /// report), whatever it really steps (`behind`).
+    reported: Vec<Option<i64>>,
     /// (member, chain, last seq, last entry): that member's odd per-frame entries go on this second chain under its key
     /// (as after a restart), signed here and sent straight to every peer, since its own node keeps one chain.
     second_chain: Option<(usize, pe_seams::ChainId, u64, Option<EntryRef>)>,
@@ -252,6 +255,7 @@ impl Sim {
             base: cfg,
             receive_cost: None,
             behind: vec![0; n as usize],
+            reported: vec![None; n as usize],
             second_chain: None,
             seq: 0,
             now: 0,
@@ -457,8 +461,12 @@ impl Sim {
                 self.every_ms[i] = 0;
             }
         }
-        // The replica's stepped frame, as pe-app reports it (F3 S2): `behind` frames below the present.
-        let stepped = Frame(clock.frame_at(now).unwrap().0.saturating_sub(self.behind[i]));
+        // The replica's stepped frame, as pe-app reports it (F3 S2): `behind` frames below the present, or a false one.
+        let present = clock.frame_at(now).unwrap().0;
+        let stepped = match self.reported[i] {
+            Some(off) => Frame(present.saturating_add_signed(off)),
+            None => Frame(present.saturating_sub(self.behind[i])),
+        };
         Agreement::stepped(&mut self.nodes[i], stepped);
         let out = self.nodes[i].tick(now, &clock);
         self.deliver_out(i, out);
@@ -3771,6 +3779,207 @@ fn at_n_2_finality_follows_a_member_stepping_behind() {
             assert!(f + behind + 120 >= present, "member {i} final {f}, the slow member steps at {}", present - behind);
         }
         s.assert_same_final_log();
+    }
+}
+
+/// The present frame of the sim's clock.
+fn present_frame(s: &Sim) -> u64 {
+    s.clock.frame_at(HostTime(s.now)).unwrap().0
+}
+
+/// F3 S2 follow-up (@coordinator-opus): a member that falls behind gradually (as a slow machine does, at
+/// about 67 % speed for 20 s, to 400 frames behind) and then catches up. Returns, per 100 ms after 5 s, member 0's
+/// final frame's distance behind the slow member's stepped frame, the longest the final frame stood still, and the sim
+/// once it has run 10 s past the catch-up.
+fn slow_stretch_run(seed: u64, f: impl Fn(&mut NodeConfig)) -> (Vec<i64>, i64, Sim) {
+    let mut s = Sim::with(2, seed, f);
+    s.per_frame = vec![Some((2, 0)); 2];
+    let (mut trail, mut last, mut since, mut worst) = (Vec::new(), Frame(0), 5_000, 0);
+    let mut step = |s: &mut Sim, t: i64, trail: &mut Vec<i64>| {
+        s.run(t);
+        let fin = s.final_frame(0);
+        if t > 5_000 {
+            let stepped = present_frame(s).saturating_sub(s.behind[1]);
+            trail.push(stepped as i64 - fin.0 as i64);
+            if fin > last {
+                since = t;
+            } else {
+                worst = worst.max(t - since);
+            }
+        }
+        last = fin;
+    };
+    for t in (100..=3_000).step_by(100) {
+        step(&mut s, t, &mut trail);
+    }
+    // 20 s at two frames lost per 100 ms (40 of 60 frames a second stepped), then back at four a 100 ms.
+    for t in (3_100..=23_000).step_by(100) {
+        s.behind[1] += 2;
+        step(&mut s, t, &mut trail);
+    }
+    for t in (23_100..=33_000).step_by(100) {
+        s.behind[1] = s.behind[1].saturating_sub(4);
+        step(&mut s, t, &mut trail);
+    }
+    (trail, worst, s)
+}
+
+#[test]
+fn finality_trails_a_member_through_a_slow_stretch_and_catches_up_after() {
+    // With S2 the final frame trails the slow member's stepped frame by about the cut lag throughout, never stands
+    // still, and is back near the present once the member has caught up.
+    for seed in [53, 54] {
+        let (trail, worst, s) = slow_stretch_run(seed, |_| {});
+        let p = present_frame(&s);
+        let max = trail.iter().copied().max().unwrap();
+        eprintln!(
+            "seed {seed}: final behind the slow member's stepped frame at most {max} frames; stood still at most {worst} ms; final {:?} {:?} at present {p}",
+            s.final_frame(0),
+            s.final_frame(1)
+        );
+        assert!(max <= 120, "seed {seed}: the final frame fell {max} frames behind the slow member's stepped frame");
+        assert!(worst <= 500, "seed {seed}: the final frame stood still {worst} ms");
+        for i in 0..2 {
+            assert!(s.final_frame(i).0 + 120 >= p, "member {i}: final {:?} at present {p}", s.final_frame(i));
+            assert!(s.voids(i).is_empty(), "member {i}: voids {:?}", s.voids(i));
+        }
+        s.assert_same_final_log();
+    }
+}
+
+#[cfg(feature = "mutants")]
+#[test]
+fn without_the_progress_cap_a_slow_stretch_stalls_finality() {
+    // The control: the same stretch with the progress cap off, as before S2.
+    let mut bit = 0;
+    for seed in [53, 54] {
+        let (trail, worst, _) = slow_stretch_run(seed, |c| c.mutation = Some(crate::core::Mutation::NoProgressCap));
+        let max = trail.iter().copied().max().unwrap();
+        eprintln!(
+            "NoProgressCap seed {seed}: final behind the slow member's stepped frame at most {max}; stood still at most {worst} ms"
+        );
+        bit += (max > 120 || worst > 2_000) as usize;
+    }
+    assert!(bit > 0, "the control didn't bite: finality kept up without the progress cap");
+}
+
+#[test]
+fn hitches_cost_finality_about_their_length_and_no_more() {
+    // F3 S2 follow-up: a member that hitches (a 1 s stall every 3 s, then catches up in half a second) pulls the
+    // final frame back by about the hitch, and finality never stands still much longer than one.
+    for seed in [55, 56] {
+        let mut s = Sim::new(2, seed);
+        s.per_frame = vec![Some((2, 0)); 2];
+        let (mut lag_max, mut last, mut since, mut worst) = (0, Frame(0), 5_000, 0);
+        for t in (100..=30_000).step_by(100) {
+            let phase = t % 3_000;
+            if t > 3_000 && (100..=1_000).contains(&phase) {
+                s.behind[1] += 6;
+            } else if t > 3_000 && (1_100..=1_500).contains(&phase) {
+                s.behind[1] = s.behind[1].saturating_sub(12);
+            }
+            s.run(t);
+            let fin = s.final_frame(0);
+            if t > 5_000 {
+                lag_max = lag_max.max(present_frame(&s) - fin.0);
+                if fin > last {
+                    since = t;
+                } else {
+                    worst = worst.max(t - since);
+                }
+            }
+            last = fin;
+        }
+        eprintln!("seed {seed}: final lag at most {lag_max} frames; stood still at most {worst} ms");
+        assert!(lag_max <= 60 + 120, "seed {seed}: final lag {lag_max} frames for 60-frame hitches");
+        assert!(worst <= 2_000, "seed {seed}: the final frame stood still {worst} ms");
+        for i in 0..2 {
+            assert!(s.voids(i).is_empty(), "member {i}: voids {:?}", s.voids(i));
+        }
+        s.assert_same_final_log();
+    }
+}
+
+#[test]
+fn a_false_low_report_from_one_member_of_four_holds_no_cut_back() {
+    // F3 S2 follow-up: the cap is the q-th highest report (q = 3 at n = 4), so one member reporting far behind (a lie,
+    // or a stale report it stopped refreshing) can't hold the others' finality back; it would take a blocking set,
+    // which could stall by not voting anyway.
+    let run = |lie: Option<i64>| {
+        let mut s = Sim::new(4, 57);
+        s.per_frame = vec![Some((2, 0)); 4];
+        s.reported[3] = lie;
+        s.run(20_000);
+        s.assert_same_final_log();
+        (0..3).map(|i| s.final_frame(i).0).min().unwrap()
+    };
+    let (honest, low) = (run(None), run(Some(-100_000)));
+    eprintln!(
+        "the others' lowest final frame: {honest} honest, {low} with member 3 reporting itself 100,000 frames behind"
+    );
+    assert!(low + 30 >= honest, "{low} against {honest}");
+}
+
+#[test]
+fn a_false_high_report_is_clamped_and_costs_only_what_the_cap_saved() {
+    // F3 S2 follow-up: a member 480 frames behind that reports itself far ahead lifts the cap. The report is clamped
+    // to the receiver's present plus the frame tolerance (a cut beyond that isn't votable anyway), so a wild value
+    // can't stay for good; and the cost is only liveness, as before S2: no fault, no void, one final log. [V, seed 58]
+    // Nothing becomes final in 15 s: the leaders name cuts the lying member can't root yet, as before S2. A member
+    // that lies can stall a quorum it belongs to, which it could also do by not voting.
+    let mut s = Sim::new(2, 58);
+    s.per_frame = vec![Some((2, 0)); 2];
+    s.behind[1] = 480;
+    s.reported[1] = Some(i64::MAX / 2);
+    s.run(15_000);
+    let p = present_frame(&s);
+    let r = s.nodes[0].reported_stepped(&s.keys.key(1)).expect("member 1 reported");
+    eprintln!(
+        "member 0 holds member 1's report at {r:?}, present {p}; final {:?} {:?}",
+        s.final_frame(0),
+        s.final_frame(1)
+    );
+    // At most the present at receipt plus the frame tolerance (0.1 s, 6 frames at 60 Hz), so at most p + 6.
+    assert!(r.0 <= p + 6, "the report {r:?} wasn't clamped to the present {p} plus the tolerance");
+    for i in 0..2 {
+        for e in &s.events[i] {
+            assert!(!matches!(e, AgreeEvent::Fault(_)), "member {i}: {e:?}");
+        }
+        assert!(s.voids(i).is_empty(), "member {i}: voids {:?}", s.voids(i));
+    }
+    s.assert_same_final_log();
+}
+
+#[cfg(feature = "mutants")]
+#[test]
+#[ignore = "measurement (@chunks-reviewer's ask on 53d11e39): cargo test -p pe-agree --release --all-features --lib -- --ignored progress_cap_healthy_cost --nocapture"]
+fn progress_cap_healthy_cost() {
+    // The cap's cost with nobody slow: the mean and largest final lag (present less the lowest member's final frame),
+    // sampled every 100 ms from 5 s to 30 s, with the cap and with NoProgressCap (as before S2; Progress still flows).
+    for (n, slow) in [(2u32, None), (4, None), (2, Some((1usize, 0usize, 1_200i64, 0i64)))] {
+        for m in [None, Some(crate::core::Mutation::NoProgressCap)] {
+            let (mut sum, mut cnt, mut max) = (0u64, 0u64, 0u64);
+            for seed in [61, 62] {
+                let mut s = Sim::with(n, seed, |c| c.mutation = m);
+                s.per_frame = vec![Some((2, 0)); n as usize];
+                s.slow_link = slow;
+                for t in (100..=30_000).step_by(100) {
+                    s.run(t);
+                    if t > 5_000 {
+                        let lag = present_frame(&s) - (0..n as usize).map(|i| s.final_frame(i).0).min().unwrap();
+                        sum += lag;
+                        cnt += 1;
+                        max = max.max(lag);
+                    }
+                }
+            }
+            eprintln!(
+                "n = {n}, {}, {}: final lag mean {:.1} frames, max {max} (60 Hz)",
+                if slow.is_some() { "B -> A +1.2 s" } else { "default link" },
+                if m.is_some() { "NoProgressCap" } else { "with the cap" },
+                sum as f64 / cnt as f64
+            );
+        }
     }
 }
 

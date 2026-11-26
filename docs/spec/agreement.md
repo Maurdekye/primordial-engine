@@ -472,6 +472,24 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
     `at_n_4_one_member_stepping_behind_leaves_the_others_final_lag_unchanged`. The no-lag controls, and the no-lead
     stand-still's pending-cap control, run with the mutant `NoProgressCap`: the stepped frame reaches the leader a link
     delay late, which is itself a lag.
+  - **What a report can do** [V, node_tests.rs]. Reports never move back, and a report above this member's present
+    plus the frame tolerance is clamped there (within the tolerance's clock skew no member can have stepped further,
+    and a cut beyond it isn't votable here), and one received before this member has a present is dropped (Progress
+    repeats), so a wild value can't stay. One member reporting low can't hold cuts back: the cap is the q-th highest, so
+    that would take a blocking set, which could stall by not voting anyway (`a_false_low_report_from_one_member_of_four_holds_no_cut_back`).
+    A member reporting high only lifts the cap back to where it was before S2: at n = 2 a member 8 s behind that
+    reports itself current stalls finality as it did then (`a_false_high_report_is_clamped_and_costs_only_what_the_cap_saved`).
+    - *After a rollback, an import or a resync* the driver's replica may be below what it reported, until it re-steps.
+      That costs latency, not correctness: rooting a cut re-steps to it (`root_at_cut`), and the cap waits for no
+      report to come down (@engine-architect, @diverge-eng's point 3).
+    - Through a slow stretch (a member stepping 40 of 60 frames a second for 20 s, to 400 frames behind, then catching
+      up), the final frame stays within 30 frames of its stepped frame and never stands still more than 100 ms; with
+      `NoProgressCap` it stood still 24 s. Hitches (1 s every 3 s) pull the final lag to 72 frames at most
+      (`finality_trails_a_member_through_a_slow_stretch_and_catches_up_after`, `hitches_cost_finality_about_their_length_and_no_more`).
+      On machines, R3' on main 6f9b37a2 agrees (@engine-architect).
+    - *With nobody slow it costs nothing* [V, sim, 60 Hz, seeds 61-62, `progress_cap_healthy_cost`]: the mean final
+      lag is 19.7 frames at n = 2 and 19.8 at n = 4 with the cap and with `NoProgressCap` alike; on a B -> A +1.2 s link,
+      224.9 frames (max 300) with the cap against 234.0 (max 522) without.
   - The consensus hash is v9: no new setting, but a new message.
 - **A second vote in a view is a self-test report** (coordinator; S3 v1.3 shape by
   @engine-architect). A member votes once per view. The driver's `vote` after a repair returns

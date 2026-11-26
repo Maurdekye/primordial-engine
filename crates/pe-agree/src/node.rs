@@ -2219,8 +2219,19 @@ impl Node {
                 }
             }
         }
+        // No member can have stepped past this member's present plus the frame tolerance (a cut beyond that isn't
+        // votable here anyway), so a report above it is clamped there: a wild one (a bug, u64::MAX) would otherwise
+        // stay, since reports never move back (@chunks-reviewer's low note on 53d11e39). Before this member has a
+        // present there is nothing to clamp to, so the report is dropped: Progress repeats every cadence.
+        let Some(p) = self.present else { return };
+        let stepped = stepped.min(Frame(p.0.saturating_add(self.tolerance_frames())));
         let s = self.progress.entry(from).or_insert(stepped);
         *s = (*s).max(stepped);
+    }
+
+    /// `member`'s stepped frame as its latest `Progress` reported it (after the clamp), if any.
+    pub fn reported_stepped(&self, member: &MemberKey) -> Option<Frame> {
+        self.progress.get(member).copied()
     }
 
     /// The progress cap (F3 S2): the highest frame a cut may name so that a quorum can root and vote it without
