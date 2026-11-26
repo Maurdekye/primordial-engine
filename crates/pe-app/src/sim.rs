@@ -554,6 +554,8 @@ pub struct Sim {
     status_own: Option<String>,
     /// A line shown for a while when no own status is up: a player joined (the user's ruling).
     status_flash: Option<(String, Instant)>,
+    /// How long it shows: [`STATUS_FLASH`], shorter in tests.
+    status_flash_for: Duration,
     /// The console's hand-feel switch ([`Sim::with_hand_feel`], [`crate::handfeel`]), and the pair's version last
     /// shown.
     hand_feel: Option<Arc<crate::handfeel::HandFeel>>,
@@ -880,6 +882,7 @@ impl Sim {
             status: None,
             status_own: None,
             status_flash: None,
+            status_flash_for: STATUS_FLASH,
             hand_feel: None,
             hand_feel_shown: 0,
             slow_frame: None,
@@ -1020,7 +1023,7 @@ impl Sim {
         }
         let joined = self.notices.iter().rev().find(|n| crate::join::is_join_news(n)).cloned();
         if let Some(line) = joined {
-            self.status_flash = Some((line, Instant::now() + STATUS_FLASH));
+            self.status_flash = Some((line, Instant::now() + self.status_flash_for));
             self.show_status();
         }
         std::mem::take(&mut self.notices)
@@ -1258,6 +1261,13 @@ impl Sim {
             self.status_logged = kind;
         }
         status.set(line);
+    }
+
+    /// Tests only: a join's line on the status line for `d` instead of [`STATUS_FLASH`].
+    #[cfg(test)]
+    pub(crate) fn with_status_flash_for(mut self, d: Duration) -> Sim {
+        self.status_flash_for = d;
+        self
     }
 
     /// Tests only: freeze and resync after `secs` slow instead of a minute ([`crate::slow::FREEZE_AFTER_S`]).
@@ -1933,6 +1943,11 @@ impl Sim {
         let (others, others_late_max_ns) =
             if traced.is_some() && !self.importing() { self.others_due(p) } else { ([0; 4], None) };
         let report = if self.importing() { DriveReport::default() } else { self.drive(ps) };
+        // A join's line comes down on time even while nothing else touches the status line (catching up, frozen;
+        // @design-reviewer's L1 on e7dff1eb).
+        if self.status_flash.as_ref().is_some_and(|(_, until)| Instant::now() >= *until) {
+            self.show_status();
+        }
         if !self.importing() {
             self.watch_lag(p, now);
         }
@@ -3080,6 +3095,35 @@ pub(crate) mod tests {
         assert_eq!((s.stats().hand_modes, s.stats().hand_modes_refused), (4, 0));
         assert_eq!(modes(&s), vec![0, 0], "back to closed hand");
         assert_eq!(status.get().as_deref(), Some("Hands: closed hand · drawn at the tracked pose"));
+    }
+
+    /// "X joined the session." shows on the status line, and comes down after its time at the next tick
+    /// (@design-reviewer's L1 on e7dff1eb).
+    #[test]
+    fn a_join_s_line_shows_on_the_status_line_and_comes_down_on_time() {
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let me = crate::world::DEV_MEMBER;
+        let world = pe_world::preset::ball_pit(7, pe_world::BlobStore::default(), pe_seams::Pos::ORIGIN);
+        let replica = crate::world::ball_pit_replica_over(world, &[me], me, RATE, clock.clone(), runner(), |w| {
+            crate::fault::FaultWorld::new(w, None)
+        })
+        .expect("pit");
+        let status = Arc::new(pe_render::notices::StatusLine::default());
+        let agree = Box::new(SoloAgreement::new(LineId::origin()));
+        let mut s = Sim::new(agree, Box::new(replica), clock.clone(), Arc::new(FrameSlot::new()), Budget::new(RATE))
+            .with_local(me, [7; 32], Arc::new(StillHands([0.0, 1.0, -0.4])))
+            .with_status(status.clone())
+            .with_status_flash_for(Duration::from_millis(200));
+        s.tick(clock.host_time_of(Frame(1))).expect("ticked");
+        let line = crate::join::joined(pe_seams::MemberKey([0x0b; 32]));
+        s.notices.push(line.clone());
+        let _ = s.take_notices();
+        assert_eq!(status.get().as_deref(), Some(line.as_str()), "up at once");
+        s.tick(clock.host_time_of(Frame(2))).expect("ticked");
+        assert_eq!(status.get().as_deref(), Some(line.as_str()), "still up within its time");
+        std::thread::sleep(Duration::from_millis(300));
+        s.tick(clock.host_time_of(Frame(3))).expect("ticked");
+        assert_eq!(status.get(), None, "down after it");
     }
 
     /// `--slow-frame` ([`crate::slowframe`]) is on the status line while it is on, ahead of any other status, and in

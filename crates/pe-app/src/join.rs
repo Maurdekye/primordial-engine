@@ -47,6 +47,9 @@ pub const T_JOIN: Duration = Duration::from_secs(30);
 /// the join then. A held request older than that only welcomes a closed connection, which does nothing.
 const HELD: Duration = Duration::from_secs(30);
 
+/// Why a hello is refused once the invite has expired (@engine-architect's L1 on e7dff1eb).
+pub const INVITE_EXPIRED: &str = "the invite has expired: ask for a new one";
+
 /// Why a join into a world with scripts is refused, to both players (app.md 4's M1 limit, @coordinator-opus): a joiner's import carries no script archive, and a joiner that builds every active version first
 /// isn't built, so it would step without them and split.
 pub const SCRIPTS: &str = "this world has scripts; joining it comes after M1";
@@ -357,6 +360,22 @@ impl Inviter {
                 true
             }
             Some(_) => false,
+            // Another invite's id: one of this key's earlier sessions (a relaunch, a restart). No reply can let it in,
+            // since a reply to another invite is refused, so it is refused at once, saying why (@design-reviewer's M1
+            // on e7dff1eb). Every build's dial sends its invite's id; an empty token is held for a reply.
+            // Expired between B's dial and here (or B's clock behind A's): say so, rather than "not admitted"
+            // (@engine-architect's L1 on e7dff1eb).
+            None if self.expired() && peer != DEV_MEMBER => {
+                self.acts.push(Act::Refuse(peer, refusal(INVITE_EXPIRED)));
+                self.notices.push(couldnt_join(peer, INVITE_EXPIRED));
+                true
+            }
+            None if !self.expired() && peer != DEV_MEMBER && !token.is_empty() && token != self.invite.id => {
+                let why = stale_invite(self.me);
+                self.acts.push(Act::Refuse(peer, refusal(&why)));
+                self.notices.push(couldnt_join(peer, &why));
+                true
+            }
             None if !self.expired() && peer != DEV_MEMBER => {
                 if self.pin_holds(members, epoch) && token == self.invite.id {
                     self.stats.by_invite += 1;
@@ -548,6 +567,11 @@ pub fn join_failed(m: MemberKey) -> String {
     format!("{} couldn't join. This session can't confirm changes any more: start a new one.", capitalized(player(m)))
 }
 
+/// Why a hello with another invite's id is refused: the invite is from an earlier session of the inviter's.
+pub fn stale_invite(inviter: MemberKey) -> String {
+    format!("this invite is from an earlier session of {}'s: ask them for a new one", player(inviter))
+}
+
 /// Whether a console line is the inviter's news of a join (for the status line).
 pub fn is_join_news(line: &str) -> bool {
     line.ends_with(" is joining with your invite…") || line.ends_with(" joined the session.")
@@ -642,12 +666,23 @@ mod tests {
         assert_eq!(inv.take_notices(), vec![joining_by_invite(B)]);
         assert!(is_join_news(&joining_by_invite(B)) && is_join_news(&joined(B)) && !is_join_news(&joining(B)));
 
-        for token in [&[5u8; 8][..], &[]] {
-            let (mut held, _) = inviter();
-            assert!(held.on_join_request(B, token, &[A], 0, false, T0), "held");
-            assert_eq!((held.join(), held.stats.by_invite), (None, 0), "another token waits for a reply");
-            assert!(held.take_acts().is_empty());
-        }
+        // No token: held for a reply, the fallback.
+        let (mut held, _) = inviter();
+        assert!(held.on_join_request(B, &[], &[A], 0, false, T0), "held");
+        assert_eq!((held.join(), held.stats.by_invite), (None, 0), "it waits for a reply");
+        assert!(held.take_acts().is_empty());
+        // Another invite's id (an earlier session of A's): refused at once, saying why (@design-reviewer's M1).
+        let (mut stale, _) = inviter();
+        assert!(stale.on_join_request(B, &[5; 8], &[A], 0, false, T0), "answered by the inviter itself");
+        let why = stale_invite(A);
+        assert_eq!(stale.take_acts(), vec![Act::Refuse(B, refusal(&why))]);
+        assert_eq!(stale.take_notices(), vec![couldnt_join(B, &why)]);
+        assert_eq!(stale.join(), None);
+        // Expired by the time the hello comes: refused saying so (@engine-architect's L1).
+        let (mut late, _) = inviter();
+        late.invite.expiry_unix_s = crate::net::unix_now() - 1;
+        assert!(late.on_join_request(B, &[4; 8], &[A], 0, false, T0));
+        assert_eq!(late.take_acts(), vec![Act::Refuse(B, refusal(INVITE_EXPIRED))]);
 
         // Once B is in (the members are A and B, a new epoch), the invite's pin no longer holds.
         let (mut spent, _) = inviter();

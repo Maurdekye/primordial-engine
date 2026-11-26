@@ -111,6 +111,12 @@ case " $* " in *" --preset "*) ;; *) args+=(--preset plane) ;; esac
 echo "== pe-app ${args[*]} $* (logs: $logs)"
 "$here/pe-app" "${args[@]}" --log "$logs/pe-app.log" "$@" 2> >(tee "$logs/stderr.txt" >&2)
 code=$?
-echo "pe-app ended ($code). Logs: $logs. Send them with: $here/collect-logs.sh"
-echo "(If it restarted itself from the menu, the new one is still running and writes to the same folder.)"
+# A menu restart (New session, Join) replaces the process in place, so this line comes once, after the last run.
+case $code in
+  0) what="" ;;
+  # pe-app's EXIT_INTERRUPTED: `quit` or Ctrl-C before there was a session to leave (a joiner still waiting).
+  130) what=", stopped by quit or Ctrl-C: not a failure" ;;
+  *) what=", an error" ;;
+esac
+echo "pe-app ended ($code$what). Logs: $logs. Send them with: $here/collect-logs.sh"
 exit $code

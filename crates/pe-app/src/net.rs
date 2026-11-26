@@ -796,10 +796,7 @@ impl Endpoint {
                 return Ok((w, clock_ready));
             }
             if redial_due(dialled.elapsed(), closed) {
-                crate::out!(
-                    "net: dialling {} again: still waiting to be let in (they paste your reply code)",
-                    short(&opener)
-                );
+                crate::out!("net: dialling {} again: still waiting to be let in", short(&opener));
                 self.dial(invite)?;
                 dialled = Instant::now();
                 redialled = Some(dialled);
@@ -1212,7 +1209,9 @@ impl NetHook for MemberHook {
             NetEvent::JoinRequest { peer, hello } => {
                 let (peer, members, now) = (*peer, agree.members(), self.now);
                 // Its token: pe-net's dial puts the invite's id there (invite-only). Its addresses, for the welcome's
-                // members once it is one: a join by invite has no reply to take them from.
+                // members once it is one: a join by invite has no reply to take them from. pe-net raised this
+                // request only after its own parse of the same bytes passed, so the decode can't fail here; if it
+                // did, the hello would count as an older build's, held for a reply.
                 let hello = Hello::decode(hello).ok();
                 let token = hello.as_ref().map_or(&[][..], |h| &h.token[..]);
                 if members.contains(&peer) && peer != DEV_MEMBER {
@@ -1223,8 +1222,11 @@ impl NetHook for MemberHook {
                 } else if self.inviter.as_mut().is_some_and(|i| {
                     i.on_join_request(peer, token, &members, agree.epoch(), world.holds_scripts(), now)
                 }) {
-                    if let Some(h) = &hello {
-                        self.book.entry(peer).or_insert_with(|| h.addrs.clone());
+                    // Only for a join that started (by invite), not for a hello refused or held: a held one's
+                    // addresses come with its reply (@engine-architect's L2 on e7dff1eb).
+                    let started = self.inviter.as_ref().and_then(|i| i.join()).is_some_and(|(k, _, _)| k == peer);
+                    if let Some(h) = hello.as_ref().filter(|_| started) {
+                        self.book.insert(peer, h.addrs.clone());
                     }
                     self.act(&members);
                 } else {
@@ -2209,6 +2211,9 @@ mod tests {
             preset: pe_world::preset::Preset::BallPit { balls: 8 },
             ..params()
         };
+        // An invite of an earlier session with the same key (@design-reviewer's M1 on e7dff1eb): a relaunch or a
+        // restart of A's, within the hour.
+        let earlier = a.invite(Duration::from_secs(600), None).unwrap();
         let Opened { session: s, invite, replies: _replies, .. } =
             a.open_alone(&p, Duration::from_secs(600), T_JOIN, runner()).expect("A opens alone");
         let (me_a, me_b) = (s.me, b.me());
@@ -2220,6 +2225,18 @@ mod tests {
             .expect("A's pe-diverge");
         let mut notices = Vec::new();
         assert!(run_until(&mut sim, &host, &mut notices, Duration::from_secs(10), |s| s.stats().finalized > 0));
+        // The earlier session's invite: refused at once, saying why, not held for a reply that can't come.
+        let mut s_old = Endpoint::bind([25; 32], loopback(), Vec::new(), false, host.clone(), None).unwrap();
+        s_old.dial(&earlier).unwrap();
+        let asked = Instant::now();
+        let theirs = earlier.clone();
+        let stale = std::thread::spawn(move || s_old.join_at_cut(&theirs, RATE, Duration::from_secs(20), T_JOIN));
+        run_until(&mut sim, &host, &mut notices, Duration::from_secs(10), |_| stale.is_finished());
+        match stale.join().unwrap() {
+            Err(e) => assert!(e.to_string().contains("earlier session"), "{e}"),
+            Ok(_) => panic!("an earlier session's invite joined"),
+        }
+        assert!(asked.elapsed() < Duration::from_secs(3), "refused at once: {:?}", asked.elapsed());
         b.dial(&invite).unwrap();
         let theirs = invite.clone();
         let joiner = std::thread::spawn(move || b.join_at_cut(&theirs, RATE, Duration::from_secs(20), T_JOIN));

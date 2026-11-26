@@ -30,7 +30,8 @@ The other player starts the session and sends you an **invite** (a line starting
 ```
 
 Put the headset on first. The invite lets you in by itself: VR starts once you're in, usually within a few seconds.
-The invite works for one player and for 60 minutes. A second player, or an old invite, is refused.
+The invite works for one player and for 60 minutes. A second player, an expired invite, or one from the other
+player's earlier session (before they restarted) is refused, and the terminal says why: ask for a new invite.
 
 In VR you can also join from the menu: copy the invite on this machine, then press **Join a session** (twice: the
 first press says what happens). The game restarts, VR goes off for a few seconds, and comes back in their session.
@@ -39,7 +40,7 @@ It also prints a reply code (`pe1r:`). That's a fallback: send it only if the ot
 
 To quit, type `quit` and Enter in the terminal, or press Ctrl-C, or close the program. In VR, the menu button on your
 left controller opens the menu; **Quit** asks once more before it quits. While the program waits to be let in,
-`quit` and Ctrl-C end it too.
+`quit` and Ctrl-C end it too (it then ends with code 130, which isn't a failure).
 
 If you open a session yourself and the other player's join times out, your firewall may be blocking it: run
 `sudo firewall-cmd --add-port=4433/udp` and try again.

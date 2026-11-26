@@ -145,8 +145,9 @@ const REPLACE_M: f64 = 1.0;
 pub const CONFIRM_S: u64 = 10;
 /// What Join's first press says (J0, @coordinator-opus, after the invite-only ruling):
 /// the restart takes VR away until this machine is in the other session, a few seconds.
-pub const JOIN_FIRST: &str = "Joining restarts the game: VR goes off\n\
-    for a few seconds, and comes back in their session.\n\
+pub const JOIN_FIRST: &str = "Joining restarts the game: VR goes off,\n\
+    usually for a few seconds, and comes back in their session.\n\
+    To stop waiting, type quit or press Ctrl-C in the terminal.\n\
     Press Join again to go.";
 /// A button's name for the log.
 fn button_name(b: u32) -> String {
