@@ -194,7 +194,12 @@ FOCUSED, STOPPING, LOSS_PENDING and EXITING. What each state means for the engin
     every frame (no action sync needed): the last head before the change time against the first one after, so the
     head's world pose stays continuous. Both must be within 0.5 s of the change time [I], or the change is
     unmeasurable: a head already in the new space (an event polled late) or one from long ago (the player walked)
-    measures nothing (@chunks-reviewer's L1). Recentres are about gravity: `J` keeps only its yaw.
+    measures nothing (@chunks-reviewer's L1). The head must also have jumped between the two (the jump test
+    below, scaled by the frames between them): otherwise the space didn't visibly move and the two heads differ by
+    the player's own motion, so the change is unmeasured and still. At 13 fps on WiVRn the heads were 77 ms apart
+    and the last one fell before the change time, so without that test 107 no-pose STAGE changes applied the head's
+    motion, vertical included, as corrections, and left the friend under an invisible ceiling (run
+    20261126T171653Z). Recentres are about gravity: `J` keeps only its yaw.
   - **Each reading takes the correction of its own locate time:** a hand read at `now`, before the change time,
     keeps the old one (@chunks-reviewer's L2).
   - **Unmeasurable** (no valid pose and no head on one side): the jump goes through. If the raw head jumped at it,

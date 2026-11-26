@@ -13,7 +13,9 @@
 //!
 //! `J` is the event's `poseInPreviousSpace` when the runtime says it's valid. Otherwise it's measured from the head:
 //! the jump between the last head before the change time and the first one after it, so the head's world pose
-//! stays continuous across the change. Recentres are about gravity, so `J` keeps only its yaw.
+//! stays continuous across the change, but only if the head jumped between them ([`head_jumped`]); a head that
+//! moved no more than a head can in that time measures the player's motion, not the space's, and the change is
+//! left unmeasured. Recentres are about gravity, so `J` keeps only its yaw.
 //!
 //! The layer's views stay the runtime's own: the compositor needs them in its space. Only the drawn world moves.
 //!
@@ -168,11 +170,17 @@ impl SpaceCorrection {
                 }
                 None => match (self.last_head, raw_head) {
                     // Both heads close to the change time, one on each side: a head polled after the change in the
-                    // new space, or one from long ago (the player walked meanwhile), measures nothing.
+                    // new space, or one from long ago (the player walked meanwhile), measures nothing. And the head
+                    // must have jumped between them: otherwise the space didn't visibly move, and what the two heads
+                    // differ by is the player's own motion. At a low frame rate the heads are frames apart, so
+                    // without this every no-pose change a runtime sends (WiVRn's STAGE changes) applied the head's
+                    // motion as a correction, vertical included: 107 in the friend's 13 fps run 20261126T171653Z,
+                    // which left them under an invisible ceiling. Such a change counts as unmeasured and still.
                     (Some((old_t, old)), Some(new))
                         if old_t.0 < ch.change_time.0
                             && ch.change_time.0 - old_t.0 <= MAX_HEAD_GAP_NS
-                            && at.0 - ch.change_time.0 <= MAX_HEAD_GAP_NS =>
+                            && at.0 - ch.change_time.0 <= MAX_HEAD_GAP_NS
+                            && head_jumped(Some((old_t, old)), at, Some(new)) =>
                     {
                         self.counters.by_head += 1;
                         let r = yaw_quat(f64::from(yaw_of(old.orientation)) - f64::from(yaw_of(new.orientation)));
@@ -416,6 +424,37 @@ mod tests {
         assert!((a.yaw.to_degrees() - 90.0).abs() < 1e-3);
         assert!(close(c.pose(head_new).position, head_old.position), "the head's world pose is continuous");
         assert_eq!(c.counters.by_head, 1);
+    }
+
+    /// The friend's 13 fps run on WiVRn (20261126T171653Z): a STAGE change with no pose every few frames, each
+    /// applying 65 ms after its change time, with the heads 77 ms apart, so the last head is before the change time.
+    /// The head walks 10 cm a frame and bobs 3 cm: nothing jumped, so nothing is corrected, and the rig stays put.
+    /// A real jump at the same rate is still measured.
+    #[test]
+    fn at_a_low_frame_rate_a_change_the_head_did_not_jump_at_corrects_nothing() {
+        const FRAME_NS: i64 = 77_000_000;
+        let mut c = SpaceCorrection::new(RecentreYaw::Heading);
+        let head = |i: i64| pose([0.0, 1.6 + if i % 2 == 0 { 0.03 } else { 0.0 }, -0.1 * i as f32], 2.0 * i as f64);
+        for i in 0..120i64 {
+            let at = HostTime(1_000_000_000 + i * FRAME_NS);
+            if i % 3 == 1 {
+                c.on_change(SpaceChange { change_time: HostTime(at.0 + FRAME_NS - 65_000_000), previous: None });
+            }
+            let a = c.frame(at, Some(head(i)));
+            assert_eq!(a.yaw, 0.0, "frame {i}");
+            assert!(!a.unmeasured, "frame {i}: the hands aren't marked");
+        }
+        assert_eq!(c.correction(), RigPose::IDENTITY, "no correction applied");
+        assert_eq!(c.counters.by_head, 0);
+        assert_eq!((c.counters.unmeasured, c.counters.unmeasured_still), (40, 40));
+        // A recentre the runtime gives no pose for, at the same rate: the head jumps 2 m and 90°, and is measured.
+        let at = HostTime(1_000_000_000 + 120 * FRAME_NS);
+        c.on_change(SpaceChange { change_time: HostTime(at.0 - 65_000_000), previous: None });
+        let head_new = compose(inverse(jump()), head(119));
+        let a = c.frame(at, Some(head_new));
+        assert_eq!(c.counters.by_head, 1);
+        assert!((a.yaw.to_degrees() - 90.0).abs() < 1e-3);
+        assert!(close(c.pose(head_new).position, head(119).position), "the head's world pose is continuous");
     }
 
     #[test]
