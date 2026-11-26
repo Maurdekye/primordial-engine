@@ -13,6 +13,25 @@ ts=$(date -u +%Y%m%dT%H%M%SZ)
 logs=${PE_KIT_LOGS:-$HOME/pe-friend-test/logs}/$ts
 mkdir -p "$logs"
 
+# One OpenXR manifest: where it really is, its name and library, and the library path pe-app opens.
+show_manifest() {
+  local f=$1 real lib path
+  if [ ! -f "$f" ]; then
+    echo "$2: $f (does not exist)"
+    return
+  fi
+  real=$(readlink -f "$f")
+  echo "$2: $f -> $real"
+  grep -E '"library_path"|"name"' "$f" | sed 's/^ */  /'
+  lib=$(sed -n 's/.*"library_path" *: *"\([^"]*\)".*/\1/p' "$f")
+  case "$lib" in
+    "") return ;;
+    /*) path=$lib ;;
+    *) path=$(dirname "$real")/$lib ;;
+  esac
+  if [ -f "$path" ]; then echo "  library: present: $(readlink -f "$path")"; else echo "  library: MISSING: $path"; fi
+}
+
 # What this machine has for VR, before anything starts: the driver, the Vulkan device, the OpenXR runtime.
 report() {
   echo "== run $ts, kit $(cat "$here/COMMIT" 2>/dev/null || echo unknown)"
@@ -36,23 +55,26 @@ report() {
   fi
   echo "== OpenXR runtime"
   echo "XR_RUNTIME_JSON=${XR_RUNTIME_JSON:-<unset>}"
-  local dirs="${XDG_CONFIG_HOME:-$HOME/.config}:${XDG_CONFIG_DIRS:-/etc/xdg}" d f
+  # The manifests in pe-app's order (pe-xr's loader.rs): XR_RUNTIME_JSON if set, else the first file under the XDG
+  # config paths. "pe-app reads" marks the one it opens. The library line gives the path it opens: a relative
+  # library_path resolves against the real file's folder, symlinks followed, as pe-app does since
+  # @ticket:primordial-engine/pe-xr-resolve-a-manifest-s-relative-library-path (before it, run.sh said "present"
+  # while pe-app looked beside the link and found nothing).
+  local dirs="${XDG_CONFIG_HOME:-$HOME/.config}:${XDG_CONFIG_DIRS:-/etc/xdg}" d f tag="pe-app reads"
+  if [ -n "${XR_RUNTIME_JSON:-}" ]; then
+    show_manifest "$XR_RUNTIME_JSON" "$tag (XR_RUNTIME_JSON)"
+    tag="not read (XR_RUNTIME_JSON is set)"
+  fi
   local IFS=:
   for d in $dirs; do
     for f in "$d/openxr/1/active_runtime.$(uname -m).json" "$d/openxr/1/active_runtime.json"; do
-      [ -e "$f" ] || continue
-      echo "found: $f -> $(readlink -f "$f")"
-      grep -E '"library_path"|"name"' "$f" | sed 's/^ */  /'
-      local lib
-      lib=$(sed -n 's/.*"library_path" *: *"\([^"]*\)".*/\1/p' "$f")
-      case "$lib" in
-        /*) [ -e "$lib" ] && echo "  library: present" || echo "  library: MISSING ($lib)" ;;
-        "") ;;
-        *) [ -e "$(dirname "$(readlink -f "$f")")/$lib" ] && echo "  library: present (relative)" || echo "  library: relative, not found beside the manifest" ;;
-      esac
+      [ -f "$f" ] || continue
+      show_manifest "$f" "$tag"
+      tag="also found, not read"
     done
   done
   unset IFS
+  [ "$tag" = "pe-app reads" ] && echo "no manifest: pe-app will say no OpenXR runtime is registered"
   echo "== WiVRn"
   command -v wivrn-server >/dev/null && echo "wivrn-server: $(command -v wivrn-server)"
   command -v flatpak >/dev/null && flatpak list --app 2>/dev/null | grep -i wivrn
