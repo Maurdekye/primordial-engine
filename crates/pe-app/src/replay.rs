@@ -46,6 +46,12 @@ pub fn request() {
     REQUESTED.store(true, Ordering::Release);
 }
 
+/// Forgets a `replay` asked for and not yet taken (a session ending, app.md 4.1): a request typed in one session never
+/// runs in the next.
+pub fn clear_request() {
+    REQUESTED.store(false, Ordering::Release);
+}
+
 /// Whether the console asked for a replay since the last call.
 pub(crate) fn take_request() -> bool {
     REQUESTED.swap(false, Ordering::AcqRel)

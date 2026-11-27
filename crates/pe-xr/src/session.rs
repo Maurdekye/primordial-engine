@@ -58,6 +58,14 @@ pub struct FrameRequest<'a> {
 pub trait FrameSink {
     /// Draw and submit. Return `false` if nothing was drawn, so the frame ends with no layers.
     fn render(&mut self, frame: &FrameRequest<'_>) -> bool;
+    /// The world the frames are drawn from (pe-app's `FrameSlot::world`), read at the start of each frame. When it
+    /// changes, the session starts each hand over ([`crate::hands::HandState::begin_world`]): the in-game join's
+    /// design d3, section 3. Locomotion carries on: the simulation takes a body's first sample as its baseline for the
+    /// heading and the jump count (pe-world player.rs `with_sample`), so a new world never sees world 1's values as
+    /// a turn or a jump.
+    fn world(&self) -> u64 {
+        0
+    }
     /// The rectangle drawn this frame, from the origin (render scale as a viewport): the projection layer's
     /// `imageRect`. `None`: the whole image.
     fn extent(&self) -> Option<[u32; 2]> {
@@ -128,6 +136,8 @@ pub struct Counters {
     pub missed_frames: u64,
     pub state_changes: u64,
     pub recentres: u64,
+    /// World changes seen ([`FrameSink::world`]).
+    pub worlds: u64,
     /// How each recentre was measured (spec 3.2).
     pub recentre: crate::space::SpaceCounters,
     pub events_lost: u64,
@@ -165,6 +175,8 @@ pub struct XrSession<B: Backend> {
     moves: Option<Arc<MoveRing>>,
     /// A recentre's correction, applied to every pose read (spec 3.2).
     space: SpaceCorrection,
+    /// The sink's world at the last frame ([`FrameSink::world`]).
+    world: u64,
     /// Whether the first focused frame's locomotion actions were logged (a runtime that left them unbound shows here).
     moves_logged: bool,
     last_display_time: Option<HostTime>,
@@ -217,6 +229,7 @@ impl<B: Backend> XrSession<B> {
             locomotion: MoveState::default(),
             moves: None,
             space: SpaceCorrection::default(),
+            world: 0,
             moves_logged: false,
             last_display_time: None,
             last_good: None,
@@ -504,6 +517,16 @@ impl<B: Backend> XrSession<B> {
         if period != self.counters.last_display_period_ns {
             self.counters.last_display_period_ns = period;
             self.ring.set_display_period(period);
+        }
+
+        // A new world (FrameSink::world): before any hand is read, so its first sample is already the new world's.
+        let world = sink.world();
+        if world != self.world {
+            self.world = world;
+            self.counters.worlds += 1;
+            for h in &mut self.hands {
+                h.begin_world();
+            }
         }
 
         // A recentre's correction (spec 3.2): the changes due at this display time apply before any pose is read, and

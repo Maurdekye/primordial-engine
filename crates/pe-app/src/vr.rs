@@ -349,6 +349,11 @@ impl ViewReader {
         ViewReader { slot, last: None }
     }
 
+    /// The slot's world now (`FrameSlot::world`): pe-xr reads it each frame ([`FrameSink::world`]).
+    pub fn world(&self) -> u64 {
+        self.slot.world()
+    }
+
     /// The views since the last call and the newest view, or `None` before the first view.
     pub fn take(&mut self) -> Option<(Batch, Arc<FrameView>)> {
         let batch = self.slot.take();
@@ -392,6 +397,12 @@ fn local_presentation(frame: &FrameRequest<'_>, now: Option<HostTime>) -> LocalP
 }
 
 impl FrameSink for VrSink {
+    /// The slot's world: it changes at a session swap's `begin_world`, before the next session's simulation starts,
+    /// so pe-xr opens each hand for the new world before that simulation reads one (@xr-eng, xr/world-swap 4f8e247e).
+    fn world(&self) -> u64 {
+        self.views.world()
+    }
+
     /// Nothing is drawn before the first view, or for an image outside the swapchain: the frame ends with no layers.
     ///
     /// Every view published since the last frame feeds the display layer, the effects and the notices
@@ -1102,5 +1113,126 @@ mod tests {
         let local = local_presentation(&frame, Some(HostTime(5_000_000)));
         assert_eq!(local.display_time, HostTime(5_000_000));
         assert_eq!(local.hands[1].map(|h| h.pose), Some(right));
+    }
+
+    /// The in-game join's test 2 (design d3; @xr-eng the XR seam's second reader): a session's world is swapped for
+    /// another's while the headset's loop goes on, here pe-xr's fake runtime stepped at about 90 Hz through a sink that
+    /// presents as the VR sink does, with no GPU. The XR session never ends and never asks to. Every display frame after
+    /// the first view draws, the held ones of the swap included. The presenter moves to the new world at its first
+    /// view, and then draws exactly that world's objects.
+    #[test]
+    fn a_world_swap_keeps_the_xr_session_drawing_every_frame() {
+        use crate::session::{self, Kept, Spec, Start};
+        use std::sync::atomic::AtomicBool;
+
+        struct Presenting {
+            views: ViewReader,
+            presenter: Presenter,
+            frames: u64,
+            undrawn_after_first: u64,
+            drawn_any: bool,
+            /// The newest frame's world, and its objects drawn against the newest view's.
+            last: Option<(u64, usize, usize)>,
+        }
+        impl FrameSink for Presenting {
+            fn render(&mut self, _: &FrameRequest<'_>) -> bool {
+                self.frames += 1;
+                let Some((batch, view)) = self.views.take() else {
+                    return false;
+                };
+                let now = crate::clock::now();
+                let local = LocalPresentation { display_time: now, hands: [None, None] };
+                self.presenter.drawn_rig(&batch, now, None);
+                let Some(out) = self.presenter.frame_batch(&batch, &local, &[]) else {
+                    self.undrawn_after_first += u64::from(self.drawn_any);
+                    return false;
+                };
+                self.drawn_any = true;
+                self.last = Some((self.presenter.world(), out.display.objects.len(), view.objects.len()));
+                true
+            }
+            fn world(&self) -> u64 {
+                self.views.world()
+            }
+            fn release_swapchain(&mut self) {}
+        }
+
+        let free = || std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let dir = std::env::temp_dir().join(format!("pe-app-vr-swap-{}", std::process::id()));
+        let spec = |seed: u8, preset| Spec {
+            listen: std::net::SocketAddr::from(([127, 0, 0, 1], free())),
+            advertise: Vec::new(),
+            identity: dir.join(format!("identity-{seed}.seed")),
+            seed: [seed; 32],
+            preset,
+            display_delay: Duration::ZERO,
+            check_replay: false,
+            mcp: None,
+        };
+        let pit = spec(51, pe_world::preset::Preset::BallPit { balls: 8 });
+        let plane = spec(51, pe_world::preset::Preset::Plane);
+        let hands: Arc<dyn pe_seams::HandFeed> = Arc::new(crate::sim::tests::StillHands([0.0, 1.0, -0.4]));
+        let kept = Kept {
+            host: crate::clock::shared(),
+            slot: Arc::new(FrameSlot::new()),
+            hands: Arc::new(crate::local::SwitchedHands::new(hands.clone(), hands)),
+            moves: Arc::new(pe_render::desktop_move::DesktopMoveFeed::default()),
+            display_lead: Arc::new(crate::shown::DisplayLead::default()),
+            status: Arc::new(pe_render::notices::StatusLine::default()),
+            captures: None,
+            quit: crate::console::Quit::new(),
+            replies: Arc::new(Mutex::new(None)),
+            link_notes: Default::default(),
+        };
+        let first = session::start(&pit, &kept, &Start::Open, &AtomicBool::new(false), 1).expect("session 1");
+        let presenter =
+            Presenter::new(DisplaySettings::default(), EffectSettings::default(), Environment::default(), 60);
+        let mut sink = Presenting {
+            views: ViewReader::new(kept.slot.clone()),
+            presenter,
+            frames: 0,
+            undrawn_after_first: 0,
+            drawn_any: false,
+            last: None,
+        };
+        let mut xr = session(FakeRuntime::new().started());
+        let mut frame = |sink: &mut Presenting| {
+            assert_eq!(xr.step(sink), Step::Frame, "the XR session kept running");
+            std::thread::sleep(Duration::from_millis(11));
+        };
+        // World 1 for about half a second.
+        let until = Instant::now() + Duration::from_millis(500);
+        while Instant::now() < until || !sink.drawn_any {
+            frame(&mut sink);
+        }
+        let world_1 = sink.last.expect("world 1 drawn");
+        // The swap, on another thread, as the manager does it, while the headset goes on.
+        let (k, p) = (kept.clone(), plane.clone());
+        let swap = std::thread::spawn(move || {
+            let _ = first.stop(&AtomicBool::new(false));
+            session::start(&p, &k, &Start::Open, &AtomicBool::new(false), 2).expect("session 2")
+        });
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !(swap.is_finished() && sink.presenter.world() == kept.slot.world()) {
+            assert!(Instant::now() < deadline, "the new world never showed: {:?}", sink.last);
+            frame(&mut sink);
+        }
+        for _ in 0..20 {
+            frame(&mut sink);
+        }
+        let second = swap.join().expect("the swap's thread");
+        let (world, drawn, published) = sink.last.expect("drawn");
+        assert_eq!(world, kept.slot.world(), "the presenter is on the new world");
+        assert!(world > world_1.0);
+        assert_eq!(drawn, published, "the new world's objects, every one, and none of the old");
+        assert_ne!(published, world_1.2, "the plane isn't the pit");
+        assert_eq!(sink.undrawn_after_first, 0, "no frame went out without layers after the first view");
+        // Held frames are those between the new world's start and its first view, often shorter than a frame here: the
+        // stop's frames drew world 1's last view as display frames. Reported, not bounded.
+        eprintln!("held for the swap: {} frames", sink.presenter.counters().run().held_for_swap);
+        assert_eq!(xr.backend().count(&Call::RequestExit), 0, "nothing asked to leave VR");
+        // pe-xr starts at world 0, so session 1's first frame counts as one change, and the swap as the second.
+        assert_eq!(xr.counters.worlds, 2, "pe-xr saw session 1 and the swap, and opened its hands for each");
+        let _ = second.stop(&AtomicBool::new(false));
     }
 }

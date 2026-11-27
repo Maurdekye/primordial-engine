@@ -79,6 +79,8 @@ struct Inner {
     machine: VecDeque<(Ticket, Submission)>,
     receipts: HashMap<Ticket, (Receipt, Instant)>,
     tags: HashMap<Ticket, Tag>,
+    /// Why the queue was closed ([`EditQueue::close`]): every change from then on is answered with it.
+    closed: Option<String>,
 }
 
 pub struct EditQueue {
@@ -102,6 +104,7 @@ impl EditQueue {
                 machine: VecDeque::new(),
                 receipts: HashMap::new(),
                 tags: HashMap::new(),
+                closed: None,
             }),
             settled: Condvar::new(),
             capacity,
@@ -117,6 +120,34 @@ impl EditQueue {
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Closes the queue (the session ended, app.md 4.1): every change still waiting for the simulation thread, and
+    /// every one submitted from now on, is answered `Unavailable(why)` at once, so no caller waits out its deadline.
+    pub fn close(&self, why: &str) {
+        let waiting: Vec<Ticket> = {
+            let mut g = self.lock();
+            g.closed = Some(why.to_string());
+            let pending: Vec<Ticket> = g.pending.drain(..).map(|(t, _)| t).collect();
+            pending.into_iter().chain(g.machine.drain(..).map(|(t, _)| t)).collect()
+        };
+        for t in waiting {
+            self.settle(t, Receipt::Unavailable(why.to_string()));
+        }
+        self.settled.notify_all();
+    }
+
+    /// A ticket answered at once, when the queue is closed.
+    fn closed_ticket(&self) -> Option<Ticket> {
+        let (t, why) = {
+            let mut g = self.lock();
+            let why = g.closed.clone()?;
+            let t = Ticket(g.next);
+            g.next += 1;
+            (t, why)
+        };
+        self.settle(t, Receipt::Unavailable(why));
+        Some(t)
     }
 
     /// Hands a change to the simulation thread. Never blocks.
@@ -142,6 +173,9 @@ impl EditQueue {
     /// The machine lane (api.md 7.1): the build worker's `AttestBuild` or `BuildFailed`, drained ahead of the
     /// backstop's re-sends and fresh changes. Never blocks; `Full` past [`MACHINE_CAPACITY`].
     pub fn submit_machine(&self, tx: Transaction) -> Result<Ticket, Full> {
+        if let Some(t) = self.closed_ticket() {
+            return Ok(t);
+        }
         let t = {
             let mut g = self.lock();
             if g.machine.len() >= MACHINE_CAPACITY {
@@ -158,6 +192,9 @@ impl EditQueue {
     }
 
     fn submit_tagged(&self, s: Submission, tag: Option<Tag>) -> Result<Ticket, Full> {
+        if let Some(t) = self.closed_ticket() {
+            return Ok(t);
+        }
         let t = {
             let mut g = self.lock();
             if g.pending.len() >= self.capacity {
@@ -283,6 +320,31 @@ mod tests {
             },
             base: 4,
         }
+    }
+
+    /// A session's end (app.md 4.1): closing the queue answers the changes still waiting, a caller waiting for its
+    /// receipt included, `Unavailable` at once, and every change submitted afterwards too; nothing is left to drain.
+    #[test]
+    fn a_closed_queue_answers_every_change_unavailable_at_once() {
+        let q = Arc::new(EditQueue::new(8, || {}));
+        let waiting = q.submit(sub("fresh")).unwrap();
+        let machine = q.submit_machine(sub("attest").tx).unwrap();
+        let qq = q.clone();
+        let waiter = std::thread::spawn(move || qq.receipt(waiting, Instant::now() + Duration::from_secs(30)));
+        std::thread::sleep(Duration::from_millis(50));
+        let asked = Instant::now();
+        q.close("the session ended");
+        let unavailable = |r: Option<Receipt>| matches!(r, Some(Receipt::Unavailable(w)) if w == "the session ended");
+        assert!(unavailable(waiter.join().unwrap()), "the waiting caller is answered");
+        assert!(asked.elapsed() < Duration::from_secs(1), "at once: {:?}", asked.elapsed());
+        assert!(unavailable(q.receipt(machine, Instant::now())), "the machine lane's too");
+        assert_eq!(q.len(), 0);
+        assert!(q.drain(8).is_empty(), "nothing reaches the simulation");
+        let late = q.submit(sub("after")).expect("answered, not refused as full");
+        assert!(unavailable(q.receipt(late, Instant::now())));
+        let late = q.submit_machine(sub("after").tx).unwrap();
+        assert!(unavailable(q.receipt(late, Instant::now())));
+        assert!(q.drain(8).is_empty());
     }
 
     #[test]

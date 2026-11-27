@@ -689,6 +689,133 @@ pub fn build(
     build_reporting(tc, crate_dir, sdk, target_dir, offline).map(|b| b.wasm)
 }
 
+/// Kills the builds in flight on the threads that hold it (pe-app's session change, app.md 4.1): cargo and every
+/// process it started, rustc and anything a build starts in turn. A killed build ends with
+/// [`BuildError::Spawn`] saying so, and a build begun on a thread whose kill has fired starts no process, so a retry
+/// loop ends at once. A thread holds a kill with [`BuildKill::hold`] for the length of a closure.
+#[derive(Clone, Debug, Default)]
+pub struct BuildKill(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+/// The words a killed build ends with.
+pub const KILLED: &str = "the build was stopped: the session ended";
+
+thread_local! {
+    static KILL: std::cell::RefCell<Option<BuildKill>> = const { std::cell::RefCell::new(None) };
+}
+
+impl BuildKill {
+    pub fn new() -> BuildKill {
+        BuildKill::default()
+    }
+
+    /// Kill every build in flight on the threads holding this, now and from now on.
+    pub fn kill(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    pub fn killed(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Run `f` with this kill held by the calling thread: every build `f` runs on it can be killed.
+    pub fn hold<T>(&self, f: impl FnOnce() -> T) -> T {
+        let before = KILL.with(|k| k.borrow_mut().replace(self.clone()));
+        struct Restore(Option<BuildKill>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                let before = self.0.take();
+                KILL.with(|k| *k.borrow_mut() = before);
+            }
+        }
+        let _restore = Restore(before);
+        f()
+    }
+}
+
+/// How often a killable build looks at its kill.
+const KILL_POLL: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Runs cargo as `Command::output` does, unless the calling thread holds a [`BuildKill`]. Then cargo starts in a
+/// process group of its own (unix), its pipes are read on threads of their own, and a kill takes the whole tree:
+/// `kill -KILL -- -<group>` on unix, `taskkill /T /F` on Windows (which walks the tree by parent). The pipe readers
+/// are left to end by themselves, never waited for: a process of the tree that outlived the kill would hold the
+/// pipes open (@design-reviewer).
+fn run_cargo(mut cmd: Command) -> Result<std::process::Output, BuildError> {
+    let kill = KILL.with(|k| k.borrow().clone());
+    let Some(kill) = kill else {
+        return cmd.output().map_err(|e| BuildError::Spawn(e.to_string()));
+    };
+    if kill.killed() {
+        return Err(BuildError::Spawn(KILLED.into()));
+    }
+    use std::io::Read;
+    use std::process::Stdio;
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    let mut child = cmd.spawn().map_err(|e| BuildError::Spawn(e.to_string()))?;
+    let read = |pipe: Option<Box<dyn Read + Send>>| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        if let Some(mut pipe) = pipe {
+            let _ = std::thread::Builder::new().name("pe-build-pipe".into()).spawn(move || {
+                let mut buf = Vec::new();
+                let _ = pipe.read_to_end(&mut buf);
+                let _ = tx.send(buf);
+            });
+        }
+        rx
+    };
+    let out = read(child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
+    let err = read(child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
+    loop {
+        if let Some(status) = child.try_wait().map_err(|e| BuildError::Spawn(e.to_string()))? {
+            // The tree ended by itself: the pipes close with it.
+            return Ok(std::process::Output {
+                status,
+                stdout: out.recv().unwrap_or_default(),
+                stderr: err.recv().unwrap_or_default(),
+            });
+        }
+        if kill.killed() {
+            return Err(BuildError::Spawn(match kill_tree(&mut child) {
+                Ok(()) => KILLED.into(),
+                Err(e) => format!("{KILLED}; its process tree couldn't be killed ({e}), only cargo"),
+            }));
+        }
+        std::thread::sleep(KILL_POLL);
+    }
+}
+
+/// Kills `child` and every process under it, and reaps `child`. An error if the tree's kill couldn't run (cargo itself
+/// is killed anyway).
+fn kill_tree(child: &mut std::process::Child) -> Result<(), String> {
+    let id = child.id().to_string();
+    #[cfg(windows)]
+    let tree = {
+        let root = std::env::var_os("SystemRoot").map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
+        Command::new(root.join("System32").join("taskkill.exe")).args(["/T", "/F", "/PID", &id]).output()
+    };
+    #[cfg(unix)]
+    let tree = Command::new("kill").args(["-KILL", "--", &format!("-{id}")]).output();
+    #[cfg(not(any(windows, unix)))]
+    let tree: std::io::Result<std::process::Output> = Err(std::io::Error::other("no process tree here"));
+    let _ = child.kill();
+    let _ = child.wait();
+    // A kill that ran but failed (access denied, say) may have left part of the tree: say so (@design-reviewer's L1).
+    match tree {
+        Ok(out) if out.status.success() => Ok(()),
+        Ok(out) => Err(format!(
+            "the process tree's kill exited with {}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        )),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 /// [`build`], with rustc's warnings about the script's own source ([`Built`]).
 pub fn build_reporting(
     tc: &Toolchain,
@@ -790,7 +917,7 @@ pub fn build_reporting(
         .env("RUSTC_WRAPPER", "")
         .env("RUSTC_WORKSPACE_WRAPPER", "")
         .env("CARGO_TARGET_DIR", target_dir);
-    let out = cmd.output().map_err(|e| BuildError::Spawn(e.to_string()))?;
+    let out = run_cargo(cmd)?;
     if !out.status.success() {
         let (diagnostics, mut text) = parse_rustc_json(&String::from_utf8_lossy(&out.stdout));
         text.push_str(&String::from_utf8_lossy(&out.stderr));
@@ -810,6 +937,109 @@ pub fn build_reporting(
 
 #[cfg(test)]
 mod tests {
+    /// A held kill takes the whole tree a build started, a grandchild included, and returns at once without waiting
+    /// for the pipes the grandchild holds (pe-app's session change; @design-reviewer's condition). A
+    /// build begun after the kill starts nothing.
+    #[test]
+    fn a_killed_build_takes_its_whole_process_tree() {
+        use std::time::{Duration, Instant};
+        // A number no other process here uses on its command line.
+        let marker = format!("{}", 40_000 + std::process::id() % 10_000);
+        let grandchild = |marker: &str| {
+            #[cfg(windows)]
+            {
+                let mut c = super::Command::new("cmd");
+                c.args(["/c", &format!("ping -n {marker} 127.0.0.1")]);
+                c
+            }
+            #[cfg(unix)]
+            {
+                let mut c = super::Command::new("sh");
+                c.args(["-c", &format!("sleep {marker}; true")]);
+                c
+            }
+        };
+        // A failing run leaves no grandchild behind: the marker's processes are killed on the way out.
+        struct Reap(String);
+        impl Drop for Reap {
+            fn drop(&mut self) {
+                reap(&self.0);
+            }
+        }
+        let _reap = Reap(marker.clone());
+        let kill = super::BuildKill::new();
+        let held = kill.clone();
+        let cmd = grandchild(&marker);
+        let build = std::thread::spawn(move || held.hold(|| super::run_cargo(cmd)));
+        let started = Instant::now();
+        while !running(&marker) {
+            assert!(started.elapsed() < Duration::from_secs(10), "the grandchild never started");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let asked = Instant::now();
+        kill.kill();
+        let r = build.join().expect("the build's thread");
+        assert!(matches!(&r, Err(super::BuildError::Spawn(m)) if m == super::KILLED), "{r:?}");
+        assert!(asked.elapsed() < Duration::from_secs(3), "the kill took {:?}", asked.elapsed());
+        let gone = (0..50).any(|_| {
+            std::thread::sleep(Duration::from_millis(100));
+            !running(&marker)
+        });
+        assert!(gone, "the grandchild outlived the kill");
+        let after = kill.hold(|| super::run_cargo(grandchild(&marker)));
+        assert!(matches!(&after, Err(super::BuildError::Spawn(m)) if m == super::KILLED), "{after:?}");
+        assert!(!running(&marker), "a build after the kill started nothing");
+        // Without a kill held, a build runs as `output` runs it.
+        #[cfg(windows)]
+        let quick = super::run_cargo({
+            let mut c = super::Command::new("cmd");
+            c.args(["/c", "echo built"]);
+            c
+        });
+        #[cfg(unix)]
+        let quick = super::run_cargo({
+            let mut c = super::Command::new("sh");
+            c.args(["-c", "echo built"]);
+            c
+        });
+        let out = quick.expect("an ordinary build");
+        assert!(out.status.success() && String::from_utf8_lossy(&out.stdout).contains("built"));
+    }
+
+    /// Kills the processes whose command line holds the test's marker, and only those.
+    fn reap(marker: &str) {
+        #[cfg(windows)]
+        let _ = super::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                &format!(
+                    "Get-CimInstance Win32_Process -Filter \"Name='PING.EXE'\" | Where-Object {{ $_.CommandLine -like '*-n {marker} *' }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force }}"
+                ),
+            ])
+            .output();
+        #[cfg(unix)]
+        let _ = super::Command::new("pkill").args(["-f", &format!("sleep {marker}")]).output();
+    }
+
+    /// Whether a process whose command line holds the test's marker runs on this machine.
+    fn running(marker: &str) -> bool {
+        #[cfg(windows)]
+        let out = super::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                &format!(
+                    "@(Get-CimInstance Win32_Process -Filter \"Name='PING.EXE'\" | Where-Object {{ $_.CommandLine -like '*-n {marker} *' }}).Count"
+                ),
+            ])
+            .output();
+        #[cfg(unix)]
+        let out = super::Command::new("sh").args(["-c", &format!("pgrep -f 'sleep {marker}' | wc -l")]).output();
+        let out = out.expect("the process list");
+        String::from_utf8_lossy(&out.stdout).trim().parse::<u32>().unwrap_or(0) > 0
+    }
+
     #[test]
     fn a_failed_link_keeps_the_linker_s_own_words_but_not_its_arguments() {
         // rustc's message for a failed link, as `--message-format=json-diagnostic-short` gives it [V: a bad

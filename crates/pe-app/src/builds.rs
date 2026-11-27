@@ -359,6 +359,8 @@ pub struct Builder {
     /// Each version built, by V ([`Cache`]).
     built: Mutex<Cache<Built>>,
     gate: Gate,
+    /// Kills the builds in flight at a session change ([`Builder::cancel`]).
+    kill: pe_logic::build::BuildKill,
 }
 
 /// How many versions the build cache keeps.
@@ -407,7 +409,15 @@ impl Builder {
     /// A builder that loads and describes modules with `inbox`'s runner, which decides their hashes.
     pub fn new(config: BuildConfig, inbox: ModuleInbox) -> Result<Builder, BuildError> {
         let ids = toolchain_and_sdk(&config.toolchain, &config.sdk)?;
-        Ok(Builder { config, inbox, ids, built: Mutex::new(Cache::default()), gate: Gate::default() })
+        let kill = pe_logic::build::BuildKill::new();
+        Ok(Builder { config, inbox, ids, built: Mutex::new(Cache::default()), gate: Gate::default(), kill })
+    }
+
+    /// Kills every build in flight, cargo's whole process tree with it, and every build asked for from now on, so the
+    /// attester's stop doesn't wait out a build (pe-app's session change; app.md 4.1). A killed attester build posts
+    /// nothing: it answers [`RowFail::Held`].
+    pub fn cancel(&self) {
+        self.kill.kill();
     }
 
     /// This machine's toolchain and SDK hashes, as a `CommitScript` carries them ([`toolchain_and_sdk`]).
@@ -469,18 +479,24 @@ impl Builder {
         }
         let (c, inbox) = (&self.config, &self.inbox);
         let started = Instant::now();
-        let script = pe_logic::build::build_for_row(
-            &c.toolchain,
-            archive,
-            &c.sdk,
-            &c.work(),
-            &c.target(),
-            true,
-            inbox.engine(),
-            inbox.settings(),
-            author_module,
-        )
-        .map_err(fail)?;
+        let script = self.kill.hold(|| {
+            pe_logic::build::build_for_row(
+                &c.toolchain,
+                archive,
+                &c.sdk,
+                &c.work(),
+                &c.target(),
+                true,
+                inbox.engine(),
+                inbox.settings(),
+                author_module,
+            )
+        });
+        // Killed at a session change: no `BuildFailed` and no bundle, since the failure is this machine's leaving.
+        if self.kill.killed() {
+            return Err(RowFail::Held(pe_logic::build::KILLED.into()));
+        }
+        let script = script.map_err(fail)?;
         let build_ms = millis(started.elapsed());
         let described = inbox.describe_script(&script, &v).map_err(|e| match describe_failed(e) {
             Ok(failed) => fail(failed),
@@ -517,7 +533,11 @@ impl Builder {
         }
         let c = &self.config;
         let started = Instant::now();
-        let out = pe_logic::build::build_archive_reporting(&c.toolchain, archive, &c.sdk, &c.work(), &c.target(), true)
+        let out = self
+            .kill
+            .hold(|| {
+                pe_logic::build::build_archive_reporting(&c.toolchain, archive, &c.sdk, &c.work(), &c.target(), true)
+            })
             .map_err(BuildFail::Build)?;
         let build_ms = millis(started.elapsed());
         let script = Script::load(self.inbox.engine(), self.inbox.settings(), &out.wasm).map_err(BuildFail::Load)?;
@@ -1013,6 +1033,22 @@ impl AttesterThread {
         if let Some(h) = self.handle.take() {
             let _ = h.join();
         }
+    }
+
+    /// Stops the thread, waiting at most `within` (a session change, after `Builder::cancel` killed any build in
+    /// flight; app.md 4.1). `false` if it was left behind, to end by itself.
+    pub fn stop_within(mut self, within: Duration) -> bool {
+        self.stop.store(true, Ordering::Relaxed);
+        let Some(h) = self.handle.take() else { return true };
+        let until = Instant::now() + within;
+        while !h.is_finished() {
+            if Instant::now() >= until {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let _ = h.join();
+        true
     }
 }
 

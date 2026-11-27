@@ -149,6 +149,16 @@ impl EffectGate {
         out
     }
 
+    /// A new world (pe-app's next session): `Stop` for everything played, and nothing of the old world is kept, its
+    /// waiting effects and its final frame included. The settings and the run's counters stay.
+    pub fn new_world(&mut self) -> Vec<EffectCommand> {
+        let out: Vec<EffectCommand> = self.played.keys().map(|k| EffectCommand::Stop(*k)).collect();
+        self.played.clear();
+        self.waiting.clear();
+        self.last_final = None;
+        out
+    }
+
     /// Waiting effects that are due: others' after `D_effect`, and any whose frame the drawn time has reached.
     pub fn due(&mut self, now: HostTime) -> Vec<EffectCommand> {
         let mut out = Vec::new();

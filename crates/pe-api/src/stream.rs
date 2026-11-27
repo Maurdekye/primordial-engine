@@ -47,6 +47,8 @@ struct Inner<T> {
     items: VecDeque<(u64, Instant, T)>,
     /// The seq of the newest item pushed (0 before any).
     head: u64,
+    /// [`Stream::close`]d: a read waits for nothing.
+    closed: bool,
 }
 
 /// The most items a read copies out under the lock at once.
@@ -65,7 +67,7 @@ impl<T: Clone> Stream<T> {
         Stream {
             epoch,
             retention,
-            inner: Mutex::new(Inner { items: VecDeque::new(), head: 0 }),
+            inner: Mutex::new(Inner { items: VecDeque::new(), head: 0, closed: false }),
             pushed: Condvar::new(),
         }
     }
@@ -104,6 +106,12 @@ impl<T: Clone> Stream<T> {
         g.items.push_back((seq, now, item));
         self.evict(&mut g, now);
         drop(g);
+        self.pushed.notify_all();
+    }
+
+    /// Ends every read's wait now and from now on (the session ended, app.md 4.1): a read gives what is there.
+    pub fn close(&self) {
+        self.inner.lock().unwrap_or_else(|p| p.into_inner()).closed = true;
         self.pushed.notify_all();
     }
 
@@ -147,7 +155,7 @@ impl<T: Clone> Stream<T> {
                         break g.items.iter().skip(start).take(SCAN).map(|(s, _, t)| (*s, t.clone())).collect();
                     }
                     let now = Instant::now();
-                    if now >= deadline {
+                    if now >= deadline || g.closed {
                         return Ok(Read { items, cursor: self.cursor_at(pos), more: false });
                     }
                     let (ng, _) = self.pushed.wait_timeout(g, deadline - now).unwrap_or_else(|p| p.into_inner());
@@ -178,6 +186,24 @@ mod tests {
 
     fn small() -> Stream<u32> {
         Stream::new(0xabc, Retention { max_items: 5, max_age: Duration::from_secs(60) })
+    }
+
+    /// A session's end (app.md 4.1): a read waiting out a long poll returns at once when the stream closes, and later
+    /// reads don't wait.
+    #[test]
+    fn a_closed_stream_ends_a_waiting_read_at_once() {
+        let s = Arc::new(small());
+        let now = s.now_cursor();
+        let (ss, c) = (s.clone(), now.clone());
+        let reader = thread::spawn(move || ss.read(Some(&c), |x| Some(*x), 10, Duration::from_secs(30)));
+        thread::sleep(Duration::from_millis(50));
+        let asked = std::time::Instant::now();
+        s.close();
+        let r = reader.join().unwrap().expect("a read");
+        assert!(r.items.is_empty() && asked.elapsed() < Duration::from_secs(1), "{:?}", asked.elapsed());
+        let asked = std::time::Instant::now();
+        assert!(s.read(Some(&now), |x| Some(*x), 10, Duration::from_secs(30)).unwrap().items.is_empty());
+        assert!(asked.elapsed() < Duration::from_secs(1));
     }
 
     #[test]

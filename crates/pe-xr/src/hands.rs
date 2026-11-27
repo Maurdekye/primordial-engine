@@ -149,6 +149,12 @@ impl Grasp {
         *self = Grasp::default();
     }
 
+    /// Opens without an edge, keeping the signals read before, so a grip still held has to open and close again to
+    /// grasp (a new world; [`HandState::begin_world`]).
+    pub fn open_held(&mut self) {
+        self.closed_by = None;
+    }
+
     /// One frame's signals; the edge, if the grasp changed.
     pub fn step(&mut self, squeeze: Option<f32>, curl: Option<f32>, c: &GraspConfig) -> Option<GraspEdge> {
         let rose = |now: Option<f32>, before: Option<f32>| {
@@ -260,6 +266,15 @@ impl HandState {
 
     /// A recentre moved the tracking space under the player (spec 3.2): the next pose jumps.
     pub fn recentre(&mut self) {
+        self.discontinuity = self.discontinuity.wrapping_add(1);
+    }
+
+    /// A new world (pe-app's in-game Join or New session; the in-game join's design d3, section 3): the hand opens
+    /// without an edge and grasps only once its grip opens and closes again, so a hand held closed through the swap
+    /// never picks something up on the new world's first frame. The next pose is a discontinuity, so nothing is
+    /// thrown or interpolated across the swap. Tracking and the pose carry on.
+    pub fn begin_world(&mut self) {
+        self.grasp.open_held();
         self.discontinuity = self.discontinuity.wrapping_add(1);
     }
 

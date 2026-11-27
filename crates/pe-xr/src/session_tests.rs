@@ -362,6 +362,59 @@ fn a_held_controller_releases_after_the_grace_period_when_tracking_is_lost() {
     no_violations(&s);
 }
 
+/// The in-game join's design d3, section 3 (@engine-architect's world swap): a hand held closed through a world
+/// swap arrives open, with a discontinuity, and grasps again only once its grip opens and closes.
+#[test]
+fn a_new_world_opens_a_held_hand_until_its_grip_opens_and_closes_again() {
+    struct WorldSink {
+        inner: Sink,
+        world: u64,
+    }
+    impl FrameSink for WorldSink {
+        fn render(&mut self, f: &FrameRequest<'_>) -> bool {
+            self.inner.render(f)
+        }
+        fn world(&self) -> u64 {
+            self.world
+        }
+        fn release_swapchain(&mut self) {}
+    }
+    // The right controller squeezes from the start, lets go at 300 ms and squeezes again at 400 ms.
+    let rt = FakeRuntime::new().started().hands(move |hand, at| {
+        let t_ms = (at.0 - 1_000_000_000) / 1_000_000;
+        let held = hand == Hand::Right && !(300..400).contains(&t_ms);
+        Reading {
+            source: HandSource::Controller,
+            at,
+            pose: Some(RigPose { position: [0.2, 1.0, -0.3], orientation: [0.0, 0.0, 0.0, 1.0] }),
+            linear_velocity: None,
+            angular_velocity: None,
+            grip: Some(if held { 0.9 } else { 0.0 }),
+            curl: None,
+        }
+    });
+    let (mut s, ring) = session(rt);
+    let mut k = WorldSink { inner: sink(), world: 0 };
+    let mut seen = Vec::new();
+    for n in 0..70 {
+        if n == 10 {
+            k.world = 1;
+        }
+        s.step(&mut k);
+        let t = (s.backend().now_for_test().0 - 1_000_000_000) / 1_000_000;
+        let h = ring.hand_at(Hand::Right, shown_time(&s)).unwrap();
+        seen.push((n, t, h.closed, h.discontinuity));
+    }
+    let at = |n: usize| seen[n];
+    assert!(at(9).2, "held closed in world 0");
+    assert!(!at(10).2, "open at the new world's first frame");
+    assert_eq!(at(10).3, at(9).3 + 1, "a discontinuity at the swap");
+    assert!(seen.iter().filter(|x| x.0 >= 10 && x.1 < 300).all(|x| !x.2), "still squeezed, still open: {seen:?}");
+    assert!(seen.iter().any(|x| x.1 > 410 && x.2), "closed again by a new squeeze: {seen:?}");
+    assert_eq!(s.counters.worlds, 1);
+    no_violations(&s);
+}
+
 #[test]
 fn an_invalid_head_pose_skips_the_frame_and_the_session_survives() {
     let mut rt = FakeRuntime::new().started();

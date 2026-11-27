@@ -603,13 +603,17 @@ pub struct Sim {
     fault: Option<Arc<crate::fault::Fault>>,
     /// `--check-replay`'s final log ([`crate::replay`]): kept each tick, replayed on the console's `replay`.
     replay: Option<crate::replay::ReplayLog>,
+    /// A replay running on its own thread: joined when the simulation thread ends, so it never outlives its session
+    /// (app.md 4.1).
+    replaying: Option<std::thread::JoinHandle<crate::replay::Verdict>>,
     /// A joiner's import of E's state (app.md 4, "B's state at E"): the inviter, while pe-diverge's join runs. The
     /// replica is empty meanwhile, so nothing drives it, no edit goes in and no view goes out ([`Sim::join_at_final`]).
     joining: Option<MemberKey>,
     /// Why the join failed, once it has: the joiner then quits ([`Sim::join_failed`]).
     join_failed: Option<String>,
-    /// Called once when the join fails: the binary's quit ([`Sim::with_on_join_failed`]).
-    on_join_failed: Option<Box<dyn FnOnce() + Send>>,
+    /// Called once when the join fails, with why: the binary's quit, or the session manager's fallback to a session
+    /// of this machine's own ([`Sim::with_on_join_failed`]; app.md 4.1).
+    on_join_failed: Option<Box<dyn FnOnce(String) + Send>>,
     /// The window's status line ([`Sim::with_status`]): "Joining: catching up…" from a join's start until the
     /// replica first reaches the present.
     status: Option<Arc<pe_render::notices::StatusLine>>,
@@ -954,6 +958,7 @@ impl Sim {
             notices: Vec::new(),
             fault: crate::fault::armed(),
             replay: None,
+            replaying: None,
             joining: None,
             join_failed: None,
             on_join_failed: None,
@@ -1485,7 +1490,7 @@ impl Sim {
     }
 
     /// What a failed join does besides its console line, once: the binary quits.
-    pub fn with_on_join_failed(mut self, f: Box<dyn FnOnce() + Send>) -> Sim {
+    pub fn with_on_join_failed(mut self, f: Box<dyn FnOnce(String) + Send>) -> Sim {
         self.on_join_failed = Some(f);
         self
     }
@@ -1630,7 +1635,7 @@ impl Sim {
         self.catching_up = false;
         self.set_status(None);
         if let Some(f) = self.on_join_failed.take() {
-            f();
+            f(self.join_failed.clone().unwrap_or_default());
         }
     }
 
@@ -2208,11 +2213,16 @@ impl Sim {
         self.check_join();
         self.check_resync(now);
         // `--check-replay` (crate::replay): a replay the console asked for.
-        if self.replay.is_some()
-            && crate::replay::take_request()
-            && let Some(Err(e)) = self.start_replay()
-        {
-            self.notices.push(format!("replay: couldn't start the replay's thread: {e}"));
+        if self.replay.is_some() && crate::replay::take_request() {
+            match self.start_replay() {
+                Some(Ok(h)) => {
+                    if let Some(old) = self.replaying.replace(h) {
+                        let _ = old.join();
+                    }
+                }
+                Some(Err(e)) => self.notices.push(format!("replay: couldn't start the replay's thread: {e}")),
+                None => {}
+            }
         }
         self.stats.phases.diverge_ns += lap(&mut mark);
         // A proposal opens each view: the quit's bound follows the smoothed interval between them (app.md 4).
@@ -2539,12 +2549,45 @@ impl SimThread {
         self.join.join()
     }
 
+    /// [`SimThread::stop`], waiting at most `within` for the thread (a session change's bound, app.md 4.1): `None` if
+    /// it was left behind, to end by itself, or panicked.
+    pub fn stop_within(self, within: Duration) -> Option<SimStats> {
+        self.stop.store(true, Ordering::Release);
+        self.join.thread().unpark();
+        let until = Instant::now() + within;
+        while !self.join.is_finished() {
+            if Instant::now() >= until {
+                return None;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        self.join.join().ok()
+    }
+
     /// The graceful quit (app.md 4): asks the loop to submit this member's `Leave`, which then goes on ticking, so
     /// this member still votes E's suffix. Waits until every remaining member has confirmed E (S3's
     /// `leave_settled`), until no other member is connected, or until the quit's bound passes, then stops the loop.
     /// `say` takes the console's lines: "leaving…" first. Ctrl-C ends the process at once, which is how a second quit
     /// request ends the wait.
     pub fn leave_and_stop(self, say: &mut dyn FnMut(&str)) -> (LeaveOutcome, thread::Result<SimStats>) {
+        let outcome = self.leave_wait(say, None);
+        (outcome, self.stop())
+    }
+
+    /// [`SimThread::leave_and_stop`] for a session change (app.md 4.1): `cut_short` (a Cancel or a Quit during it)
+    /// ends the leave's wait at once, as its bound passing would, and the thread is waited for at most `within` after.
+    pub fn leave_and_stop_within(
+        self,
+        say: &mut dyn FnMut(&str),
+        cut_short: &AtomicBool,
+        within: Duration,
+    ) -> (LeaveOutcome, Option<SimStats>) {
+        let outcome = self.leave_wait(say, Some(cut_short));
+        (outcome, self.stop_within(within))
+    }
+
+    /// The graceful quit's wait ([`SimThread::leave_and_stop`]), ended early by `cut_short` once it is set.
+    fn leave_wait(&self, say: &mut dyn FnMut(&str), cut_short: Option<&AtomicBool>) -> LeaveOutcome {
         self.shared.leave.store(true, Ordering::Release);
         self.join.thread().unpark();
         say("leaving the session…");
@@ -2562,7 +2605,8 @@ impl SimThread {
             if bound.is_none() && self.shared.asked.load(Ordering::Acquire) {
                 bound = Some(Duration::from_millis(self.shared.bound_ms.load(Ordering::Acquire)));
             }
-            if started.elapsed() >= bound.unwrap_or(crate::leave::MIN_WAIT) {
+            let cut = cut_short.is_some_and(|c| c.load(Ordering::Acquire));
+            if cut || started.elapsed() >= bound.unwrap_or(crate::leave::MIN_WAIT) {
                 let others = self.shared.others.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 // Still pending: agreement refused every try, so no `Leave` ever went out (@design-reviewer's Low 1).
                 break if status == LeaveStatus::Pending {
@@ -2578,7 +2622,7 @@ impl SimThread {
             LeaveOutcome::Unconfirmed { others } => say(&crate::leave::left_unconfirmed(others)),
             LeaveOutcome::NotSent { others } => say(&crate::leave::leave_not_sent(others)),
         }
-        (outcome, self.stop())
+        outcome
     }
 }
 
@@ -2629,6 +2673,9 @@ fn run(mut sim: Sim, host: &HostClock, stop: &AtomicBool, shared: &Shared) -> Si
         sim.stats.diverge = c.clone();
     }
     sim.stats.replay_costs = sim.replay_costs();
+    if let Some(r) = sim.replaying.take() {
+        let _ = r.join();
+    }
     sim.stats
 }
 

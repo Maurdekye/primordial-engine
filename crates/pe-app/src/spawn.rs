@@ -14,8 +14,10 @@
 //!   a job while it hasn't. A joiner's world is empty until the cut's state arrives, so a miss is never final
 //!   (@engine-architect's M1 on S4). Until it is found (and in the ball pit, always) the panel isn't shown, and a job
 //!   says that spawning needs the plane.
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use pe_seams::MemberKey;
 use pe_seams::world_api::{
@@ -162,6 +164,9 @@ pub fn grid_rows(step: f64) -> u32 {
 pub struct Spawner {
     tx: Mutex<Sender<Job>>,
     state: Arc<Mutex<State>>,
+    /// Set by [`Spawner::stop`]: the worker takes no further job, queued or not.
+    stop: Arc<AtomicBool>,
+    worker: Mutex<Option<std::thread::JoinHandle<()>>>,
     /// The world's limits now, as the console's `limit` says them (a read, on the caller's thread).
     limits: Box<dyn Fn() -> String + Send + Sync>,
 }
@@ -180,13 +185,28 @@ struct State {
     grid: u32,
 }
 
-static INSTALLED: OnceLock<Arc<Spawner>> = OnceLock::new();
+/// The current session's spawner: a slot, since each session has its own over its own pe-api (app.md 4.1).
+static INSTALLED: Mutex<Option<Arc<Spawner>>> = Mutex::new(None);
 
-/// The process's spawner over `api`, as `member`: a worker thread, and the handle the menu and the console use.
+/// The session's spawner over `api`, as `member`: a worker thread, and the handle the menu and the console use. It
+/// takes the place of any spawner installed before, which the caller has stopped ([`uninstall_if`]).
 pub fn install(api: Arc<dyn WorldApi>, member: MemberKey) -> Option<Arc<Spawner>> {
     let s = Spawner::start(api, member)?;
-    let _ = INSTALLED.set(s.clone());
+    *INSTALLED.lock().unwrap_or_else(|e| e.into_inner()) = Some(s.clone());
     Some(s)
+}
+
+/// Takes the installed spawner out only if it is `mine`: a session ending leaves another session's in place. The app
+/// runs one session at a time, so the slot is the ending one's; in tests two sessions share one process (an opener and
+/// a joiner on loopback), and the later one's install replaced the earlier's. `true` if `mine` was the installed one.
+pub fn uninstall_if(mine: &Arc<Spawner>) -> bool {
+    let mut slot = INSTALLED.lock().unwrap_or_else(|e| e.into_inner());
+    if slot.as_ref().is_some_and(|s| Arc::ptr_eq(s, mine)) {
+        *slot = None;
+        true
+    } else {
+        false
+    }
 }
 
 impl Spawner {
@@ -194,25 +214,49 @@ impl Spawner {
     pub fn start(api: Arc<dyn WorldApi>, member: MemberKey) -> Option<Arc<Spawner>> {
         let (tx, rx) = channel();
         let state = Arc::new(Mutex::new(State::default()));
+        let stop = Arc::new(AtomicBool::new(false));
         let caller = person(member);
-        let limits = {
+        let limits: Box<dyn Fn() -> String + Send + Sync> = {
             let (api, caller) = (api.clone(), caller.clone());
             Box::new(move || limits_now(&*api, &caller))
         };
-        let s = Arc::new(Spawner { tx: Mutex::new(tx), state: state.clone(), limits });
+        let (st, halt) = (state.clone(), stop.clone());
         let started =
-            std::thread::Builder::new().name("pe-spawn".into()).spawn(move || work(&*api, &caller, &rx, &state));
-        if let Err(e) = started {
-            crate::err!("pe-app: the spawn buttons won't work: their thread didn't start ({e})");
-            return None;
+            std::thread::Builder::new().name("pe-spawn".into()).spawn(move || work(&*api, &caller, &rx, &st, &halt));
+        let worker = match started {
+            Ok(h) => h,
+            Err(e) => {
+                crate::err!("pe-app: the spawn buttons won't work: their thread didn't start ({e})");
+                return None;
+            }
+        };
+        Some(Arc::new(Spawner { tx: Mutex::new(tx), state, stop, worker: Mutex::new(Some(worker)), limits }))
+    }
+
+    /// Stops the worker (a session ending): it takes no further job, a counted spawn's remaining ones included, and
+    /// the job it is on ends within pe-api's wait for it. Waits up to `within` for the thread; `false` if it was left
+    /// behind (it then ends by itself, its pe-api refusing as the session closes).
+    pub fn stop(&self, within: Duration) -> bool {
+        self.stop.store(true, Ordering::Release);
+        // A dead sender in place of the queue's, so a worker waiting for a job wakes and ends.
+        let (dead, _) = channel();
+        drop(std::mem::replace(&mut *self.tx.lock().unwrap_or_else(|e| e.into_inner()), dead));
+        let Some(h) = self.worker.lock().unwrap_or_else(|e| e.into_inner()).take() else { return true };
+        let until = Instant::now() + within;
+        while !h.is_finished() {
+            if Instant::now() >= until {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(5));
         }
-        Some(s)
+        let _ = h.join();
+        true
     }
 }
 
-/// The spawner [`install`] made, if any.
+/// The spawner [`install`] made for the current session, if any.
 pub fn installed() -> Option<Arc<Spawner>> {
-    INSTALLED.get().cloned()
+    INSTALLED.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 impl Spawner {
@@ -479,7 +523,7 @@ pub fn clear_tx(ids: &[String]) -> Transaction {
     serde_json::from_value(json!({"label": "Clear spawned", "ops": ops})).expect("a clear is a transaction")
 }
 
-fn work(api: &dyn WorldApi, c: &Caller, rx: &Receiver<Job>, state: &Mutex<State>) {
+fn work(api: &dyn WorldApi, c: &Caller, rx: &Receiver<Job>, state: &Mutex<State>, stop: &AtomicBool) {
     use std::sync::mpsc::RecvTimeoutError;
     let mut found = false;
     let mut told = false;
@@ -504,6 +548,9 @@ fn work(api: &dyn WorldApi, c: &Caller, rx: &Receiver<Job>, state: &Mutex<State>
         *found
     };
     loop {
+        if stop.load(Ordering::Acquire) {
+            return;
+        }
         look(&mut found);
         let job = if found {
             match rx.recv() {
@@ -517,6 +564,10 @@ fn work(api: &dyn WorldApi, c: &Caller, rx: &Receiver<Job>, state: &Mutex<State>
                 Err(RecvTimeoutError::Disconnected) => return,
             }
         };
+        // Checked again before the job: queued jobs (a counted spawn's) aren't run once the session ends (L4).
+        if stop.load(Ordering::Acquire) {
+            return;
+        }
         let said = if !look(&mut found) {
             "This world has no Spawned folder: spawning needs the plane (--preset plane)".to_string()
         } else {
@@ -799,6 +850,40 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         assert!(s.available(), "the panel comes up once the plane is here");
+    }
+
+    /// A session's end (app.md 4.1; design d3's L4): with pe-api's ports closed first, as the session's stop does,
+    /// the spawn worker stops within its bound: the job it is on is answered at once, and the counted spawn's other
+    /// jobs, queued behind it, are never run. The menu and the console then see no spawner.
+    #[test]
+    fn a_stopped_spawner_runs_none_of_its_queued_jobs_and_ends_at_once() {
+        let me = MemberKey([1; 32]);
+        let line = pe_seams::LineId(pe_seams::Hash([7; 32]));
+        let mut w = pe_world::preset::plane_on(line, 5, pe_world::BlobStore::default(), pe_seams::Pos::ORIGIN);
+        w.set_member(me, pe_world::perm::EDIT | pe_world::perm::ADMIN);
+        w.set_frame(pe_seams::Frame(4));
+        let facts =
+            crate::api::Facts { world_name: "Plane".into(), line, rate: pe_seams::SimRate::DEFAULT, me: Some(me) };
+        // No simulation drains these ports; the worker still runs jobs at the change rate, so some are left at the stop.
+        let ports = crate::api::Ports::new(w.snapshot(pe_seams::Frame(4)), facts, || {});
+        // Not installed: the process's slot is the session tests' too, and they run in parallel.
+        let s = Spawner::start(ports.api(), me).expect("the worker");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !s.available() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(s.available());
+        assert!(s.on_command(" box 100").is_ok());
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let asked = std::time::Instant::now();
+        ports.close();
+        assert!(s.stop(Duration::from_secs(6)), "joined within the bound");
+        assert!(asked.elapsed() < Duration::from_secs(2), "at once: {:?}", asked.elapsed());
+        let left = s.state.lock().unwrap().pending;
+        assert!(left > 0, "the stop came before the counted spawn ended");
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert_eq!(s.state.lock().unwrap().pending, left, "no queued job ran after the stop");
+        assert!(!s.ask(Job::Clear), "a stopped spawner takes no job");
     }
 
     #[test]

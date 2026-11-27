@@ -253,6 +253,8 @@ struct Inner {
     /// Those told, by the commit's entry, for `history` and `get`; bounded like the fates.
     told: HashMap<TxId, Activation>,
     told_order: VecDeque<TxId>,
+    /// [`ChangeLog::close`]d.
+    closed: bool,
 }
 
 pub struct ChangeLog {
@@ -338,6 +340,7 @@ impl ChangeLog {
                 activations: BTreeMap::new(),
                 told: HashMap::new(),
                 told_order: VecDeque::new(),
+                closed: false,
             }),
             latest: OnceLock::new(),
             changed: Condvar::new(),
@@ -363,6 +366,14 @@ impl ChangeLog {
         let g = self.lock();
         self.feed.push(Arc::new(FeedItem::Session(e)), Instant::now());
         drop(g);
+    }
+
+    /// Ends every wait on this log now and from now on (the session ended, app.md 4.1): a change's fate wait gives
+    /// what it has, and `watch`'s long poll returns what is there.
+    pub fn close(&self) {
+        self.lock().closed = true;
+        self.changed.notify_all();
+        self.feed.close();
     }
 
     /// The change stream behind `watch`.
@@ -772,7 +783,7 @@ impl ChangeLog {
                 }
             };
             let now = Instant::now();
-            if done || now >= deadline {
+            if done || now >= deadline || g.closed {
                 return f;
             }
             g = self.changed.wait_timeout(g, deadline - now).unwrap_or_else(|e| e.into_inner()).0;
@@ -1424,6 +1435,22 @@ mod tests {
     use pe_seams::{ChainHead, Class, CutRef, Reason};
     use std::sync::Arc;
     use std::time::Duration;
+
+    /// A session's end (app.md 4.1): a caller waiting for a change's fate is let go at once when the log closes.
+    #[test]
+    fn a_closed_log_ends_a_fate_wait_at_once() {
+        let log = Arc::new(ChangeLog::new());
+        let change = TxId::from(pe_seams::EntryRef(Hash([7; 32])));
+        let l = log.clone();
+        let waiter = std::thread::spawn(move || {
+            l.wait(change, pe_seams::world_api::Wait::Final, Instant::now() + Duration::from_secs(30))
+        });
+        std::thread::sleep(Duration::from_millis(50));
+        let asked = Instant::now();
+        log.close();
+        assert!(waiter.join().unwrap().is_none(), "no fate: the change was never seen");
+        assert!(asked.elapsed() < Duration::from_secs(1), "at once: {:?}", asked.elapsed());
+    }
 
     const CHAIN: ChainId = ChainId(Hash([5; 32]));
 

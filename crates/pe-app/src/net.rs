@@ -27,6 +27,7 @@ use std::fmt;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -226,6 +227,8 @@ pub enum NetError {
     Hello(HelloError),
     /// pe-agree refused the inviter's start record (`Node::join`), or it named no cut: why.
     Join(String),
+    /// The join was cancelled (the menu's Cancel, the console's `cancel`, or a quit) while it waited.
+    Cancelled,
 }
 
 impl fmt::Display for NetError {
@@ -239,6 +242,7 @@ impl fmt::Display for NetError {
             NetError::Genesis(e) => write!(f, "the genesis record is refused: {e}"),
             NetError::Hello(e) => write!(f, "this build can't connect: {e}"),
             NetError::Join(why) => write!(f, "agreement can't start from the inviter's record: {why}"),
+            NetError::Cancelled => write!(f, "the join was cancelled"),
         }
     }
 }
@@ -757,12 +761,14 @@ impl Endpoint {
     /// B: the welcome from `opener`, awaited until `deadline`, and whether the clock was ready by then. A final
     /// refusal, by either side, ends the wait and names its reason ([`welcome_refusal`]); a close for want of a
     /// decision (`T_welcome`) is not final, since A dials again when it takes the reply.
-    /// While it waits, B dials `invite` again when [`redial_due`] says so (R).
+    /// While it waits, B dials `invite` again when [`redial_due`] says so (R). `cancel` ends it too, within one 2 ms
+    /// slice.
     fn await_welcome(
         &mut self,
         invite: &Invite,
         opener: MemberKey,
         deadline: Instant,
+        cancel: &AtomicBool,
     ) -> Result<(Welcome, bool), NetError> {
         let mut clock_ready = false;
         // `join_at_cut` follows the first dial.
@@ -770,6 +776,9 @@ impl Endpoint {
         let mut redialled: Option<Instant> = None;
         let mut closed = false;
         loop {
+            if cancel.load(Ordering::Acquire) {
+                return Err(NetError::Cancelled);
+            }
             if Instant::now() >= deadline {
                 return Err(NetError::Timeout("the welcome"));
             }
@@ -815,27 +824,49 @@ impl Endpoint {
     /// pe-net starts converging when the welcome arrives, before these checks, so a welcome that fails them ends the
     /// join here: the thread stops, which closes every connection pe-net opened, and no `JoinReady` was sent.
     pub fn join_at_cut(
-        mut self,
+        self,
         invite: &Invite,
         rate_pin: SimRate,
         timeout: Duration,
         t_join: Duration,
     ) -> Result<CutJoin, NetError> {
+        self.join_at_cut_with(invite, rate_pin, timeout, t_join, &AtomicBool::new(false), &mut || true)
+    }
+
+    /// [`Endpoint::join_at_cut`] for the in-game join (design d3, L2): `cancel` ends every wait within one 2 ms slice,
+    /// with [`NetError::Cancelled`] and the endpoint stopped, as any other failure. `ready` is asked just before
+    /// `JoinReady` goes: `false` means a cancel came first, and the join ends without sending it; `true` means this
+    /// machine is about to say it is ready, after which only a quit sets `cancel` (the manager refuses Cancel).
+    pub fn join_at_cut_with(
+        mut self,
+        invite: &Invite,
+        rate_pin: SimRate,
+        timeout: Duration,
+        t_join: Duration,
+        cancel: &AtomicBool,
+        ready: &mut dyn FnMut() -> bool,
+    ) -> Result<CutJoin, NetError> {
         let opener = MemberKey(invite.key);
         let deadline = Instant::now() + timeout;
-        let (welcome, mut ready) = self.await_welcome(invite, opener, deadline)?;
+        let (welcome, mut clock) = match self.await_welcome(invite, opener, deadline, cancel) {
+            Ok(w) => w,
+            Err(e) => return self.fail(e),
+        };
         let (record, members) = match check_join_welcome(&welcome, self.me, invite, rate_pin) {
             Ok(r) => r,
             Err(e) => return self.fail(e),
         };
-        while !ready {
+        while !clock {
+            if cancel.load(Ordering::Acquire) {
+                return self.fail(NetError::Cancelled);
+            }
             if Instant::now() >= deadline {
                 return self.fail(NetError::Timeout("the clock to converge"));
             }
             let _ = self.handle.events();
             while let Some(l) = self.handle.poll_lifecycle() {
                 match l {
-                    Lifecycle::ClockReady => ready = true,
+                    Lifecycle::ClockReady => clock = true,
                     Lifecycle::Refused { peer, refusal, by_me: false } if peer == opener => {
                         return self.fail(NetError::Refused(format!("{:?}: {}", refusal.code, refusal.detail)));
                     }
@@ -844,10 +875,17 @@ impl Endpoint {
             }
             std::thread::sleep(Duration::from_millis(2));
         }
+        if !ready() {
+            return self.fail(NetError::Cancelled);
+        }
         self.command(Command::Send { to: opener, lane: Lane::Protocol, bytes: AppMsg::JoinReady.encode().into() })?;
         let start_by = Instant::now() + t_join;
         let mut pending = Vec::new();
         let start = 'wait: loop {
+            // Only a quit, after `JoinReady` (the manager refuses Cancel from here).
+            if cancel.load(Ordering::Acquire) {
+                return self.fail(NetError::Cancelled);
+            }
             if Instant::now() >= start_by {
                 return self.fail(NetError::Timeout("the inviter's start record"));
             }
@@ -919,7 +957,7 @@ impl Endpoint {
     ) -> Result<Session, NetError> {
         let opener = MemberKey(invite.key);
         let deadline = Instant::now() + timeout;
-        let (welcome, mut clock_ready) = self.await_welcome(invite, opener, deadline)?;
+        let (welcome, mut clock_ready) = self.await_welcome(invite, opener, deadline, &AtomicBool::new(false))?;
         let genesis = match check_welcome(&welcome, self.me, opener, rate_pin) {
             Ok(g) => g,
             Err(e) => return self.fail(e),

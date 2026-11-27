@@ -230,6 +230,10 @@ pub struct RunReport {
     pub visible_error_mean: Summary,
     pub visible_error_max: Summary,
     pub corrections_per_second: Summary,
+    /// Display frames that drew an old world's last view again while a new world's first was awaited (pe-app's
+    /// in-game session change): left out of every display counter above, whose ages and draws past the newest view
+    /// would otherwise grow with the change's length.
+    pub held_for_swap: u64,
 }
 
 /// pe-render's counters for one renderer, desktop or headset.
@@ -251,6 +255,7 @@ pub struct RenderCounters {
     second_visible_mean: Histogram,
     second_visible_max: Histogram,
     second_corrections: Histogram,
+    held_for_swap: u64,
 }
 
 impl RenderCounters {
@@ -311,6 +316,12 @@ impl RenderCounters {
         self.view_age_ms.record(frame.view_age * 1e3);
     }
 
+    /// A display frame held for a world change ([`RunReport::held_for_swap`]): counted here only.
+    pub fn held_for_swap(&mut self, at: HostTime) {
+        let _ = self.at(at);
+        self.held_for_swap += 1;
+    }
+
     /// One draw, at `quality`.
     pub fn drawn(&mut self, at: HostTime, stats: &FrameStats, quality: Quality) {
         let s = self.at(at);
@@ -367,6 +378,7 @@ impl RenderCounters {
             visible_error_mean: self.second_visible_mean.summary(),
             visible_error_max: self.second_visible_max.summary(),
             corrections_per_second: self.second_corrections.summary(),
+            held_for_swap: self.held_for_swap,
         }
     }
 }

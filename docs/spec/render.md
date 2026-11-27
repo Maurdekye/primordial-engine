@@ -101,6 +101,18 @@ Numbers marked [I] are starting values, tuned at the M1 headset test.
     have been lost, unless the newest view lists them. S5 lists effects as emitted, not what is on, so a reader can
     know no more. A "what's on" field in S5 would be needed once a sustained effect kind exists; M1's six kinds are
     events. pe-world's views carry no effects yet, so test 6 counts them (0) and display_layer.rs tests the rule.
+  - **Worlds** (pe-app's in-game Join and New session, app.md 4.1): one slot and one presenter serve every session a
+    process runs. Once a session's simulation thread has ended, pe-app calls `FrameSlot::begin_world(WorldStart)`.
+    That drops the views not yet taken and numbers the next world. It keeps `newest`, since the window waits while
+    it is `None`, and `newest_current()` is `None` until the new world publishes. Each `Batch` names its world.
+    - **The presenter starts over** at the first batch of a new world that holds a view: a new display layer with the
+      same settings (`Shown` takes the world's delay; an explicit rule stays), `Stop` for every effect played, and the
+      notices, the rig track and the last view cleared. That is not a gap: nothing is blended from the old world,
+      and no gap, correction or cue is counted. Steam Audio's observer hears it as a gap and drops its hit history.
+    - **Until then** the old world's last view is drawn again: moved on by its velocity for at most `l_max`, then
+      held there. Those frames count only as `RunReport::held_for_swap`, so the swap's length doesn't age the view
+      or add frames drawn past the newest. The run's other counters go on across worlds.
+    - [V: tests/world_swap.rs.]
   - **One reader at a time.** If two ever run at once, each gets its own queue (`FrameSlot::reader()`, not built).
   - `Presenter::frame` (one view, the newest) stays for tests and for callers not yet on batches; it reads nothing
     published between its calls.

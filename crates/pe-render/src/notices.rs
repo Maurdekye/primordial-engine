@@ -38,16 +38,23 @@ use crate::scene::{Overlay, OverlayImage};
 /// A line pe-app keeps up while a state lasts, such as "Joining: catching up…" while a joiner simulates on to the
 /// present: set from the simulation thread, read by the render thread each frame ([`crate::present::Presenter::set_status`]).
 #[derive(Debug, Default)]
-pub struct StatusLine(Mutex<Option<String>>);
+pub struct StatusLine(Mutex<(Option<String>, Option<String>)>);
 
 impl StatusLine {
     /// Put `text` up, or take the line down with `None`.
     pub fn set(&self, text: Option<String>) {
-        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = text;
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).0 = text;
+    }
+
+    /// A line that shows in place of [`StatusLine::set`]'s while it is up (pe-app's session change: its steps, over
+    /// what the leaving simulation still says); `None` takes it down.
+    pub fn set_override(&self, text: Option<String>) {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).1 = text;
     }
 
     pub fn get(&self) -> Option<String> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        let g = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        g.1.clone().or_else(|| g.0.clone())
     }
 }
 
@@ -184,6 +191,16 @@ impl Notices {
     pub fn gap(&mut self) {
         self.dropped_at_gaps += self.pending.len() as u64;
         self.pending.clear();
+    }
+
+    /// A new world (pe-app's next session): everything held of the old one goes, the names and the run's count of
+    /// dropped refusals stay.
+    pub fn new_world(&mut self) {
+        let names = std::mem::take(&mut self.names);
+        let dropped = self.dropped_at_gaps;
+        *self = Notices::new(self.settings, self.local, self.sim_rate_hz);
+        self.names = names;
+        self.dropped_at_gaps = dropped;
     }
 
     /// Refusals dropped untold at gaps, over the run.

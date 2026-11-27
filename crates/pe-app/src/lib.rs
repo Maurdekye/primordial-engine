@@ -43,6 +43,7 @@ pub mod phases;
 pub mod replay;
 pub mod scripted;
 pub mod scripts;
+pub mod session;
 pub mod shown;
 pub mod sim;
 pub mod slow;

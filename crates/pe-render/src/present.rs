@@ -18,6 +18,12 @@
 //! - **The status line** ([`Presenter::set_status`]): a line pe-app keeps up while a state lasts ("Joining: catching
 //!   up…" while a joiner simulates on to the present), carried as [`PresentedFrame::status`] for the caller to show
 //!   above the notices.
+//! - **Worlds** (pe-app's in-game Join and New session; app.md 4.1): one slot and one presenter serve every session a
+//!   process runs. [`FrameSlot::begin_world`] starts the next world once the last one's simulation has stopped, and
+//!   each [`Batch`] says its world. The presenter starts over at the first batch of a new world that holds a view
+//!   ([`Presenter::frame_batch`]): nothing of the old world is blended into the new one, its effects stop, and it isn't
+//!   counted as a gap. Until then it draws the old world's last view again, and counts those frames as held
+//!   (`RunReport::held_for_swap`), not as display frames.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -30,6 +36,7 @@ use crate::LocalPresentation;
 use crate::camera::Camera;
 use crate::counters::{CaptureEvent, RenderCounters, RunReport};
 use crate::display::{DisplayFrame, DisplayLayer, DisplaySettings, FrameInput, OwnHands, OwnHandsSwitch};
+use crate::drawn_time::DrawnTime;
 use crate::effects::{EffectCommand, EffectGate, EffectSettings};
 use crate::notices::{Line, Notices, StatusLine};
 use crate::pacing::Quality;
@@ -54,6 +61,18 @@ struct SlotQueue {
     views: VecDeque<Arc<FrameView>>,
     /// The number the next publication gets; the queue's views are the ones just before it.
     next: u64,
+    /// The world publications go to now, from 0, and its start ([`FrameSlot::begin_world`]).
+    world: u64,
+    start: Option<WorldStart>,
+    /// The world of `FrameSlot::newest`.
+    newest_world: u64,
+}
+
+/// What the presenter takes from a new world (pe-app's next session): `Shown`'s delay is the session's, the opener's
+/// choice in its genesis record (app.md 3).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WorldStart {
+    pub display_delay: Duration,
 }
 
 /// The views published since the reader last took, oldest first.
@@ -62,6 +81,10 @@ pub struct Batch {
     /// The number of `views[0]`. Each publication gets the next number, from 0.
     pub first: u64,
     pub views: Vec<Arc<FrameView>>,
+    /// The world the slot publishes to now, which every view here belongs to, and its start (`None` for world 0
+    /// unless [`FrameSlot::begin_world`] gave one).
+    pub world: u64,
+    pub start: Option<WorldStart>,
 }
 
 impl Batch {
@@ -79,8 +102,10 @@ impl FrameSlot {
     /// Publish a view (the simulation thread). The view is never changed afterwards. Views older than [`SLOT_SPAN`]
     /// behind it, by simulated time, go unread.
     pub fn publish(&self, view: Arc<FrameView>) {
-        self.newest.store(Some(view.clone()));
         let mut q = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        // Under the queue's lock, so `newest_current` never pairs this view with the world before it.
+        self.newest.store(Some(view.clone()));
+        q.newest_world = q.world;
         let newest = view.sim_time;
         q.views.push_back(view);
         q.next += 1;
@@ -96,7 +121,36 @@ impl FrameSlot {
     pub fn take(&self) -> Batch {
         let mut q = self.queue.lock().unwrap_or_else(|e| e.into_inner());
         let views: Vec<Arc<FrameView>> = q.views.drain(..).collect();
-        Batch { first: q.next - views.len() as u64, views }
+        Batch { first: q.next - views.len() as u64, views, world: q.world, start: q.start }
+    }
+
+    /// Starts the next world (pe-app, between sessions, once the last session's simulation thread has ended, so no
+    /// view of the old world comes after): the views not yet taken are dropped, and the next publications are the new
+    /// world's. `newest` is kept, so a reader that waits for a first view (the desktop window) goes on drawing the old
+    /// world's last one until the new world publishes. Holds the lock as briefly as a publish does. The new world's
+    /// number.
+    pub fn begin_world(&self, start: WorldStart) -> u64 {
+        let mut q = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        q.views.clear();
+        q.world += 1;
+        q.start = Some(start);
+        q.world
+    }
+
+    /// The world publications go to now.
+    pub fn world(&self) -> u64 {
+        self.queue.lock().unwrap_or_else(|e| e.into_inner()).world
+    }
+
+    /// The newest view if it belongs to the current world: `None` between [`FrameSlot::begin_world`] and the new
+    /// world's first view, so a reader that aims at objects (scripted hands) or captures them (a headless capture)
+    /// never takes the old world for the new one.
+    pub fn newest_current(&self) -> Option<Arc<FrameView>> {
+        let q = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        if q.newest_world != q.world {
+            return None;
+        }
+        self.newest.load_full()
     }
 
     /// The newest view (the render thread), or `None` before the first.
@@ -145,6 +199,11 @@ pub struct Presenter {
     /// (crate::rig; locomotion L4c).
     rig: RigTrack,
     drawn: Option<RigTransform>,
+    /// The world drawn ([`Batch::world`]), the `Stop`s the last world change owes the effect sinks, and whether the
+    /// audio observer still has to hear of it (as a gap, so it drops its history).
+    world: u64,
+    world_stops: Vec<EffectCommand>,
+    world_changed: bool,
     #[cfg(feature = "audio-trial")]
     audio_observer: Option<AudioObserver>,
 }
@@ -172,9 +231,48 @@ impl Presenter {
             own_hands_ended: None,
             rig: RigTrack::default(),
             drawn: None,
+            world: 0,
+            world_stops: Vec::new(),
+            world_changed: false,
             #[cfg(feature = "audio-trial")]
             audio_observer: None,
         }
+    }
+
+    /// The world drawn now ([`Batch::world`]).
+    pub fn world(&self) -> u64 {
+        self.world
+    }
+
+    /// At the first batch of a new world that holds a view, start over: a new display layer with the same settings
+    /// (`Shown` takes the world's delay; an explicit other rule is kept), the effects stopped, the notices and the rig
+    /// track cleared, and the last view forgotten, so nothing of the old world is drawn, blended or counted as a gap.
+    /// The run's counters go on. Returns whether it started over.
+    fn enter_world(&mut self, batch: &Batch) -> bool {
+        if batch.world == self.world || batch.views.is_empty() {
+            return false;
+        }
+        let mut settings = *self.display.settings();
+        if let (DrawnTime::Shown { l_max, .. }, Some(start)) = (settings.drawn_time, batch.start) {
+            settings.drawn_time = DrawnTime::Shown { delay: start.display_delay, l_max };
+        }
+        self.display = DisplayLayer::new(settings);
+        self.world_stops.extend(self.effects.new_world());
+        if let Some(n) = &mut self.notices {
+            n.new_world();
+        }
+        self.rig.clear();
+        self.last = None;
+        self.next = None;
+        self.drawn = None;
+        self.world = batch.world;
+        self.world_changed = true;
+        true
+    }
+
+    /// A batch of a newer world than the one drawn, with no view of it yet: the old world's last view is drawn again.
+    fn held(&self, batch: &Batch) -> bool {
+        batch.world != self.world && batch.views.is_empty()
     }
 
     /// The local rig for the display frame about to be drawn over `batch` at `display_time` (render.md 7; crate::rig;
@@ -189,6 +287,7 @@ impl Presenter {
         display_time: HostTime,
         local: Option<&MoveInput>,
     ) -> Option<RigTransform> {
+        self.enter_world(batch);
         // A gap (views lost between batches, render.md 3) starts the track over (@design-reviewer's L2 on L4c).
         if !batch.views.is_empty() && self.next.is_some_and(|n| n != batch.first) {
             self.rig.clear();
@@ -295,12 +394,14 @@ impl Presenter {
         local: &LocalPresentation,
         cameras: &[Camera],
     ) -> Option<PresentedFrame> {
+        self.enter_world(batch);
+        let held = self.held(batch);
         let gap = !batch.views.is_empty() && self.next.is_some_and(|n| n != batch.first);
         if !batch.views.is_empty() {
             self.next = Some(batch.end());
         }
         let newest = batch.views.last().or(self.last.as_ref())?.clone();
-        Some(self.present(&batch.views, gap, &newest, local, cameras))
+        Some(self.present(&batch.views, gap, held, &newest, local, cameras))
     }
 
     /// One display frame against `view` alone, seen through `cameras`: the views published between this and the last
@@ -309,13 +410,16 @@ impl Presenter {
     pub fn frame(&mut self, view: &Arc<FrameView>, local: &LocalPresentation, cameras: &[Camera]) -> PresentedFrame {
         let new = self.last.as_ref().is_none_or(|l| !Arc::ptr_eq(l, view));
         let views = if new { std::slice::from_ref(view) } else { &[] };
-        self.present(views, false, view, local, cameras)
+        self.present(views, false, false, view, local, cameras)
     }
 
+    /// `held`: the frame draws the old world's last view while a new world's first is awaited, so it is counted as
+    /// held, not as a display frame (its view only ages).
     fn present(
         &mut self,
         new: &[Arc<FrameView>],
         gap: bool,
+        held: bool,
         newest: &Arc<FrameView>,
         local: &LocalPresentation,
         cameras: &[Camera],
@@ -328,7 +432,10 @@ impl Presenter {
             self.display.set_own_hands(own);
         }
         let volumes: Vec<_> = cameras.iter().map(Camera::volume).collect();
-        let mut effects = Vec::new();
+        let mut effects = std::mem::take(&mut self.world_stops);
+        // The audio observer hears a new world as a gap: it drops what it held of the old one.
+        #[cfg_attr(not(feature = "audio-trial"), allow(unused_variables))]
+        let observer_gap = gap || std::mem::take(&mut self.world_changed);
         if gap {
             self.gaps += 1;
             self.display.gap();
@@ -348,10 +455,14 @@ impl Presenter {
         let display = self.display.frame(FrameInput { view: newest, display_time: now, volumes: &volumes, local });
         #[cfg(feature = "audio-trial")]
         if let Some(observe) = &mut self.audio_observer {
-            observe(&display, newest, new, gap, cameras);
+            observe(&display, newest, new, observer_gap, cameras);
         }
         let taken = self.display.take_counters();
-        self.counters.display_frame(now, &taken, &display, now);
+        if held {
+            self.counters.held_for_swap(now);
+        } else {
+            self.counters.display_frame(now, &taken, &display, now);
+        }
         // `take` also releases what is due; between arrivals, only the waits run. The gate runs on the drawn time, so
         // under Shown an effect waits for the frame that shows it.
         for v in new {

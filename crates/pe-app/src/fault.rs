@@ -40,24 +40,48 @@ use pe_world::World;
 use pe_world::components::{Shape, shape_kind};
 
 /// This process's armed fault: main.rs arms it from `--arm-fault` or `--inject-fault-at`, before any replica is made.
-static ARMED: OnceLock<Arc<Fault>> = OnceLock::new();
+/// It belongs to the first session only (app.md 4.1, D5): the first session change disarms it ([`disarm`]), so no
+/// later session's replica or simulation takes it again.
+static ARMED: std::sync::Mutex<Option<Arc<Fault>>> = std::sync::Mutex::new(None);
+/// The fault was disarmed: the console's `fault` says it ended, rather than that none was armed.
+static ENDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Arms this process's fault, and returns the console's line saying so. For main.rs only, once, before any replica or
 /// simulation is made: every replica and simulation made afterwards takes it ([`armed`]). Tests never arm it; they
 /// give a [`FaultWorld`] and a simulation their own [`Fault`].
 pub fn arm(fault: Arc<Fault>) -> Result<String, String> {
     let line = fault.armed_line();
-    ARMED.set(fault).map_err(|_| "a fault is armed already".to_string())?;
+    let mut armed = ARMED.lock().unwrap_or_else(|e| e.into_inner());
+    if armed.is_some() || ENDED.load(std::sync::atomic::Ordering::Acquire) {
+        return Err("a fault is armed already".to_string());
+    }
+    *armed = Some(fault);
     Ok(line)
 }
 
-/// This process's armed fault, if a flag armed one.
+/// This process's armed fault, if a flag armed one and the first session hasn't ended.
 pub fn armed() -> Option<Arc<Fault>> {
-    ARMED.get().cloned()
+    ARMED.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
+
+/// Ends the armed fault with the first session (app.md 4.1, D5): later replicas and simulations get none. `true` if
+/// one was armed, for the console's line saying so.
+pub fn disarm() -> bool {
+    let was = ARMED.lock().unwrap_or_else(|e| e.into_inner()).take().is_some();
+    if was {
+        ENDED.store(true, std::sync::atomic::Ordering::Release);
+    }
+    was
+}
+
+/// The console's word for a test fault that ended with the first session.
+pub const FAULT_ENDED: &str = "`fault` is refused: the test fault ended with session 1";
 
 /// What the console answers to a typed `fault` ([`Fault::request`]): its line, and whether it went in.
 pub fn on_command(fault: Option<&Fault>) -> Result<String, String> {
+    if fault.is_none() && ENDED.load(std::sync::atomic::Ordering::Acquire) {
+        return Err(FAULT_ENDED.into());
+    }
     let fault = fault.ok_or_else(|| "`fault` is refused: this machine wasn't started with --arm-fault".to_string())?;
     fault.request()?;
     Ok("FAULT: injecting the test fault at the next frame this machine steps (--arm-fault)".into())

@@ -36,22 +36,17 @@
 //! it, a run needs no pipe or redirection, so Ctrl+C reaches pe-app and the file keeps the end lines. The console
 //! takes `quit`, which is the same request as Ctrl+C, beside `fault` and `replay`.
 
-use std::fmt::Debug;
-use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use pe_app::api;
-use pe_app::builds;
-use pe_app::clock::{self, LocalClock};
+use pe_app::clock;
 use pe_app::console::{EXIT_INTERRUPTED, Quit, REQUEST_QUIT_LIMIT, Shutdown};
-use pe_app::join::T_JOIN;
-use pe_app::local::{SwitchedHands, SwitchedMove, chain_nonce};
-use pe_app::net::{self, Endpoint, OpenParams, WakeLater};
+use pe_app::local::{SwitchedHands, SwitchedMove};
+use pe_app::net;
 use pe_app::scripted::ScriptedHands;
-use pe_app::sim::{self, Budget, Sim};
-use pe_app::standin::SoloAgreement;
+use pe_app::session::{self, Start, Want};
 use pe_app::vr::{self, XrWait};
-use pe_app::world;
 use pe_mcp::auth::Grant;
 use pe_mcp::host::HostOpts;
 use pe_net_crypto::identity::{Invite, Reply};
@@ -65,10 +60,8 @@ use pe_render::notices::StatusLine;
 use pe_render::present::{FrameSlot, Presenter};
 use pe_render::scene::{Environment, RenderSettings};
 use pe_render::window::{DesktopConfig, DesktopReport, EffectSink, run_desktop};
-use pe_replica::ScriptRunner;
-use pe_replica::logic::LogicRunner;
 use pe_seams::world_api::{MemberId, Producer, ProducerKind};
-use pe_seams::{Frame, FrameClock, LineId, MemberKey, RigPose, SimRate};
+use pe_seams::{Frame, MemberKey, RigPose, SimRate};
 use pe_xr::guard::Guard;
 use pe_xr::loader::SystemDiscovery;
 use pe_xr::locomotion::MoveRing;
@@ -76,15 +69,6 @@ use pe_xr::ring::{DEFAULT_WINDOW_NS, HandRing};
 
 #[cfg(all(feature = "steam-audio-trial", target_arch = "x86_64", any(windows, target_os = "linux")))]
 mod steam_audio;
-
-/// The simulation thread's least stack (app.md 1). It gets more when the script runner needs it: the replica steps
-/// scripts on it, and wasmtime checks its stack limit against the stack it entered on (`LogicRunner::thread_stack`,
-/// from the same pe-logic `Settings` the runner runs guests with).
-const SIM_STACK: usize = 4 << 20;
-
-/// A new world's seed, until configuration names the world and its settings (app.md 4, step 1). Its cut grid is this
-/// build's consensus setting, solo or in a session (genesis.rs `replica_config`).
-const WORLD_SEED: u64 = 0;
 
 /// The headset's display period until its frame loop reports the runtime's own (`HandRing::set_display_period`).
 const VR_PERIOD_NS: i64 = 11_111_111;
@@ -98,13 +82,70 @@ impl EffectSink for LogEffects {
     }
 }
 
-/// What the menu needs from the session's start (S3): this machine's role, the opener's admission, and the folder
-/// its copies go to.
+/// What the menu needs (S3): the first session's role, the folder its copies go to, and the session manager it asks
+/// (app.md 4.1), with the current session's admission.
 #[derive(Clone)]
 struct MenuSeed {
     role: pe_app::menu::Role,
-    replies: Option<std::sync::mpsc::Sender<Reply>>,
     files: std::path::PathBuf,
+    asker: session::Asker,
+    replies: session::Replies,
+    link_notes: pe_app::leave::LinkNotes,
+}
+
+impl MenuSeed {
+    fn ui(self, console: &Arc<Quit>) -> Box<dyn pe_render::menu::Ui> {
+        let host = pe_app::menu::AppHost::new(self.files, None, console.clone())
+            .with_sessions(self.asker, self.replies)
+            .with_link_notes(self.link_notes);
+        Box::new(pe_app::menu::Menu::new(self.role, Box::new(host)))
+    }
+}
+
+/// The menu (if any), with the frame-rate counter (pe_app::fps), menu or not.
+fn with_fps(menu: Option<Box<dyn pe_render::menu::Ui>>) -> Option<Box<dyn pe_render::menu::Ui>> {
+    Some(Box::new(pe_app::fps::FpsUi::new(menu)))
+}
+
+/// The menu's role for a session's.
+fn menu_role(r: &session::Role) -> pe_app::menu::Role {
+    match r {
+        session::Role::Opener { invite, expires_unix_s, .. } => {
+            pe_app::menu::Role::Opener { invite: invite.clone(), expires_unix_s: *expires_unix_s }
+        }
+        session::Role::Joiner { .. } => pe_app::menu::Role::Joiner { reply: String::new() },
+        session::Role::Alone => pe_app::menu::Role::Alone,
+    }
+}
+
+fn short(key: [u8; 32]) -> String {
+    key[..4].iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// A second pe-app on this machine finds the port taken (Fable's condition 4): say so plainly. A relaunched run (the
+/// menu's restart, `PE_MENU_RELAUNCH=1`) waits briefly for the old process to let go of the port. Later sessions in
+/// this process take another port instead, and say so beside the invite (D8).
+fn port_check(listen: std::net::SocketAddr) {
+    let wait_until =
+        std::env::var_os(pe_app::menu::RELAUNCHED).map(|_| Instant::now() + pe_app::menu::RELAUNCH_PORT_WAIT);
+    let in_use = loop {
+        match std::net::UdpSocket::bind(listen) {
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+                if wait_until.is_some_and(|t| Instant::now() < t) {
+                    std::thread::sleep(Duration::from_millis(100));
+                    continue;
+                }
+                break true;
+            }
+            _ => break false,
+        }
+    };
+    if in_use {
+        fail(&format!(
+            "another pe-app is running on this machine (UDP {listen} is in use): quit it first, or start this one with \
+             --listen <another address>"
+        ));
+    }
 }
 
 /// A world shared with other machines (app.md 4): open it alone, or join from an invite.
@@ -158,11 +199,6 @@ struct Options {
     /// `--log`: a file that gets every line the console does, prefixed with the time (pe-app's `log`).
     log: Option<std::path::PathBuf>,
 }
-
-/// The joiner's wait for the opener's welcome and its clock: a person copies the reply over.
-const JOIN_TIMEOUT: Duration = Duration::from_secs(300);
-/// How long an invite stays valid.
-const INVITE_VALID: Duration = Duration::from_secs(3600);
 
 fn options() -> Options {
     let mut o = Options {
@@ -279,7 +315,9 @@ fn presenter(
 /// `--check-replay` (`replay` true; pe-app's `replay`). On A, any other line is a joiner's reply code, for the
 /// session's hook, which checks it. The thread waits on standard input for the whole run; the process's end ends it.
 /// A debug build also takes `panic`, which panics this thread: the test of `--log`'s panic path (tests/console_log.rs).
-fn read_console(replies: Option<std::sync::mpsc::Sender<Reply>>, replay: bool, quit: Arc<Quit>) {
+/// The console's lines, on a thread of its own, for the whole run. A reply code goes to the current opener session's
+/// admission (the hidden fallback); `new`, `join <invite>` and `cancel` ask the session manager (D6), once it runs.
+fn read_console(replies: session::Replies, replay: bool, quit: Arc<Quit>, sessions: Arc<OnceLock<session::Asker>>) {
     let read = move || {
         for line in std::io::stdin().lines().map_while(Result::ok) {
             let line = line.trim();
@@ -298,6 +336,31 @@ fn read_console(replies: Option<std::sync::mpsc::Sender<Reply>>, replay: bool, q
             if line == "relaunch" {
                 pe_app::menu::ask_relaunch(&pe_app::menu::Relaunch::NewSession);
                 quit.request_from_app("the console: restarting");
+                continue;
+            }
+            // In-game sessions (app.md 4.1, D6): what the menu's New session, Join and Cancel do.
+            if line == "new" || line == "cancel" || line == "join" || line.starts_with("join ") {
+                let Some(asker) = sessions.get() else {
+                    pe_app::err!("pe-app: `{line}` waits for the first session to start");
+                    continue;
+                };
+                if line == "new" {
+                    asker.ask(Want::New);
+                } else if line == "cancel" {
+                    if !asker.ask(Want::Cancel) {
+                        pe_app::err!("pe-app: they've let this machine in: the join can't be cancelled now");
+                    }
+                } else {
+                    match Invite::decode(line["join".len()..].trim()) {
+                        Ok(i) if i.expiry_unix_s <= unix_now() => {
+                            pe_app::err!("pe-app: that invite has expired: ask for a new one");
+                        }
+                        Ok(i) => {
+                            asker.ask(Want::Join(i));
+                        }
+                        Err(e) => pe_app::err!("pe-app: `join` takes an invite (pe1:…): {e:?}"),
+                    }
+                }
                 continue;
             }
             if line == "replay" {
@@ -362,19 +425,20 @@ fn read_console(replies: Option<std::sync::mpsc::Sender<Reply>>, replay: bool, q
                 }
                 continue;
             }
-            let Some(replies) = &replies else {
+            let admitting = replies.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let Some(admitting) = admitting else {
                 pe_app::err!(
-                    "pe-app: `{line}` isn't a command here: `quit`, `hands <routine|file|stop>`, `spawn \
-                     box|sphere|capsule|stack [count]|clear`, `fault` (with --arm-fault), `slow <ms>` (with --slow-frame), \
-                     `replay` (--check-replay), \
+                    "pe-app: `{line}` isn't a command here: `quit`, `new`, `join <invite>`, `cancel`, \
+                     `hands <routine|file|stop>`, `spawn box|sphere|capsule|stack [count]|clear`, `fault` (with \
+                     --arm-fault), `slow <ms>` (with --slow-frame), `replay` (--check-replay), \
                      `hand-mode closed|reach` or `draw latched|simulated`"
                 );
                 continue;
             };
             match Reply::decode(line) {
                 Ok(reply) => {
-                    if replies.send(reply).is_err() {
-                        return;
+                    if admitting.send(reply).is_err() {
+                        pe_app::err!("pe-app: this session's admission has ended");
                     }
                 }
                 Err(e) => pe_app::err!("pe-app: that isn't a reply code ({e:?}): paste the code the joiner printed"),
@@ -386,158 +450,8 @@ fn read_console(replies: Option<std::sync::mpsc::Sender<Reply>>, replay: bool, q
     }
 }
 
-/// The shared session (app.md 4 steps 4 and 5): open alone or join at a cut, then the simulation over pe-agree and
-/// pe-net. A joiner's simulation starts with its import of the cut's state under way; if that fails, `console`
-/// quits.
-#[allow(clippy::too_many_arguments)]
-fn shared_sim(
-    o: &Options,
-    shared: &Shared,
-    host: &clock::HostClock,
-    wake: &WakeLater,
-    slot: Arc<FrameSlot>,
-    hands: Arc<SwitchedHands>,
-    runner: Box<dyn ScriptRunner>,
-    console: &Arc<Quit>,
-) -> (Sim, MenuSeed) {
-    let rate = SimRate::DEFAULT;
-    let path = o.identity.clone().map_or_else(net::default_identity_path, Ok).unwrap_or_else(|e| fail(&e.to_string()));
-    // The build service's folder follows this path too (start_builds).
-    let seed =
-        net::identity_seed(&path).unwrap_or_else(|e| fail(&format!("the identity file {}: {e}", path.display())));
-    let opener = matches!(shared, Shared::Open);
-    // A second pe-app on this machine finds the port taken (Fable's condition 4): say so plainly.
-    // A relaunched run (the menu's New session or Join) waits briefly for the old process to let go of the port.
-    let wait_until = std::env::var_os(pe_app::menu::RELAUNCHED)
-        .map(|_| std::time::Instant::now() + pe_app::menu::RELAUNCH_PORT_WAIT);
-    let in_use = loop {
-        match std::net::UdpSocket::bind(o.listen) {
-            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-                if wait_until.is_some_and(|t| std::time::Instant::now() < t) {
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                    continue;
-                }
-                break true;
-            }
-            _ => break false,
-        }
-    };
-    if in_use {
-        fail(&format!(
-            "another pe-app is running on this machine (UDP {} is in use): quit it first, or start this one with \
-             --listen <another address>",
-            o.listen
-        ));
-    }
-    let files = pe_app::menu::files_dir(&path);
-    let mut ep = Endpoint::bind(seed, o.listen, o.advertise.clone(), opener, host.clone(), Some(wake.arrival()))
-        .unwrap_or_else(|e| fail(&e.to_string()));
-    let short = |k: MemberKey| k.0[..4].iter().map(|b| format!("{b:02x}")).collect::<String>();
-    // pe-diverge (app.md 3, step 5): detection and repair, with fault bundles beside the identity file. It also serves
-    // the opener's state to a joiner, and fetches it for the joiner.
-    let diverge = |sim: Sim| {
-        sim.with_diverge(pe_diverge::Config::default(), Some(pe_app::diverge::bundle_dir(&path)))
-            .unwrap_or_else(|e| fail(&format!("pe-diverge did not start: {e}")))
-    };
-    match shared {
-        Shared::Open => {
-            // B's delay is the session's: the opener's option, in the genesis record (app.md 3).
-            let display_delay_ms = u32::try_from(o.display_delay.as_millis()).unwrap_or(u32::MAX);
-            let p = OpenParams {
-                seed: WORLD_SEED,
-                preset: o.preset.unwrap_or(pe_world::preset::Preset::BallPit { balls: 500 }),
-                rate,
-                epoch_lead: Duration::ZERO,
-                display_delay_ms,
-            };
-            let opened = ep
-                .open_alone(&p, INVITE_VALID, T_JOIN, runner)
-                .unwrap_or_else(|e| fail(&format!("the session did not start: {e}")));
-            let s = opened.session;
-            pe_app::out!("session: open, this machine {}", short(s.me));
-            pe_app::out!("invite: {}", opened.invite.encode());
-            pe_app::out!("to let someone join, paste their reply code here (or use the menu's Paste reply):");
-            let seed = MenuSeed {
-                role: pe_app::menu::Role::Opener {
-                    invite: opened.invite.encode(),
-                    expires_unix_s: opened.invite.expiry_unix_s,
-                },
-                replies: Some(opened.replies.clone()),
-                files,
-            };
-            read_console(Some(opened.replies), o.check_replay, console.clone());
-            let sim = diverge(
-                Sim::new(Box::new(s.node), s.replica, s.frames, slot, Budget::new(rate))
-                    .with_local(s.me, chain_nonce(), hands)
-                    .with_transport(net::transport(s.handle), Some(Box::new(s.hook)))
-                    .with_linked(s.linked)
-                    .with_display_delay(Duration::from_millis(u64::from(display_delay_ms))),
-            );
-            // `--check-replay` (pe-app's `replay`): the opener keeps its final log, and replays it on the console's
-            // `replay`.
-            let sim = if o.check_replay {
-                pe_app::out!("replay: keeping this session's final log; type `replay` to replay it from frame 0");
-                sim.with_replay_check(pe_app::replay::ReplayLog::new(opened.genesis))
-            } else {
-                sim
-            };
-            (sim, seed)
-        }
-        Shared::Join(invite) => {
-            if o.preset.is_some() {
-                pe_app::out!("--preset is ignored when joining: the world is the one the opener's record names");
-            }
-            // Invite-only (the user's ruling): the invite lets this machine in. The reply code is the
-            // fallback, for an opener on a build without it: saved, and printed once.
-            let reply = ep.reply(invite).encode();
-            if let Err(e) = pe_app::menu::save(&files, "reply", &reply) {
-                pe_app::err!("pe-app: the reply code couldn't be saved ({e})");
-            }
-            pe_app::out!(
-                "joining {}'s session with the invite: VR starts once you're in. Type quit to stop.",
-                short(MemberKey(invite.key))
-            );
-            pe_app::out!("(the reply code above is a fallback: send it only if they ask for it)");
-            // The console from now (@coordinator-opus): `quit` ends a joiner that is still waiting.
-            read_console(None, false, console.clone());
-            let seed = MenuSeed { role: pe_app::menu::Role::Joiner { reply }, replies: None, files };
-            ep.dial(invite).unwrap_or_else(|e| fail(&e.to_string()));
-            let cj = ep
-                .join_at_cut(invite, rate, JOIN_TIMEOUT, T_JOIN)
-                .unwrap_or_else(|e| fail(&format!("couldn't join the session: {e}")));
-            pe_app::out!(
-                "session: joined at frame {}, {} members, this machine {}",
-                cj.e.at.frame.0,
-                cj.members.len(),
-                short(cj.me)
-            );
-            if let Some(at) = pe_app::fault::armed().and_then(|f| f.at()).filter(|at| *at < cj.e.at.frame) {
-                pe_app::out!(
-                    "FAULT INJECTION: frame {} is before this machine's first frame, {}, so the fault never fires",
-                    at.0,
-                    cj.e.at.frame.0
-                );
-            }
-            let replica = cj
-                .record
-                .empty_replica(cj.me, cj.frames.clone(), runner)
-                .unwrap_or_else(|e| fail(&format!("the replica did not start: {e}")));
-            let linked = cj.members.iter().copied().filter(|m| *m != cj.me).collect();
-            let quit = console.clone();
-            let mut sim = diverge(
-                Sim::new(Box::new(cj.node), replica, cj.frames, slot, Budget::new(rate))
-                    .with_local(cj.me, chain_nonce(), hands)
-                    .with_transport(net::transport_with(cj.handle, cj.pending), Some(Box::new(cj.hook)))
-                    .with_linked(linked)
-                    // B's delay is the session's, from the opener's record, whatever this machine's option.
-                    .with_display_delay(Duration::from_millis(u64::from(cj.record.display_delay_ms))),
-            )
-            .with_on_join_failed(Box::new(move || quit.request_from_app("the join failed")));
-            sim.join_at_final(MemberKey(invite.key), host())
-                .unwrap_or_else(|e| fail(&format!("couldn't join the session: {e}")));
-            (sim, seed)
-        }
-    }
+fn unix_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
 fn main() {
@@ -639,18 +553,6 @@ fn main() {
     let audio_trial = steam_audio::AudioTrial::from_env();
     #[cfg(all(feature = "steam-audio-trial", target_arch = "x86_64", any(windows, target_os = "linux")))]
     let audio = audio_trial.as_ref().map(steam_audio::AudioTrial::publisher);
-    // The script runner (pe-replica's `logic`): pe-app owns it, and the simulation thread gets the stack it needs.
-    // Its settings are the ones the hello's build id names (net.rs `runner_settings`), so peers compare this runner.
-    let (settings, run) = pe_app::net::runner_settings();
-    let runner = match LogicRunner::new(settings, run) {
-        Ok(r) => r,
-        Err(e) => fail(&format!("the script runner did not start: {e}")),
-    };
-    let sim_stack = SIM_STACK.max(runner.thread_stack());
-    // The build service loads modules into the runner from its own thread (builds.rs), through the runner's inbox,
-    // which is taken before the replica owns the runner.
-    let inbox = runner.inbox();
-    let runner: Box<dyn ScriptRunner> = Box::new(runner);
     // The local player's hands (app.md 3, step 2): VR's ring while an XR session runs, the desktop hand otherwise.
     let ring = Arc::new(HandRing::new(DEFAULT_WINDOW_NS, VR_PERIOD_NS));
     // B (app.md 3): the simulation asks for hands up to two simulation periods and the publication's margin past the
@@ -677,75 +579,11 @@ fn main() {
     let moves = Arc::new(SwitchedMove::new(vr_moves.clone(), desktop_moves.clone()));
     // B (app.md 3): the display lead the VR sink measures under Shown, for the simulation's shown present.
     let display_lead = Arc::new(pe_app::shown::DisplayLead::default());
-    let wake = WakeLater::default();
-    let mut menu_seed = None;
-    let sim = match &options.shared {
-        Some(shared) => {
-            let (sim, seed) = shared_sim(&options, shared, &host, &wake, slot.clone(), hands.clone(), runner, &console);
-            menu_seed = Some(seed);
-            sim
-        }
-        None => {
-            let frames: Arc<dyn FrameClock> = Arc::new(LocalClock::new(host(), rate));
-            let pit = world::open_ball_pit(WORLD_SEED, world::DEV_MEMBER, rate, frames.clone(), runner);
-            read_console(None, false, console.clone());
-            let replica = match pit {
-                Ok(r) => r,
-                Err(e) => fail(&format!("the replica did not start: {e}")),
-            };
-            Sim::new(Box::new(SoloAgreement::new(LineId::origin())), replica, frames, slot.clone(), Budget::new(rate))
-                .with_local(world::DEV_MEMBER, chain_nonce(), hands.clone())
-        }
-    };
-    // B (app.md 3): a session's delay is in its record (a joiner's came from it); a world alone takes the option.
-    let sim = if options.shared.is_none() { sim.with_display_delay(options.display_delay) } else { sim };
-    let sim = sim.with_shown(display_lead.clone());
-    // The window's status line (render.md 8.1): a joiner's "Joining: catching up…".
+    // The window's status line (render.md 8.1): a joiner's "Joining: catching up…", and a swap's steps.
     let status = Arc::new(StatusLine::default());
-    let sim = sim.with_status(status.clone()).with_hand_feel(pe_app::handfeel::console()).with_moves(moves.clone());
-    // The menu's note about a member's link (app.md 4.1): it dropped, or it closed and New session makes a new invite.
-    let link_notes = pe_app::leave::LinkNotes::default();
-    let opener = menu_seed.as_ref().is_some_and(|s: &MenuSeed| matches!(s.role, pe_app::menu::Role::Opener { .. }));
-    let sim = sim.with_link_notes(link_notes.clone(), opener);
-    // `--slow-frame` (pe_app::slowframe): the status line and the end line say so while the replica waits.
-    let sim = sim.with_slow_frame(pe_app::slowframe::armed());
-    // `PE_COALESCE_TICKS=<n>`: the coalesced pose rollbacks' window (pe_app::coalesce), 1 for none; default 3.
-    let sim = match std::env::var("PE_COALESCE_TICKS").ok().and_then(|v| v.trim().parse::<u64>().ok()) {
-        Some(n) => {
-            pe_app::out!("coalesced pose rollbacks: every {n} ticks (PE_COALESCE_TICKS)");
-            sim.with_coalesce_window(n)
-        }
-        None => sim,
-    };
-    // `PE_TICK_TRACE=<file>`: a line a second and one per long tick, for a stall's phase (crate::trace). Off by default.
-    let sim = match pe_app::trace::TickTrace::from_env(rate.hz()) {
-        Some(Ok((trace, path))) => {
-            pe_app::out!("tick trace: writing {path} (PE_TICK_TRACE)");
-            sim.with_tick_trace(trace)
-        }
-        Some(Err(e)) => {
-            pe_app::err!("tick trace: couldn't open PE_TICK_TRACE's file ({e}); running without it");
-            sim
-        }
-        None => sim,
-    };
-    // `PE_CUT_LOG=<file>`: a line per final cut, its root and this machine's result there (crate::cutlog). Off by
-    // default.
-    let sim = match pe_app::cutlog::CutLog::from_env(host()) {
-        Some(Ok((log, path))) => {
-            pe_app::out!("cut log: writing {path} (PE_CUT_LOG)");
-            sim.with_cut_log(log)
-        }
-        Some(Err(e)) => {
-            pe_app::err!("cut log: couldn't open PE_CUT_LOG's file ({e}); running without it");
-            sim
-        }
-        None => sim,
-    };
-    let display_delay = sim.display_delay();
     // pe-api's ports (app.md 3.1) whenever the replica is pe-world's and this machine has a member: the build thread
     // submits its attestations through their edit queue (@engine-architect). The MCP thread only when a
-    // transport is asked for.
+    // transport is asked for, restarted with each session (D4).
     let mcp_wanted = options.mcp_pipe || options.mcp_http;
     if !mcp_wanted && !options.agent.is_empty() {
         fail("--agent needs --mcp-pipe or --mcp-http");
@@ -753,62 +591,104 @@ fn main() {
     if options.agent_name.is_some() && options.agent.is_empty() {
         fail("--agent-name needs --agent, after it: --agent takes the rest of the line");
     }
-    let me = sim.local_member();
-    let ports = {
-        let arrival = wake.arrival();
-        sim.ports(WORLD_NAME, move || arrival())
-    };
-    if mcp_wanted && ports.is_none() {
-        fail("pe-api needs a pe-world replica");
-    }
-    let sim = match &ports {
-        Some(p) => sim.with_api(p.clone()),
-        None => sim,
-    };
-    let sim = match sim::spawn(sim, host.clone(), sim_stack) {
-        Ok(t) => t,
-        Err(e) => fail(&format!("the simulation thread did not start: {e}")),
-    };
-    wake.set(sim.waker());
-    let builds = ports.as_ref().zip(me).and_then(|(p, me)| start_builds(inbox, p, me, options.identity.as_deref()));
-    let (attester, builder) = match builds {
-        Some((a, b)) => (Some(a), Some(b)),
-        None => (None, None),
-    };
-    // pe-api builds through the attester's own service (api.md 7.1): one build at a time and one cache by V.
-    let ports = match (ports, builder) {
-        (Some(p), Some(b)) => Some(p.with_builds(b)),
-        (p, _) => p,
-    };
     // view_capture's queue (api.md 8), served by the headset's loop or the window's, whichever draws. Headless draws
     // nothing, so it has no queue, and pe-api answers view_capture with `capture_unavailable` at once.
     let captures = (mcp_wanted && !headless).then(pe_render::capture_service::CaptureQueue::new);
-    let ports = match (ports, &captures) {
-        (Some(p), Some(q)) => Some(p.with_captures(Arc::new(pe_app::capture::RenderCaptures(q.clone())))),
-        (p, _) => p,
+    // This machine's identity: every session's, so each is the same member. The build service's folder and the
+    // menu's files sit beside it.
+    let identity =
+        options.identity.clone().map_or_else(net::default_identity_path, Ok).unwrap_or_else(|e| fail(&e.to_string()));
+    let seed = if networked {
+        net::identity_seed(&identity)
+            .unwrap_or_else(|e| fail(&format!("the identity file {}: {e}", identity.display())))
+    } else {
+        [0; 32]
     };
-    // The menu's spawn panel and the console's `spawn` (S4): pe-api edits as this machine's member. Built only on
-    // a world with `/Spawned` (the plane); the worker looks once at start.
-    if let (Some(p), Some(me)) = (&ports, me) {
-        pe_app::spawn::install(p.api(), me);
+    if networked {
+        port_check(options.listen);
     }
-    let mcp = ports.filter(|_| mcp_wanted).map(|p| {
-        let member = me.unwrap_or_else(|| fail("an agent acts for this machine's member, and there is none"));
-        match api::spawn_mcp(p.api(), mcp_opts(&options, member)) {
-            Ok(t) => t,
-            Err(e) => fail(&format!("the MCP thread did not start: {e}")),
-        }
+    let mcp: Option<session::McpOpts> = mcp_wanted.then(|| {
+        let (name, agent, pipe, http) =
+            (options.agent_name.clone(), options.agent.clone(), options.mcp_pipe, options.mcp_http);
+        let file = Some(pe_app::menu::files_dir(&identity).join("mcp.json"));
+        Arc::new(move |member| mcp_opts(name.as_deref(), &agent, pipe, http, &file, member)) as session::McpOpts
+    });
+    let spec = session::Spec {
+        listen: options.listen,
+        advertise: options.advertise.clone(),
+        identity: identity.clone(),
+        seed,
+        preset: options.preset.unwrap_or(pe_world::preset::Preset::BallPit { balls: 500 }),
+        display_delay: options.display_delay,
+        check_replay: options.check_replay,
+        mcp,
+    };
+    let replies: session::Replies = Arc::new(Mutex::new(None));
+    // The menu's note about a member's link (app.md 4.1): it dropped, or it closed and New session makes a new invite.
+    let link_notes = pe_app::leave::LinkNotes::default();
+    let kept = session::Kept {
+        host: host.clone(),
+        slot: slot.clone(),
+        hands: hands.clone(),
+        moves: moves.clone(),
+        display_lead: display_lead.clone(),
+        status: status.clone(),
+        captures: captures.clone(),
+        quit: console.clone(),
+        replies: replies.clone(),
+        link_notes: link_notes.clone(),
+    };
+    // The console from now (@coordinator-opus): `quit` ends a joiner that is still waiting.
+    let sessions: Arc<OnceLock<session::Asker>> = Arc::new(OnceLock::new());
+    read_console(replies.clone(), options.check_replay, console.clone(), sessions.clone());
+    // The first session (D9, @coordinator-opus): a headless `--join` joins before anything else, and a
+    // failure ends the run with exit code 2, as the scripts expect. In VR or a window, `--join` opens a session of
+    // this machine's own first and joins in-game, so the display starts at once and the menu shows the join.
+    let first_start = match &options.shared {
+        None => Start::Alone,
+        Some(Shared::Join(invite)) if headless => Start::Join(invite.clone()),
+        Some(_) => Start::Open,
+    };
+    if matches!(options.shared, Some(Shared::Join(_))) && options.preset.is_some() {
+        pe_app::out!("--preset is ignored when joining: the world is the one the opener's record names");
+    }
+    let on_join_failed = matches!(first_start, Start::Join(_)).then(|| {
+        let quit = console.clone();
+        Box::new(move |why: String| {
+            pe_app::err!("pe-app: the join failed: {why}");
+            quit.request_from_app("the join failed")
+        }) as Box<dyn FnOnce(String) + Send>
+    });
+    let first =
+        session::start_with(&spec, &kept, &first_start, &AtomicBool::new(false), 1, on_join_failed, &mut || true)
+            .unwrap_or_else(|e| fail(&e.to_string()));
+    let display_delay = first.display_delay;
+    let first_role = first.role.clone();
+    let manager = session::Manager::spawn(spec, kept, first)
+        .unwrap_or_else(|e| fail(&format!("the session manager did not start: {e}")));
+    let asker = manager.asker();
+    let _ = sessions.set(asker.clone());
+    if let (Some(Shared::Join(invite)), false) = (&options.shared, headless) {
+        pe_app::out!("joining {}'s session in-game: this machine's own session runs meanwhile", short(invite.key));
+        asker.ask(Want::Join(invite.clone()));
+    }
+    // The menu (S3), for a session shared with others: its role follows the manager's (app.md 4.1).
+    let mut menu_seed = networked.then(|| MenuSeed {
+        role: menu_role(&first_role),
+        files: pe_app::menu::files_dir(&identity),
+        asker: asker.clone(),
+        replies: replies.clone(),
+        link_notes: link_notes.clone(),
     });
 
-    // The quit (app.md 4), run once: by the main thread at the end of the run, or by the console's request.
+    // The quit (app.md 4), run once: by the main thread at the end of the run, or by the console's request. The
+    // manager stops the session it runs, in the shutdown's order (crate::session's `Running::stop`).
     let quit_captures = captures.clone();
     let shutdown: Shutdown = Box::new(move || {
         #[cfg(all(feature = "steam-audio-trial", target_arch = "x86_64", any(windows, target_os = "linux")))]
         drop(audio_trial);
         close_captures(&quit_captures);
-        stop_mcp(mcp);
-        stop_builds(attester);
-        finish(quit(sim, networked));
+        manager.quit();
     });
 
     if headless {
@@ -869,11 +749,7 @@ fn main() {
                 report: report.clone(),
                 shown: Some(display_lead.clone()),
                 // The menu, with the frame-rate counter under the wrist button (pe_app::fps), menu or not.
-                ui: Some(Box::new(pe_app::fps::FpsUi::new(menu_seed.clone().map(|s| {
-                    let host = pe_app::menu::AppHost::new(s.files, s.replies, console.clone())
-                        .with_link_notes(link_notes.clone());
-                    Box::new(pe_app::menu::Menu::new(s.role, Box::new(host))) as Box<dyn pe_render::menu::Ui>
-                })))),
+                ui: with_fps(menu_seed.clone().map(|s| s.ui(&console))),
                 // The move feed the drawn rig turns with (locomotion L4c): pe-xr's MoveRing once L4a/L4b wire it, the
                 // same Arc the simulation samples.
                 // L4c: the sink's drawn rig reads the same ring the simulation does.
@@ -967,11 +843,7 @@ fn main() {
         captures: captures.clone(),
         // The menu, if VR didn't take it (a run in the window, or VR that ended), with the frame-rate counter at the top
         // of the window (pe_app::fps), menu or not.
-        ui: Some(Box::new(pe_app::fps::FpsUi::new(menu_seed.take().map(|s| {
-            let host =
-                pe_app::menu::AppHost::new(s.files, s.replies, console.clone()).with_link_notes(link_notes.clone());
-            Box::new(pe_app::menu::Menu::new(s.role, Box::new(host))) as Box<dyn pe_render::menu::Ui>
-        })))),
+        ui: with_fps(menu_seed.take().map(|s| s.ui(&console))),
         moves: Some(desktop_moves),
         walk: Default::default(),
     };
@@ -1029,16 +901,6 @@ fn wait_headless(deadline: Option<Instant>, console: &Quit) {
     }
 }
 
-/// The quit (app.md 4), once MCP and the attester have stopped. In a session with others this member leaves
-/// gracefully: its `Leave` goes out, it goes on voting until every remaining member has confirmed it or the quit's
-/// bound passes, and the console says so ("leaving…"). A world alone just stops.
-fn quit(sim: sim::SimThread, networked: bool) -> std::thread::Result<sim::SimStats> {
-    if !networked {
-        return sim.stop();
-    }
-    sim.leave_and_stop(&mut |line| pe_app::out!("{line}")).1
-}
-
 /// What the world's history calls the agent: `--agent-name` if given, else the command's first word as a file stem
 /// (`claude` for `tools/claude.exe`, and for `C:\tools\claude.exe` on Windows only, where a backslash
 /// separates path components; `cmd` for `cmd /c start ... claude`).
@@ -1052,57 +914,28 @@ fn harness_name(name: Option<&str>, command: &[String]) -> Option<String> {
     })
 }
 
-/// The world's name as pe-api reports it, until the invite or the configuration names it (api.md 5.1).
-const WORLD_NAME: &str = "M1 ball pit";
-
 /// pe-mcp's options: the transports asked for, and the agent's command line and grant. The agent acts for this
 /// machine's member, as an agent (pe-world's `Actor::Agent`), named by `--agent-name` or else its command.
-fn mcp_opts(o: &Options, member: MemberKey) -> HostOpts {
-    let harness = harness_name(o.agent_name.as_deref(), &o.agent);
+fn mcp_opts(
+    agent_name: Option<&str>,
+    agent: &[String],
+    pipe: bool,
+    http: bool,
+    connection_file: &Option<std::path::PathBuf>,
+    member: MemberKey,
+) -> HostOpts {
+    let harness = harness_name(agent_name, agent);
     let producer = Producer { kind: ProducerKind::Agent, harness, principal: None, requested_by: None };
     let mut opts = HostOpts::new(Grant { member: MemberId::from(member), producer, confirm: false });
-    opts.pipe = o.mcp_pipe;
-    opts.http = o.mcp_http;
-    opts.cmd = o.agent.clone();
+    opts.pipe = pipe;
+    opts.http = http;
+    opts.cmd = agent.to_vec();
     // With no `--agent`, the endpoint and a token go to a file for an agent started by hand (the friend test 11-27:
     // the user's own agent drives the running game): `mcp.json` in the menu's folder beside the identity file.
-    if o.agent.is_empty() && o.mcp_http {
-        let identity = o.identity.clone().map_or_else(net::default_identity_path, Ok);
-        opts.connection_file = identity.ok().map(|p| pe_app::menu::files_dir(&p).join("mcp.json"));
+    if agent.is_empty() && http {
+        opts.connection_file = connection_file.clone();
     }
     opts
-}
-
-/// The build service and its attester (builds.rs): pe-logic's toolchain (`Toolchain::current` until D75's installed
-/// copy), the engine's pe-sdk, and the build folder beside this machine's identity file, the `--identity` given or the
-/// default (`builds::build_dir`). Without a toolchain this machine still runs but builds no script: it attests none (at
-/// n = 2 a commit then voids at its deadline), and pe-api's `code_check` answers `unavailable`.
-fn start_builds(
-    inbox: pe_replica::logic::ModuleInbox,
-    ports: &api::Ports,
-    me: MemberKey,
-    identity: Option<&std::path::Path>,
-) -> Option<(builds::AttesterThread, Arc<builds::Builder>)> {
-    let started = (|| -> Result<_, String> {
-        let toolchain = pe_logic::build::Toolchain::current().map_err(|e| e.to_string())?;
-        let identity =
-            identity.map_or_else(net::default_identity_path, |p| Ok(p.to_path_buf())).map_err(|e| e.to_string())?;
-        let sdk = builds::sdk().clone()?.0;
-        let config = builds::BuildConfig::new(toolchain, sdk, builds::build_dir(&identity));
-        let builder = Arc::new(builds::Builder::new(config, inbox.clone()).map_err(|e| e.to_string())?);
-        let thread = builds::spawn_attester(builder.clone(), inbox, ports.shared.clone(), ports.queue.clone(), me)
-            .map_err(|e| e.to_string())?;
-        Ok((thread, builder))
-    })();
-    started
-        .map_err(|e| pe_app::err!("pe-app: the build service did not start, so this machine builds no script: {e}"))
-        .ok()
-}
-
-fn stop_builds(attester: Option<builds::AttesterThread>) {
-    if let Some(a) = attester {
-        a.stop();
-    }
 }
 
 /// Refuses any capture still waiting, so an agent's view_capture doesn't hold the MCP thread, and with it the quit,
@@ -1115,15 +948,6 @@ fn close_captures(captures: &Option<Arc<pe_render::capture_service::CaptureQueue
     }
 }
 
-fn stop_mcp(mcp: Option<api::McpThread>) {
-    if let Some(m) = mcp {
-        match m.stop() {
-            Ok(exited) => pe_app::out!("mcp: stopped; the agent {exited:?}"),
-            Err(e) => pe_app::err!("mcp: {e}"),
-        }
-    }
-}
-
 fn report_window(window: Result<DesktopReport, ContextError>) {
     match window {
         Ok(r) => {
@@ -1133,13 +957,6 @@ fn report_window(window: Result<DesktopReport, ContextError>) {
             }
         }
         Err(e) => pe_app::err!("window: {e:?}"),
-    }
-}
-
-fn finish<S: Debug, E>(stats: Result<S, E>) {
-    match stats {
-        Ok(s) => pe_app::out!("simulation: {s:?}"),
-        Err(_) => fail("the simulation thread panicked"),
     }
 }
 

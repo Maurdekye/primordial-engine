@@ -83,6 +83,17 @@ impl Ports {
         Ports { shared: Arc::new(ApiShared::new(genesis, facts)), queue, log, builds: None, captures: None }
     }
 
+    /// The words pe-api answers with once the session's ports are closed.
+    pub const CLOSED: &'static str = "the session ended";
+
+    /// Closes the ports with their session (app.md 4.1), first in its stop: every change waiting, and every one
+    /// submitted from now on, is answered `Unavailable` ("the session ended"), and every wait (a change's fate, an
+    /// agent's `watch` long poll) ends at once, so the spawn worker and MCP stop without waiting them out.
+    pub fn close(&self) {
+        self.queue.close(Self::CLOSED);
+        self.log.close();
+    }
+
     /// These ports with the machine's build service, which the WorldApi builds through (api.md 7.1).
     pub fn with_builds(mut self, builds: Arc<dyn Builds>) -> Ports {
         self.builds = Some(builds);
@@ -418,6 +429,26 @@ impl McpThread {
         if let Some(s) = self.stop.take() {
             let _ = s.send(());
         }
+        self.join_thread()
+    }
+
+    /// [`McpThread::stop`], waiting at most `within` for the thread (a session change, once pe-api's ports have closed
+    /// and woken its long polls; app.md 4.1). `None` if it was left behind, to end by itself.
+    pub fn stop_within(mut self, within: Duration) -> Option<io::Result<Option<ExitStatus>>> {
+        if let Some(s) = self.stop.take() {
+            let _ = s.send(());
+        }
+        let until = std::time::Instant::now() + within;
+        while self.thread.as_ref().is_some_and(|t| !t.is_finished()) {
+            if std::time::Instant::now() >= until {
+                return None;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        Some(self.join_thread())
+    }
+
+    fn join_thread(&mut self) -> io::Result<Option<ExitStatus>> {
         match self.thread.take().map(JoinHandle::join) {
             Some(Ok(r)) => r,
             Some(Err(_)) => Err(io::Error::other("the MCP thread panicked")),

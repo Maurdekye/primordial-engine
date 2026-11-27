@@ -805,8 +805,49 @@ The friend test (@item:primordial-engine/friend-test-xr-eng-s-slices-vr-pointers
 from a menu instead of the console (crate::menu, on pe-render's panels, render.md 8.2).
 
 - **Option (D)** (@coordinator-opus): pe-app is always in a session. With no session flag, a run in
-  VR or in a window opens its own (`--open`) and the menu is open from the first frame. **New session** and **Join
-  a session** don't change the running process: they ask for a relaunch and quit. The relaunch starts pe-app again
+  VR or in a window opens its own (`--open`) and the menu is open from the first frame.
+- **In-game sessions** (@item:primordial-engine/pe-app-join-and-start-a-new-session-inside-the-r, design d3, approved
+  by @design-reviewer): **New session**, **Join a session** and **Leave** change sessions inside the running process,
+  so VR and the window stay up. crate::session's manager thread owns the running session: its port and pe-net
+  thread, agreement node, replica and simulation thread, pe-api's ports, the spawn worker, the build attester and
+  MCP. What outlives a session is the process's: the clock, the frame slot, the hand and move feeds, the display
+  lead, the status line, view_capture's queue, the console's quit, the reply slot and the link note.
+  - **A swap** stops the running session in bounded steps (MCP and captures first, then pe-api's ports, the spawn
+    worker, the attester with cargo's whole process tree, the graceful `Leave` within its bound, the simulation
+    thread, pe-net), then starts the next. The frame slot numbers worlds, and the presenter keeps showing the old
+    world's last frame until the new world's first view (render.md 3), so the headset never gets a frame without
+    layers. The OpenXR session never ends. A step that overruns its bound is left behind, named on the menu ("The
+    last session left work running: …") and in the log, and the next session starts anyway. If what was left still
+    holds the port, the next session binds an ephemeral one after the rebind wait and warns beside the invite (D8,
+    below).
+  - **Quit is final:** a Quit during a swap, even while a join is leaving the old session, starts nothing more: no
+    join, no fallback session. A **Cancel while a join leaves the old session** cancels the join, and this machine
+    opens a session of its own.
+  - **The menu during a swap** shows the step under way with its seconds, and only **Quit** and **Close menu**, plus
+    **Cancel** while a join waits to be let in. Cancel stops working once this machine has told the opener it is
+    ready (`JoinReady`); from then on the join ends either way. A join that fails, is cancelled or times out leaves
+    this machine in a new session of its own (a fresh invite), and the reason stays on the menu until **OK**.
+  - **Rejoining a session just left:** the opener may still count this machine as a player, because the `Leave`
+    isn't final there yet, or because the invite is from before the leave. The join is then refused at once, within
+    a round trip (the welcome names this machine, the welcome's members aren't the invite's pin, or the opener
+    refuses an invite whose players changed). The menu says "<player>'s session still counts you as a player (you
+    left moments ago, or this invite is from before you left). Wait a few seconds and join again; if it happens
+    again, ask <player> for a new invite."
+  - **The console** has `new`, `join <invite>` and `cancel`, the same requests as the menu's.
+  - **`--join`** (D9): headless, the join comes first, and a failure ends the run with exit code 2, as the scripts
+    expect. In VR or a window, the run opens a session of its own and then joins in-game, so the display starts at
+    once and the menu shows the join.
+  - **Each session's own files and lines** (D5): from session 2 on, the files `PE_CUT_LOG` and `PE_TICK_TRACE` name
+    get `-s<n>` before the extension, and the end line reads `simulation (session <n>): …`. Session 1's reads
+    `simulation:` as before, so the scripts that read it are unchanged.
+  - **Process-wide state at a swap:** an `--inject-fault-at` fault is disarmed at the first teardown, a typed
+    `replay` belongs to its session, the next session installs its own spawner, and the link note starts empty.
+  - **The port:** the next session binds the same port again, since the old socket closed with its pe-net thread.
+    If another program took it meanwhile, the session binds an ephemeral port and the menu warns beside the invite
+    (D8).
+  - **The joiner's reply code** is no longer printed or saved: the invite alone lets the joiner in.
+- **The relaunch, the fallback** (`PE_MENU_RELAUNCH=1`): **New session** and **Join a session** ask for a relaunch
+  and quit, as before the in-game sessions. The relaunch starts pe-app again
   with this run's arguments, the session flags replaced (`--open`, or `--join <invite>`), at the very end of the old
   run, after the graceful leave, after VR has shut down and the port is closed (Fable's condition 3). `--log`'s file
   and the files `PE_CUT_LOG` and `PE_TICK_TRACE` name are renamed with `-r<unix seconds>`, so no log is overwritten.
@@ -840,11 +881,10 @@ from a menu instead of the console (crate::menu, on pe-render's panels, render.m
     for a few seconds and comes back in the other session.
   - **Every action is logged:** each button pressed, with what it said, and the menu opened or closed, as `menu: …`
     lines in the run's log.
-- **The code exchange** (invite-only since): the opener does everything in VR: Invite a
-  friend copies the invite, and the invite lets the joiner in. The joiner's reply code is only saved and printed
-  once, the fallback. Join reads an invite the same way and relaunches only with one that decodes and hasn't
-  expired, and never with the opener's own invite, which would rejoin the session it leaves; otherwise it says why
-  and the session stays (@engine-architect's L1, @api-eng's 2). A relaunched process (`PE_RELAUNCHED=1`) waits up
+- **The code exchange** (invite-only, the user's ruling): the opener does everything in VR: Invite a
+  friend copies the invite, and the invite lets the joiner in. Join reads an invite the same way and joins (or, with
+  `PE_MENU_RELAUNCH=1`, relaunches) only with one that decodes and hasn't expired, and never with the opener's own
+  invite, which would rejoin the session it leaves; otherwise it says why and the session stays (@engine-architect's L1, @api-eng's 2). A relaunched process (`PE_RELAUNCHED=1`) waits up
   to 5 s for the old one to let go of the UDP port before calling it in use.
 - **Copy and paste** (ruling (b)): the system clipboard through arboard (default features off;
   Wayland through the data-control protocol, X11 otherwise), and every time also a file, `<what>.txt` in a
