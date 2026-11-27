@@ -87,6 +87,12 @@ fn dist(a: Pos, b: Pos) -> f64 {
     offset_vec(a - b).length()
 }
 
+/// `s` with every in-view correction above `E_cue` cued, however shallow its rollback: the rule before 2026-11-26,
+/// for the tests of the cue's mechanics (D3's depth rule has its own test).
+fn all_cued(s: DisplaySettings) -> DisplaySettings {
+    DisplaySettings { cue_min_rollback: Duration::ZERO, ..s }
+}
+
 fn extrapolating() -> DisplaySettings {
     DisplaySettings { drawn_time: DrawnTime::Extrapolate { l_max: Duration::from_millis(80) }, ..Default::default() }
 }
@@ -275,6 +281,17 @@ fn a_falling_ball_misses_by_less_than_a_hands_width() {
 type Row = (HostTime, u64, Pos, Pos, bool);
 
 fn correction_run(settings: DisplaySettings, place: Pos, jumps: &[(u64, [f64; 3])]) -> (DisplayLayer, Vec<Row>) {
+    correction_run_at(settings, place, jumps, |_| 0)
+}
+
+/// [`correction_run`], each corrected view of frame f saying its rollback went `depth(f)` frames deep
+/// (`counters.deepest_rollback`, since the view before it).
+fn correction_run_at(
+    settings: DisplaySettings,
+    place: Pos,
+    jumps: &[(u64, [f64; 3])],
+    depth: impl Fn(u64) -> u64,
+) -> (DisplayLayer, Vec<Row>) {
     let mut layer = DisplayLayer::new(settings);
     let vols = volumes();
     let mut rows = Vec::new();
@@ -297,7 +314,11 @@ fn correction_run(settings: DisplaySettings, place: Pos, jumps: &[(u64, [f64; 3]
             if corrected {
                 o.flags = o.flags.with(ViewFlags::CORRECTED);
             }
-            cur = Some(view(f, frame_time(f, 60), vec![o]));
+            let mut v = view(f, frame_time(f, 60), vec![o]);
+            if corrected {
+                Arc::make_mut(&mut v).counters.deepest_rollback = depth(f);
+            }
+            cur = Some(v);
         }
         let v = cur.clone().unwrap();
         let local = LocalPresentation { display_time: now, hands: [None, None] };
@@ -407,7 +428,7 @@ fn every_in_view_correction_above_e_cue_has_a_cue() {
         let place = if in_view { at(0.0, 0.0, -4.0) } else { at(0.0, 0.0, 6.0) };
         let size = 0.002 + rnd() * 1.6;
         let d = [size * 0.6, size * 0.8, 0.0];
-        let (layer, rows) = correction_run(extrapolating(), place, &[(30, d)]);
+        let (layer, rows) = correction_run(all_cued(extrapolating()), place, &[(30, d)]);
         let c = layer.counters();
         let i = rows.iter().position(|r| r.1 == 30).unwrap();
         let large = in_view && size > 0.10;
@@ -426,10 +447,46 @@ fn every_in_view_correction_above_e_cue_has_a_cue() {
     assert!(expected > 5 && checked == 40);
 }
 
+/// D3 since the user's ruling (2026-11-26): a 30 cm correction in view is cued only when its view's
+/// rollback went deeper than `CUE_MIN_ROLLBACK` (0.5 s, 30 frames at 60 Hz). At 30 frames or fewer it blends to its
+/// place as before, with no outline and no ghost, and counts as withheld, never as cueless.
+#[test]
+fn only_a_rollback_deeper_than_half_a_second_carries_the_cue() {
+    assert_eq!(pe_render::display::CUE_MIN_ROLLBACK, Duration::from_millis(500));
+    let place = at(0.0, 0.0, -4.0);
+    for (depth, cued) in [(0, false), (12, false), (30, false), (31, true), (90, true)] {
+        let (layer, rows) = correction_run_at(extrapolating(), place, &[(30, [0.3, 0.0, 0.0])], |_| depth);
+        let c = layer.counters();
+        assert_eq!(rows.iter().any(|r| r.4), cued, "depth {depth}: {c:?}");
+        assert_eq!((c.corrections, c.cues, c.cues_withheld), (1, cued as u64, !cued as u64), "depth {depth}: {c:?}");
+        assert_eq!((c.cueless_large_corrections, c.snaps_in_view), (0, 0), "depth {depth}: {c:?}");
+        let last = rows.last().unwrap();
+        assert!(dist(last.2, last.3) < 1e-9, "depth {depth}: it still blends to its place");
+    }
+    // Zero restores the old rule: every in-view correction above E_cue is cued, however shallow.
+    let all = DisplaySettings { cue_min_rollback: Duration::ZERO, ..extrapolating() };
+    let (layer, rows) = correction_run_at(all, place, &[(30, [0.3, 0.0, 0.0])], |_| 0);
+    assert!(rows.iter().any(|r| r.4) && layer.counters().cues == 1);
+}
+
+/// After a deep rollback's view, later shallow corrections are uncued: a view's depth is its own (pe-replica resets
+/// `deepest_rollback` at each view since @shader-reviewer's High on 66d1ccb0), so one deep rollback never turns the
+/// cue back on for the rest of the run.
+#[test]
+fn a_deep_rollback_cues_its_own_view_only() {
+    let place = at(0.0, 0.0, -4.0);
+    let jumps = [(20, [0.3, 0.0, 0.0]), (50, [-0.3, 0.0, 0.0]), (80, [0.0, 0.3, 0.0])];
+    let (layer, rows) = correction_run_at(extrapolating(), place, &jumps, |f| if f == 20 { 33 } else { 4 });
+    let c = layer.counters();
+    assert_eq!((c.corrections, c.cues, c.cues_withheld, c.cueless_large_corrections), (3, 1, 2, 0), "{c:?}");
+    let cued: Vec<u64> = rows.iter().filter(|r| r.4).map(|r| r.1).collect();
+    assert!(!cued.is_empty() && cued.iter().all(|&f| (20..50).contains(&f)), "cued at frames {cued:?}");
+}
+
 #[test]
 fn the_controls_bite() {
     let place = at(0.0, 0.0, -4.0);
-    let s = |controls| DisplaySettings { controls, ..extrapolating() };
+    let s = |controls| DisplaySettings { controls, ..all_cued(extrapolating()) };
     let (layer, _) =
         correction_run(s(Controls { blend: false, ..Controls::default() }), place, &[(30, [0.04, 0.0, 0.0])]);
     assert_eq!(layer.counters().snaps_in_view, 1, "blending off must show as snaps in view");
@@ -442,7 +499,8 @@ fn the_controls_bite() {
 #[test]
 fn own_hands_and_held_objects_are_never_corrected() {
     for correct_own in [false, true] {
-        let settings = DisplaySettings { controls: Controls { correct_own, ..Controls::default() }, ..extrapolating() };
+        let settings =
+            DisplaySettings { controls: Controls { correct_own, ..Controls::default() }, ..all_cued(extrapolating()) };
         let mut layer = DisplayLayer::new(settings);
         let vols = volumes();
         let me = MemberKey([7; 32]);
@@ -692,7 +750,8 @@ fn release_run(lead_ms: f64, v: f64, released_local: bool, corrected: bool) -> R
         }
         view(f, frame_time(f, 60), vec![hand, b])
     };
-    let mut layer = DisplayLayer::new(DisplaySettings { drawn_time: DrawnTime::present(60), ..Default::default() });
+    let mut layer =
+        DisplayLayer::new(DisplaySettings { drawn_time: DrawnTime::present(60), ..all_cued(Default::default()) });
     let vols = volumes();
     let mut published: Option<(u64, Arc<FrameView>)> = None;
     let (mut last, mut snapped, mut slowest, mut cued) = (None::<(f64, bool)>, None, f64::INFINITY, false);
@@ -813,7 +872,7 @@ fn a_held_object_kept_from_its_place_is_drawn_where_it_is() {
 fn under_interpolation_a_correction_blends_and_cues() {
     let settings = DisplaySettings {
         drawn_time: DrawnTime::InterpolateLate { d_render: Duration::from_millis(60) },
-        ..Default::default()
+        ..all_cued(Default::default())
     };
     let mut layer = DisplayLayer::new(settings);
     let vols = volumes();
@@ -977,7 +1036,7 @@ fn under_shown_a_frame_past_the_newest_view_is_moved_on_and_counted() {
 #[test]
 fn after_a_gap_every_object_blends_from_its_drawn_pose() {
     for drawn_time in [DrawnTime::default(), DrawnTime::InterpolateLate { d_render: Duration::from_millis(50) }] {
-        let settings = DisplaySettings { drawn_time, ..Default::default() };
+        let settings = DisplaySettings { drawn_time, ..all_cued(Default::default()) };
         let mut layer = DisplayLayer::new(settings);
         let vols = volumes();
         let local = |t: HostTime| LocalPresentation { display_time: t, hands: [None, None] };
@@ -1034,7 +1093,7 @@ fn after_a_gap_every_object_blends_from_its_drawn_pose() {
 #[test]
 fn a_gap_blends_to_the_pose_after_the_whole_batch() {
     for drawn_time in [DrawnTime::default(), DrawnTime::InterpolateLate { d_render: Duration::from_millis(50) }] {
-        let mut layer = DisplayLayer::new(DisplaySettings { drawn_time, ..Default::default() });
+        let mut layer = DisplayLayer::new(DisplaySettings { drawn_time, ..all_cued(Default::default()) });
         let vols = volumes();
         let local = |t: HostTime| LocalPresentation { display_time: t, hands: [None, None] };
         // At rest 3 m up and 6 m ahead (in view) until frame 30, then falling at 3.6 m/s (6 cm a frame at 60 Hz): the batch's
@@ -1080,7 +1139,7 @@ fn a_gap_blends_to_the_pose_after_the_whole_batch() {
 fn under_interpolation_a_correction_inside_a_gaps_batch_still_blends() {
     let settings = DisplaySettings {
         drawn_time: DrawnTime::InterpolateLate { d_render: Duration::from_millis(50) },
-        ..Default::default()
+        ..all_cued(Default::default())
     };
     let mut layer = DisplayLayer::new(settings);
     let vols = volumes();

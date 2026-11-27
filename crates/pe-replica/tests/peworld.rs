@@ -439,12 +439,16 @@ fn a_rollback_publishes_nothing_until_it_is_back_at_its_newest_frame() {
     assert!(!Arc::ptr_eq(&back, &shown), "no view back at {:?}, behind the present {present}", r.frame());
     assert_eq!(back.frame, r.frame());
     assert_eq!(corrected(&back), [first], "only the first ball, which the late one landed on");
+    // The view back says how deep the rollback went (from 64 to frame 5 or below); a later one only its own, none
+    // here (S5's `deepest_rollback`, since the last view; pe-render's cue reads it per view).
+    assert!(back.counters.deepest_rollback >= 59, "{:?}", back.counters);
     present += 1;
     let adv = r.advance(Frame(present), &mut s);
     assert_eq!((adv.stepped, adv.caught_up), (2, false));
     let next = r.view();
     assert_eq!(next.frame, Frame(back.frame.0 + 2));
     assert_eq!(corrected(&next), Vec::<ObjectId>::new(), "a correction is marked once");
+    assert_eq!(next.counters.deepest_rollback, 0, "the rollback is counted in the view back only: {:?}", next.counters);
 }
 
 /// A measurement, in release (replica.md 5.3; was O13): what each vote's root costs in a finality stall's shape over

@@ -184,6 +184,7 @@ fn fold(acc: &mut DisplayCounters, c: &DisplayCounters) {
     acc.snaps_in_view += c.snaps_in_view;
     acc.jumps_out_of_view += c.jumps_out_of_view;
     acc.cues += c.cues;
+    acc.cues_withheld += c.cues_withheld;
     acc.cueless_large_corrections += c.cueless_large_corrections;
     acc.own_error = acc.own_error.max(c.own_error);
     acc.visible_error_max = acc.visible_error_max.max(c.visible_error_max);

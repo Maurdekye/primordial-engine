@@ -221,7 +221,8 @@ it rather than making each tick longer than the last, and a 10 s stall never bec
 no votes or timeouts. A tick that re-steps a lot runs long on the simulation thread, never the render thread, which
 keeps drawing the last view. Above both floors pe-app raises
 the budget from the measured step cost. Each hold is counted, with its length; the objects that jump when the view resumes are blended and, above
-`E_cue`, cued like any correction (render.md 8, D2-D3). A replay or an import that does not fit in one
+`E_cue`, cued if the rollback went deeper than 0.5 s
+(render.md 8, D2-D3). A replay or an import that does not fit in one
 call returns "pending" and is called again on a later tick. The budget is part of S2 (`Advance::caught_up`,
 `RootError::Pending`, `ImportError::Pending`). M2's second copy then keeps the old prediction moving during a deep
 replay instead of holding the view.
