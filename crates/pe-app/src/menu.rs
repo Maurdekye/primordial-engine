@@ -1196,7 +1196,7 @@ mod tests {
         assert_eq!(out.overlays.len(), 2, "the main panel and the spawn panel");
         let side = m.side.as_ref().expect("the spawn panel");
         let labels: Vec<&str> = side.spec.buttons.iter().map(|b| b.label.as_str()).collect();
-        assert_eq!(labels, ["Box", "Sphere", "Capsule", "Box stack", "Clear"]);
+        assert_eq!(labels, ["Box", "Sphere", "Capsule", "Box stack", "Big crate", "Platform", "Slab", "Clear"]);
         assert_eq!(side.spec.lines, ["Box: spawned"], "the last result shows");
         let main = m.main.as_ref().unwrap().pose.pos;
         assert!((side.pose.pos - main).0[0] > 0.3, "to the right of the main panel");
