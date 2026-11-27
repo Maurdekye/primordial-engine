@@ -94,4 +94,7 @@ machine during the session.
 - **The other player's hands, or the balls they touch, look jumpy or late (more than before):** set
   `PE_COALESCE_TICKS=1` before starting, as in `PE_COALESCE_TICKS=1 ./run.sh ...`. It turns off pose-rollback
   coalescing; the default is 3.
+- **The game runs slower than before and you want to rule out its replay-cost measuring:** it's on by default
+  (the end line's `replay_costs`), and `PE_REPLAY_COSTS=0 ./run.sh ...` turns it off. Its measured cost is within
+  noise.
 - Either way, run `./collect-logs.sh` and send the file.

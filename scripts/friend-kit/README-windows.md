@@ -64,6 +64,9 @@ someone else's session). Any other pe-app option passes through.
 - **The other player's hands, or the balls they touch, look jumpy or late (more than before):** set
   `$env:PE_COALESCE_TICKS = 1` in the PowerShell window before starting. It turns off pose-rollback coalescing; the
   default is 3.
+- **The game runs slower than before and you want to rule out its replay-cost measuring:** it's on by default
+  (the end line's `replay_costs`), and `$env:PE_REPLAY_COSTS = 0` before starting turns it off. Its measured cost
+  is within noise.
 - **The object limit is 52,000 collision shapes, 100 times the last test's,** for a stress test: near it, either
   machine may slow to a crawl, by design. Type `limit` in the game's window to see it, and `limit shapes <n>` to
   change it for both players at once (only the session's players may; 0 is refused).
