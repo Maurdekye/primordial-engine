@@ -19,6 +19,8 @@
 //! `Pos` exactly (it reaches only `pe.log`, on the author's machine), and a script can copy a row's bytes through
 //! `pe.get`; a determined author can recover numbers either way, as `- ORIGIN` already allows.
 
+#![allow(clippy::needless_range_loop)] // per-axis loops read clearest with an index, as in pe-core
+
 use core::fmt;
 use core::marker::PhantomData;
 use core::ops::{Add, AddAssign, Mul, Neg, Sub, SubAssign};
