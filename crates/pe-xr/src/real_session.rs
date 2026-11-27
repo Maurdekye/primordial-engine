@@ -194,6 +194,8 @@ pub struct RealBackend<G: xr::Graphics> {
     pub reference_space: &'static str,
     /// Each hand's joints from the last `read_hand`, with its time, when it came from hand tracking (`hand_joints`).
     joints: [Option<(HostTime, HandJoints)>; 2],
+    /// How long the last `acquire_image` spent in `xrWaitSwapchainImage`, colour and depth (the frame-phase log).
+    image_wait: std::time::Duration,
     /// Declared last, so it drops after the session.
     xr: XrInstance,
 }
@@ -432,6 +434,7 @@ impl<G: xr::Graphics> RealBackend<G> {
                 tracker_error_logged: None,
             }),
             joints: [None, None],
+            image_wait: std::time::Duration::ZERO,
             grasp,
             binding_warnings,
             pose_path: if hand_interaction { PosePath::GripSpace } else { PosePath::PalmJoint },
@@ -768,15 +771,26 @@ impl<G: xr::Graphics> Backend for RealBackend<G> {
     }
 
     fn acquire_image(&mut self) -> Result<ImageIndex, XrError> {
+        self.image_wait = std::time::Duration::ZERO;
+        let mut waited = std::time::Duration::ZERO;
         let live = self.live()?;
         let i = live.swapchain.acquire_image().map_err(xr_err)?;
+        let t = std::time::Instant::now();
         live.swapchain.wait_image(xr::Duration::INFINITE).map_err(xr_err)?;
+        waited += t.elapsed();
         if let Some(d) = &mut live.depth {
             let j = d.swapchain.acquire_image().map_err(xr_err)?;
             d.acquired = Some(j);
+            let t = std::time::Instant::now();
             d.swapchain.wait_image(xr::Duration::INFINITE).map_err(xr_err)?;
+            waited += t.elapsed();
         }
+        self.image_wait = waited;
         Ok(ImageIndex(i))
+    }
+
+    fn image_wait(&self) -> Option<std::time::Duration> {
+        Some(self.image_wait)
     }
 
     fn depth_image(&self) -> Option<ImageIndex> {

@@ -846,11 +846,12 @@ fn main() {
                 captures: captures.clone(),
                 report: report.clone(),
                 shown: Some(display_lead.clone()),
-                ui: menu_seed.clone().map(|s| {
+                // The menu, with the frame-rate counter under the wrist button (pe_app::fps), menu or not.
+                ui: Some(Box::new(pe_app::fps::FpsUi::new(menu_seed.clone().map(|s| {
                     let host = pe_app::menu::AppHost::new(s.files, s.replies, console.clone())
                         .with_link_notes(link_notes.clone());
                     Box::new(pe_app::menu::Menu::new(s.role, Box::new(host))) as Box<dyn pe_render::menu::Ui>
-                }),
+                })))),
                 // The move feed the drawn rig turns with (locomotion L4c): pe-xr's MoveRing once L4a/L4b wire it, the
                 // same Arc the simulation samples.
                 // L4c: the sink's drawn rig reads the same ring the simulation does.
@@ -940,12 +941,13 @@ fn main() {
         run_for: run_for.map(|d| d.saturating_sub(started.elapsed()).max(Duration::from_millis(1))),
         snapshot: None,
         captures: captures.clone(),
-        // The menu, if VR didn't take it (a run in the window, or VR that ended).
-        ui: menu_seed.take().map(|s| {
+        // The menu, if VR didn't take it (a run in the window, or VR that ended), with the frame-rate counter at the top
+        // of the window (pe_app::fps), menu or not.
+        ui: Some(Box::new(pe_app::fps::FpsUi::new(menu_seed.take().map(|s| {
             let host =
                 pe_app::menu::AppHost::new(s.files, s.replies, console.clone()).with_link_notes(link_notes.clone());
             Box::new(pe_app::menu::Menu::new(s.role, Box::new(host))) as Box<dyn pe_render::menu::Ui>
-        }),
+        })))),
         moves: Some(desktop_moves),
         walk: Default::default(),
     };

@@ -149,6 +149,11 @@ pub trait Backend {
     }
     /// Acquire, then wait for, this frame's swapchain image.
     fn acquire_image(&mut self) -> Result<ImageIndex, XrError>;
+    /// How long the last [`Backend::acquire_image`] waited for its images (`xrWaitSwapchainImage`), when the backend
+    /// times it: the frame-phase log ([`crate::phases`]) reports it apart from the acquire.
+    fn image_wait(&self) -> Option<std::time::Duration> {
+        None
+    }
     /// The depth image acquired with the colour image, when the runtime takes depth (spec 4.2).
     fn depth_image(&self) -> Option<ImageIndex> {
         None

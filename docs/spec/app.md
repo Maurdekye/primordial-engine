@@ -862,7 +862,15 @@ from a menu instead of the console (crate::menu, on pe-render's panels, render.m
 - **Per drawn frame, never per tick** (the user's ruling): the panels, rays and cursors are placed each
   rendered frame from that frame's head and hand poses (in VR, pe-xr's poses at the predicted display time), and the
   hit test is against the panels as drawn. Only a button's action reaches the simulation, as a session change or a
-  later pe-api call (S4's spawn panel); the simulation never reads the menu.
+  later pe-api call (S4's spawn panel); the simulation never reads the menu. A panel's image is made once per
+  content, hover and press, and the wrist button's panel is kept while the wrist is tracked, so a still menu
+  uploads no texture (pe-render reuses an overlay's texture by image, then by size; the 11-27 kit).
+- **The frame-rate counter** (the 11-27 kit, crate::fps): "N fps", the frames drawn over the last second, under
+  the wrist button in VR while the left wrist is tracked, and at the top of the window. It shows with or without the
+  menu. With `PE_XR_LOG=1` (the kit sets it), the VR sink also logs every 5 s pe-render's CPU time per frame
+  (reading back the GPU timer, preparing, recording, `queue.submit`), the GPU time, the views the simulation
+  published, the frames they re-simulated, and the overlay textures made and written. A line for the run comes at
+  the end, beside pe-xr's frame phases (xr.md 10.4).
 
 ### 4.2 The spawn panel (friend test, S4)
 

@@ -27,6 +27,7 @@ pub mod loader;
 pub mod locomotion;
 pub mod math;
 pub mod open;
+pub mod phases;
 pub mod pointer;
 pub mod real;
 pub mod real_session;

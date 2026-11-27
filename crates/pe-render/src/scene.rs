@@ -256,6 +256,16 @@ pub struct FrameStats {
     pub draws: u32,
     pub lights: u32,
     pub cpu_record_ms: f64,
+    /// Parts of `cpu_record_ms`, for finding a CPU stall in the driver: reading back an earlier frame's GPU time
+    /// (`harvest_ms`), building the scene's buffers and overlay textures (`prepare_ms`) and `queue.submit` itself
+    /// (`submit_ms`). The rest is recording the passes and finishing the encoder.
+    pub harvest_ms: f64,
+    pub prepare_ms: f64,
+    pub submit_ms: f64,
+    /// Overlay images that needed a new texture this frame, and those written into a slot's texture of the same size
+    /// (an image already shown is drawn as it is).
+    pub overlay_uploads: u32,
+    pub overlay_writes: u32,
     /// A GPU time that arrived during this call: an earlier frame's, usually one or two frames back. `None` when no
     /// new reading arrived (each reading is reported once, review L4), and always on an adapter without timestamp
     /// queries. Captures are not timed.
@@ -459,12 +469,20 @@ struct OverlayGpu {
     layout: wgpu::PipelineLayout,
     sampler: wgpu::Sampler,
     slots: Vec<OverlaySlot>,
+    /// This frame's overlays, in drawing order, as indices into `slots`.
+    order: Vec<usize>,
 }
 
-/// One overlay's uniform, and the texture of the image it last uploaded (again only when the `Arc` changes).
+/// One overlay's uniform, and the image it shows with its texture and bind group.
 struct OverlaySlot {
     uniform: wgpu::Buffer,
-    current: Option<(Arc<OverlayImage>, wgpu::BindGroup)>,
+    current: Option<SlotImage>,
+}
+
+struct SlotImage {
+    image: Arc<OverlayImage>,
+    texture: wgpu::Texture,
+    bind: wgpu::BindGroup,
 }
 
 struct Targets {
@@ -930,11 +948,14 @@ impl Renderer {
     pub(crate) fn draw(&mut self, scene: &Scene, views: &[EyeView<'_>], timed: bool) -> FrameStats {
         let t0 = std::time::Instant::now();
         let fresh = self.timer.as_mut().and_then(|t| t.harvest(&self.ctx.device));
+        let harvested = t0.elapsed();
         let timing = if timed { self.timer.as_mut().and_then(GpuTimer::begin) } else { None };
         let mut stats = FrameStats { views: views.len() as u32, ..Default::default() };
         let Some(first) = views.first() else { return stats };
         let samples = self.settings.msaa.max(1);
         let p = self.prepare(scene, first.camera.pose.pos, &mut stats);
+        stats.harvest_ms = harvested.as_secs_f64() * 1e3;
+        stats.prepare_ms = (t0.elapsed() - harvested).as_secs_f64() * 1e3;
 
         // One uniform slot per view, plus one for the shadow pass.
         let shadow_slot = views.len() as u64;
@@ -988,6 +1009,7 @@ impl Renderer {
     pub fn render_stereo(&mut self, scene: &Scene, eyes: [Camera; 2], target: &StereoTarget<'_>) -> FrameStats {
         let t0 = std::time::Instant::now();
         let fresh = self.timer.as_mut().and_then(|t| t.harvest(&self.ctx.device));
+        let harvested = t0.elapsed();
         let timing = self.timer.as_mut().and_then(GpuTimer::begin);
         let mut stats = FrameStats { views: 2, ..Default::default() };
         let samples = self.settings.msaa.max(1);
@@ -996,6 +1018,8 @@ impl Renderer {
         let extent = [target.extent[0].clamp(1, size[0]), target.extent[1].clamp(1, size[1])];
         let multiview = self.multiview_available(samples);
         let p = self.prepare(scene, eyes[0].pose.pos, &mut stats);
+        stats.harvest_ms = harvested.as_secs_f64() * 1e3;
+        stats.prepare_ms = (t0.elapsed() - harvested).as_secs_f64() * 1e3;
 
         // The headset's depth: drawn into directly when it is single-sampled Depth32Float like ours; otherwise
         // drawn into our own and resolved into it.
@@ -1193,7 +1217,7 @@ impl Renderer {
         );
         // wgpu's clip space is glam's DirectX convention: depth 0..1, +Y up.
         let light_vp = glam::camera::rh::proj::directx::orthographic(-e, e, -e, e, 0.0, 4.0 * e) * light_view;
-        let overlays = self.prepare_overlays(&scene.overlays, anchor);
+        let overlays = self.prepare_overlays(&scene.overlays, anchor, stats);
         Prepared {
             overlays,
             ranges,
@@ -1347,8 +1371,8 @@ impl Renderer {
     /// The overlays, if this frame has any: after the scene's items, before the front items, in order.
     fn overlay_draw(&self, rp: &mut wgpu::RenderPass<'_>, p: &Prepared, pl: &Pipelines) -> u32 {
         let mut draws = 0;
-        for slot in &self.overlay.slots[..p.overlays] {
-            let Some((_, bg)) = slot.current.as_ref() else { continue };
+        for &k in &self.overlay.order[..p.overlays] {
+            let Some(SlotImage { bind: bg, .. }) = self.overlay.slots[k].current.as_ref() else { continue };
             if draws == 0 {
                 rp.set_pipeline(&pl.overlay);
             }
@@ -1361,31 +1385,80 @@ impl Renderer {
 
     /// Upload each overlay's model matrix into its slot, and its image when the slot's `Arc` changed. An overlay with
     /// a malformed image is skipped. The count of slots filled, in order.
-    fn prepare_overlays(&mut self, overlays: &[Overlay], anchor: Pos) -> usize {
-        let mut n = 0;
-        for ov in overlays {
-            let img = &ov.image;
-            if img.width == 0 || img.height == 0 || img.rgba.len() as u64 != img.width as u64 * img.height as u64 * 4 {
+    /// Gives each overlay a slot, in order, and returns how many there are. An image a slot already shows (the same
+    /// `Arc`) is drawn from that slot wherever it is in the list, so an overlay that comes or goes (a cursor, a notice)
+    /// moves no other overlay's texture. A new image goes into a free slot whose texture has its size, written in
+    /// place, and only otherwise into a new texture: a menu panel that changes its hover rewrites its texture
+    /// (friend test 2026-11-26, a slow frame at each hover on NVIDIA 620.73).
+    fn prepare_overlays(&mut self, overlays: &[Overlay], anchor: Pos, stats: &mut FrameStats) -> usize {
+        let valid: Vec<&Overlay> = overlays
+            .iter()
+            .filter(|ov| {
+                let img = &ov.image;
+                img.width > 0 && img.height > 0 && img.rgba.len() as u64 == img.width as u64 * img.height as u64 * 4
+            })
+            .collect();
+        let gpu = &mut self.overlay;
+        let (slots, bgl, sampler) = (&mut gpu.slots, &gpu.bgl, &gpu.sampler);
+        let mut taken = vec![false; slots.len()];
+        let mut assigned: Vec<Option<usize>> = vec![None; valid.len()];
+        // The same image a slot already shows.
+        for (i, ov) in valid.iter().enumerate() {
+            let same = (0..slots.len())
+                .find(|&k| !taken[k] && slots[k].current.as_ref().is_some_and(|c| Arc::ptr_eq(&c.image, &ov.image)));
+            if let Some(k) = same {
+                taken[k] = true;
+                assigned[i] = Some(k);
+            }
+        }
+        // A new image: a free slot of its size, written in place; else a free slot or a new one, with a new texture.
+        for (i, ov) in valid.iter().enumerate() {
+            if assigned[i].is_some() {
                 continue;
             }
-            if self.overlay.slots.len() == n {
-                let slot = self.overlay.slot(&self.ctx.device);
-                self.overlay.slots.push(slot);
-            }
+            let img = &ov.image;
+            let sized = (0..slots.len()).find(|&k| {
+                !taken[k]
+                    && slots[k]
+                        .current
+                        .as_ref()
+                        .is_some_and(|c| c.image.width == img.width && c.image.height == img.height)
+            });
+            let k = if let Some(k) = sized {
+                let cur = slots[k].current.as_mut().expect("a sized slot shows an image");
+                write_overlay(&self.ctx.queue, &cur.texture, img);
+                cur.image = img.clone();
+                stats.overlay_writes += 1;
+                k
+            } else {
+                let k = match (0..slots.len()).find(|&k| !taken[k]) {
+                    Some(k) => k,
+                    None => {
+                        slots.push(OverlayGpu::slot(&self.ctx.device));
+                        taken.push(false);
+                        slots.len() - 1
+                    }
+                };
+                let (texture, bind) = OverlayGpu::upload(&self.ctx, bgl, sampler, &slots[k].uniform, img);
+                slots[k].current = Some(SlotImage { image: img.clone(), texture, bind });
+                stats.overlay_uploads += 1;
+                k
+            };
+            taken[k] = true;
+            assigned[i] = Some(k);
+        }
+        self.overlay.order.clear();
+        for (ov, k) in valid.iter().zip(assigned) {
+            let k = k.expect("every overlay was given a slot");
             let model = anchored_model(anchor, &ov.pose, [ov.size[0], ov.size[1], 1.0]);
             self.ctx.queue.write_buffer(
-                &self.overlay.slots[n].uniform,
+                &self.overlay.slots[k].uniform,
                 0,
                 bytemuck::bytes_of(&OverlayUniform { model: model.to_cols_array_2d() }),
             );
-            let fresh = self.overlay.slots[n].current.as_ref().is_some_and(|(cur, _)| Arc::ptr_eq(cur, img));
-            if !fresh {
-                let bg = self.overlay.upload(&self.ctx, &self.overlay.slots[n].uniform, img);
-                self.overlay.slots[n].current = Some((img.clone(), bg));
-            }
-            n += 1;
+            self.overlay.order.push(k);
         }
-        n
+        self.overlay.order.len()
     }
 
     fn depth_copy_pipeline(&mut self, format: wgpu::TextureFormat, multisampled: bool) {
@@ -1480,7 +1553,10 @@ impl Renderer {
         if let (Some(slot), Some(t)) = (timing, self.timer.as_ref()) {
             t.resolve(&mut enc, slot);
         }
-        self.ctx.queue.submit([enc.finish()]);
+        let commands = enc.finish();
+        let submit = std::time::Instant::now();
+        self.ctx.queue.submit([commands]);
+        stats.submit_ms = submit.elapsed().as_secs_f64() * 1e3;
         if let (Some(slot), Some(t)) = (timing, self.timer.as_mut()) {
             t.submitted(slot);
         }
@@ -1612,10 +1688,10 @@ impl OverlayGpu {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        OverlayGpu { bgl, layout, sampler, slots: Vec::new() }
+        OverlayGpu { bgl, layout, sampler, slots: Vec::new(), order: Vec::new() }
     }
 
-    fn slot(&self, device: &wgpu::Device) -> OverlaySlot {
+    fn slot(device: &wgpu::Device) -> OverlaySlot {
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("overlay"),
             size: std::mem::size_of::<OverlayUniform>() as u64,
@@ -1625,7 +1701,13 @@ impl OverlayGpu {
         OverlaySlot { uniform, current: None }
     }
 
-    fn upload(&self, ctx: &GpuContext, uniform: &wgpu::Buffer, img: &OverlayImage) -> wgpu::BindGroup {
+    fn upload(
+        ctx: &GpuContext,
+        bgl: &wgpu::BindGroupLayout,
+        sampler: &wgpu::Sampler,
+        uniform: &wgpu::Buffer,
+        img: &OverlayImage,
+    ) -> (wgpu::Texture, wgpu::BindGroup) {
         let size = wgpu::Extent3d { width: img.width, height: img.height, depth_or_array_layers: 1 };
         let tex = ctx.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("overlay"),
@@ -1637,28 +1719,34 @@ impl OverlayGpu {
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        ctx.queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &tex,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &img.rgba,
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(img.width * 4), rows_per_image: None },
-            size,
-        );
+        write_overlay(&ctx.queue, &tex, img);
         let view = tex.create_view(&Default::default());
-        ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let bind = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("overlay"),
-            layout: &self.bgl,
+            layout: bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&view) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(sampler) },
             ],
-        })
+        });
+        (tex, bind)
     }
+}
+
+/// An overlay image into its texture, which has the image's size.
+fn write_overlay(queue: &wgpu::Queue, tex: &wgpu::Texture, img: &OverlayImage) {
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: tex,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &img.rgba,
+        wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(img.width * 4), rows_per_image: None },
+        wgpu::Extent3d { width: img.width, height: img.height, depth_or_array_layers: 1 },
+    );
 }
 
 fn anchored_model(anchor: Pos, pose: &WorldPose, s: [f32; 3]) -> Mat4 {
