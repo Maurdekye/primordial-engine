@@ -84,8 +84,6 @@ impl Kind {
         }
     }
 
-    /// How far apart two of it go on a grid or a row, m: the small ones' [`GRID_STEP`], a heavy one's width and
-    /// 0.5 m more.
     /// How far a counted spawn's next layer goes above the last (`grid_at`): a stack's or a heavy one's height and a
     /// little more, so it settles on the one below; a small one's [`GRID_STEP`], since it falls.
     pub fn layer_height(self) -> f64 {
@@ -96,6 +94,8 @@ impl Kind {
         }
     }
 
+    /// How far apart two of it go on a grid or a row, m: the small ones' [`GRID_STEP`], a heavy one's width and
+    /// 0.5 m more.
     pub fn spacing(self) -> f64 {
         self.heavy_half().map_or(GRID_STEP, |h| 2.0 * f64::from(h[0].max(h[2])) + 0.5)
     }
@@ -394,6 +394,7 @@ fn limits_now(api: &dyn WorldApi, c: &Caller) -> String {
 pub fn console_at(k: Kind, n: u32) -> [f64; 3] {
     if k.heavy_half().is_some() {
         // A heavy one goes 1.5 m further out than the small ones' rows, its width apart, so it never lands on them.
+        // Its places repeat every 9 (3 by 3): the 10th of a kind lands on the 1st, fine for a test session.
         let step = k.spacing();
         let z = CONSOLE_AT[2] - 1.5 - step * (1.0 + f64::from((n / 3) % 3));
         return [CONSOLE_AT[0] + step * f64::from(n % 3), k.on_floor().unwrap_or(0.0), z];
