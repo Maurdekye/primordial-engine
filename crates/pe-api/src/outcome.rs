@@ -641,10 +641,12 @@ mod tests {
     #[test]
     fn a_change_past_the_world_s_shape_limit_is_too_large_with_the_counts() {
         use pe_world::components::{Shape, shape_kind};
-        use pe_world::edit::MAX_SHAPES;
-        let max = MAX_SHAPES as u128;
+        // The world's own limit as a `Limits` row on the Table (world-model.md 7.1): the build's 52,000 would make
+        // this test build 52,000 objects twice.
+        let max = 520u128;
         let with = |n: u128| {
             world_with(|w| {
+                w.set_limits(id(10), pe_world::components::Limits { max_shapes: max as u32 }).unwrap();
                 let ball =
                     Shape { kind: shape_kind::SPHERE, density: 20.0, size: [0.06, 0.0, 0.0], ..Shape::default() };
                 w.insert(id(50), ball).unwrap();

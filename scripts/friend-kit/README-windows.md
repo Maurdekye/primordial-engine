@@ -49,6 +49,14 @@ someone else's session). Any other pe-app option passes through.
   however far behind it is. Nothing stops, and the other player keeps moving. A short hitch adds about 1.5 s and
   recovers in a few seconds.
 - **Mesh colliders are off in this build.**
+- **The object limit is 52,000 collision shapes, 100 times the last test's,** for a stress test: near it, either
+  machine may slow to a crawl, by design. Type `limit` in the game's window to see it, and `limit shapes <n>` to
+  change it for both players at once (only the session's players may; 0 is refused).
+- **An agent on this machine can drive the game:** pe-app's MCP server is on, reachable from this computer only
+  (127.0.0.1), never from the network. Its address and key are in `friend-test/mcp.json` beside the identity file
+  while the game runs; they are not in the logs.
+- **Joining a crowded world:** a join with about 4,700 objects in the world took about 20 s. A join while the other
+  machine is still spawning thousands of objects can time out: let the spawning finish (or Clear), then join again.
 
 ## The logs
 

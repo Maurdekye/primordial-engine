@@ -86,6 +86,16 @@ impl Kind {
 
     /// How far apart two of it go on a grid or a row, m: the small ones' [`GRID_STEP`], a heavy one's width and
     /// 0.5 m more.
+    /// How far a counted spawn's next layer goes above the last (`grid_at`): a stack's or a heavy one's height and a
+    /// little more, so it settles on the one below; a small one's [`GRID_STEP`], since it falls.
+    pub fn layer_height(self) -> f64 {
+        match (self, self.heavy_half()) {
+            (Kind::Stack, _) => STACK_LAYER,
+            (_, Some(h)) => 2.0 * f64::from(h[1]) + 0.1,
+            _ => GRID_STEP,
+        }
+    }
+
     pub fn spacing(self) -> f64 {
         self.heavy_half().map_or(GRID_STEP, |h| 2.0 * f64::from(h[0].max(h[2])) + 0.5)
     }
@@ -102,6 +112,9 @@ pub enum Job {
     Spawn(Kind, [f64; 3]),
     /// Delete everything under `/Spawned`.
     Clear,
+    /// Set the world's shape limit (`/World settings`' `Limits.max_shapes`, world-model.md 7.1): an ordinary edit,
+    /// so every member switches at its frame.
+    Limit(u32),
 }
 
 /// How often the worker looks for `/Spawned` while it hasn't found it.
@@ -125,19 +138,32 @@ const CONSOLE_AT: [f64; 3] = [-0.6, 0.8, -1.0];
 
 /// Where the console's counted `spawn <kind> <count>` starts its grid: 3 m in front of the origin, past the single
 /// spawns' rows, 0.8 m up (a stack on the floor), [`GRID_ACROSS`] to a row [`GRID_STEP`] apart, each row
-/// [`GRID_STEP`] further ahead. A stack's boxes are 0.15 m across, so one that falls reaches its neighbours. Wide
-/// enough that all [`COUNT_MAX`] places are on the plane's 20 m floor: 18 rows, out to 8.1 m ahead (@xr-eng's L1).
+/// [`GRID_STEP`] further ahead, [`grid_rows`] rows to a layer, and each layer [`GRID_STEP`] above the last (a stack's
+/// layers [`STACK_LAYER`] apart). A stack's boxes are 0.15 m across, so one that falls reaches its neighbours. The layer
+/// keeps to the ground @world-chunks keeps clear of the course (x -4.5 to 7.0, z -3 to -30), and to
+/// the floor's own edge less 1 m.
 pub const GRID_AT: [f64; 3] = [-4.35, 0.8, -3.0];
 pub const GRID_STEP: f64 = 0.3;
-pub const GRID_ACROSS: u32 = 30;
-/// The most one counted `spawn` queues: the world's shape limit (pe-world `MAX_SHAPES`, world-model.md 7.1), past
-/// which every spawn is refused anyway.
-pub const COUNT_MAX: u32 = 520;
+pub const GRID_ACROSS: u32 = 38;
+/// The course's clear ground ends 30 m ahead (@world-chunks).
+const GRID_FAR: f64 = 30.0;
+/// The most one counted `spawn` queues: the build's shape limit (pe-world `MAX_SHAPES`, world-model.md 7.1). A world
+/// whose `Limits` row says less refuses the rest; one that says more takes them in several counts.
+pub const COUNT_MAX: u32 = pe_world::edit::MAX_SHAPES as u32;
+
+/// Rows to a layer of the counted spawn's grid, `step` apart: as far as the course's clear ground, and the floor's
+/// edge less 1 m.
+pub fn grid_rows(step: f64) -> u32 {
+    let far = GRID_FAR.min(pe_world::preset::PLANE_SIDE / 2.0 - 1.0);
+    (((far + GRID_AT[2]) / step).floor() as u32 + 1).max(1)
+}
 
 /// The jobs' queue and their last status.
 pub struct Spawner {
     tx: Mutex<Sender<Job>>,
     state: Arc<Mutex<State>>,
+    /// The world's limits now, as the console's `limit` says them (a read, on the caller's thread).
+    limits: Box<dyn Fn() -> String + Send + Sync>,
 }
 
 #[derive(Default)]
@@ -168,8 +194,12 @@ impl Spawner {
     pub fn start(api: Arc<dyn WorldApi>, member: MemberKey) -> Option<Arc<Spawner>> {
         let (tx, rx) = channel();
         let state = Arc::new(Mutex::new(State::default()));
-        let s = Arc::new(Spawner { tx: Mutex::new(tx), state: state.clone() });
         let caller = person(member);
+        let limits = {
+            let (api, caller) = (api.clone(), caller.clone());
+            Box::new(move || limits_now(&*api, &caller))
+        };
+        let s = Arc::new(Spawner { tx: Mutex::new(tx), state: state.clone(), limits });
         let started =
             std::thread::Builder::new().name("pe-spawn".into()).spawn(move || work(&*api, &caller, &rx, &state));
         if let Err(e) = started {
@@ -198,6 +228,7 @@ impl Spawner {
         st.status = Some(match &job {
             Job::Spawn(k, _) => format!("{}: spawning…{queued}", k.template()),
             Job::Clear => format!("Clearing…{queued}"),
+            Job::Limit(n) => format!("Shape limit {n}: setting…{queued}"),
         });
         true
     }
@@ -210,6 +241,20 @@ impl Spawner {
     /// The last job's result.
     pub fn status(&self) -> Option<String> {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).status.clone()
+    }
+
+    /// The console's `limit` (the world's shape limit) and `limit shapes <n>` (a change to it, through the worker).
+    pub fn on_limit(&self, args: &str) -> Result<String, String> {
+        match parse_limit(args)? {
+            Some(n) => {
+                if self.ask(Job::Limit(n)) {
+                    Ok(format!("limit shapes {n}: queued"))
+                } else {
+                    Err(self.status().unwrap_or_default())
+                }
+            }
+            None => Ok((self.limits)()),
+        }
     }
 
     /// The console's `spawn box|sphere|capsule|stack|clear` (@engine-architect), or `spawn <kind>
@@ -288,11 +333,61 @@ fn words_list() -> String {
 /// away from the origin; a stack on the floor.
 pub fn grid_at(k: Kind, n: u32) -> [f64; 3] {
     let step = k.spacing();
-    // A heavy kind's rows are as wide as the small ones' (GRID_ACROSS × GRID_STEP), so fewer to a row.
+    // A heavy kind's rows are as wide as the small ones' (GRID_ACROSS × GRID_STEP), so fewer to a row; a layer
+    // keeps to the clear ground (`grid_rows`), and the next layer goes above it.
     let across = ((f64::from(GRID_ACROSS) * GRID_STEP / step) as u32).max(1);
+    let rows = grid_rows(step);
     let x = GRID_AT[0] + step * f64::from(n % across);
-    let z = GRID_AT[2] - step * f64::from(n / across);
-    [x, k.on_floor().unwrap_or(GRID_AT[1]), z]
+    let z = GRID_AT[2] - step * f64::from((n / across) % rows);
+    let layer = f64::from(n / (across * rows));
+    let y = match k.on_floor() {
+        Some(y) => y + k.layer_height() * layer,
+        None => GRID_AT[1] + GRID_STEP * layer,
+    };
+    [x, y, z]
+}
+
+/// A counted stack's layer height: a template stack stands about 0.77 m (five 0.15 m boxes and their gaps), so the
+/// next layer starts clear of it and settles on top rather than inside (@design-reviewer's L1).
+pub const STACK_LAYER: f64 = 0.8;
+
+/// The console's `limit [shapes <n>]`: the world's shape limit now, or a change to it (an edit, agreed by every
+/// member). `args` follows the word.
+pub fn parse_limit(args: &str) -> Result<Option<u32>, String> {
+    let words: Vec<&str> = args.split_whitespace().collect();
+    match words[..] {
+        [] => Ok(None),
+        ["shapes", n] => match n.parse::<u32>() {
+            Ok(v) if (1..=pe_world::components::SHAPES_CEILING).contains(&v) => Ok(Some(v)),
+            _ => Err(format!("`limit shapes {n}`: a whole number from 1 to {}", pe_world::components::SHAPES_CEILING)),
+        },
+        _ => Err("say `limit` to see the world's limits, or `limit shapes <n>` to change the shape limit".into()),
+    }
+}
+
+/// A shape-limit change's transaction: `/World settings`' `Limits.max_shapes`.
+pub fn limit_tx(n: u32) -> Transaction {
+    serde_json::from_value(json!({"label": format!("Shape limit {n}"), "ops": [{
+        "op": "set", "id": SETTINGS, "field": "Limits.max_shapes", "value": n
+    }]}))
+    .expect("a limit change is a transaction")
+}
+
+/// The root that carries the world's `Limits` row (pe-world `preset::plane_names::SETTINGS`).
+pub const SETTINGS: &str = "/World settings";
+
+/// The world's shape limit and shape count now, for the console.
+fn limits_now(api: &dyn WorldApi, c: &Caller) -> String {
+    let q: Query = serde_json::from_value(json!({"where": {"path": SETTINGS}, "fields": ["Limits"]})).expect("a query");
+    let shown = api
+        .query(c, &q)
+        .ok()
+        .and_then(|r| serde_json::to_value(&r).ok())
+        .and_then(|v| v["objects"][0]["components"]["Limits"]["max_shapes"].as_u64());
+    match shown {
+        Some(n) => format!("the world's shape limit is {n}"),
+        None => format!("this world has no Limits row: its shape limit is the build's, {}", pe_world::edit::MAX_SHAPES),
+    }
 }
 
 /// The console's `n`-th spawn's place: a row of five in front of the origin, a stack on the floor.
@@ -427,6 +522,12 @@ fn work(api: &dyn WorldApi, c: &Caller, rx: &Receiver<Job>, state: &Mutex<State>
             match &job {
                 Job::Spawn(k, at) => said(k.template(), paced(api, c, &spawn_tx(*k, *at), &ApplyOpts::default())),
                 Job::Clear => clear(api, c),
+                Job::Limit(n) => match api.apply(c, limit_tx(*n), &ApplyOpts::default()) {
+                    Ok(o) if matches!(o.status, Status::Accepted | Status::Final) => {
+                        format!("Shape limit {n}: set (every member switches at this change's frame)")
+                    }
+                    r => said(&format!("Shape limit {n}"), r),
+                },
             }
         };
         crate::out!("spawn: {said}");
@@ -630,6 +731,34 @@ mod tests {
         crate::api::Ports::new(w.snapshot(pe_seams::Frame(4)), facts, || {}).api()
     }
 
+    /// The console's `limit` reads the plane's `Limits` row, and `limit shapes <n>` is an edit pe-api accepts from an
+    /// admin and refuses from anyone else (the friend test 11-27; world-model.md 7.1).
+    #[test]
+    fn the_shape_limit_is_read_and_changed_through_the_api() {
+        let me = MemberKey([1; 32]);
+        let (api, c) = (plane_api(me, true), person(me));
+        assert_eq!(limits_now(&*api, &c), format!("the world's shape limit is {}", pe_world::edit::MAX_SHAPES));
+        let dry = ApplyOpts { mode: pe_seams::world_api::Mode::DryRun, ..Default::default() };
+        let o = api.apply(&c, limit_tx(600), &dry).expect("an answer");
+        assert_eq!(o.status, Status::Accepted, "{:?}", o.refusal);
+        // A member without admin.
+        let guest = MemberKey([2; 32]);
+        let line = pe_seams::LineId(pe_seams::Hash([7; 32]));
+        let mut w = pe_world::preset::plane_on(line, 5, pe_world::BlobStore::default(), pe_seams::Pos::ORIGIN);
+        w.set_member(guest, pe_world::perm::EDIT);
+        w.set_frame(pe_seams::Frame(4));
+        let facts =
+            crate::api::Facts { world_name: "Plane".into(), line, rate: pe_seams::SimRate::DEFAULT, me: Some(guest) };
+        let theirs = crate::api::Ports::new(w.snapshot(pe_seams::Frame(4)), facts, || {}).api();
+        let o = theirs.apply(&person(guest), limit_tx(600), &dry).expect("an answer");
+        assert_eq!(o.status, Status::Refused);
+        assert_eq!(
+            parse_limit(" shapes 0"),
+            Err(format!("`limit shapes 0`: a whole number from 1 to {}", pe_world::components::SHAPES_CEILING))
+        );
+        assert_eq!((parse_limit(""), parse_limit(" shapes 700")), (Ok(None), Ok(Some(700))));
+    }
+
     #[test]
     fn every_spawn_is_accepted_on_the_plane_and_the_pit_has_no_spawned() {
         let me = MemberKey([1; 32]);
@@ -770,8 +899,8 @@ mod tests {
         assert_eq!(parse_command("clear"), Ok(Command::Clear));
         assert_eq!(parse_command("stack"), Ok(Command::One(Kind::Stack)));
         assert_eq!(parse_command("stack 102"), Ok(Command::Many(Kind::Stack, 102)));
-        assert_eq!(parse_command("box  520"), Ok(Command::Many(Kind::Box, COUNT_MAX)));
-        for bad in ["stack 0", "stack 521", "stack x", "stack -3", "clear 3", "stack 2 3", "ball 4", ""] {
+        assert_eq!(parse_command("box  52000"), Ok(Command::Many(Kind::Box, COUNT_MAX)));
+        for bad in ["stack 0", "stack 52001", "stack x", "stack -3", "clear 3", "stack 2 3", "ball 4", ""] {
             assert!(parse_command(bad).is_err(), "`{bad}` refused");
         }
         assert_eq!(grid_at(Kind::Box, 0), GRID_AT);
@@ -787,6 +916,12 @@ mod tests {
             }
         }
         assert!((grid_at(Kind::Box, GRID_ACROSS)[2] - (GRID_AT[2] - GRID_STEP)).abs() < 1e-9, "the second row");
+        // A full layer on, the same place a layer up: a stack clear of the one below (@design-reviewer's L1).
+        let layer = GRID_ACROSS * grid_rows(GRID_STEP);
+        let (low, high) = (grid_at(Kind::Stack, 0), grid_at(Kind::Stack, layer));
+        assert_eq!((low[0], low[2]), (high[0], high[2]));
+        assert!((high[1] - low[1] - STACK_LAYER).abs() < 1e-9, "{low:?} {high:?}");
+        assert!((grid_at(Kind::Box, layer)[1] - GRID_AT[1] - GRID_STEP).abs() < 1e-9);
         // Every place a count allows is on the plane's floor, a metre in from its edge, carried over or not
         // (@xr-eng's L1: 10 to a row went off the floor past 240).
         let edge = pe_world::preset::PLANE_SIDE / 2.0 - 1.0;
@@ -802,7 +937,7 @@ mod tests {
         assert_eq!(o.status, Status::Accepted, "{:?}", o.refusal);
     }
 
-    /// pe-api takes 20 changes a second with a burst of 40 (api.md 9.3), dry runs too: 60 spawns asked back to back,
+    /// pe-api limits changes per second (api.md 9.3), dry runs too: 60 spawns asked back to back,
     /// as a counted spawn's jobs come, are each taken once the rate allows, never refused `rate_limited` (K4's R5',
     /// where 43 of 102 were).
     #[test]
@@ -815,8 +950,8 @@ mod tests {
             let o = paced(&*api, &c, &tx, &dry).unwrap_or_else(|e| panic!("spawn {i}: {e:?}"));
             assert_eq!(o.status, Status::Accepted, "spawn {i}: {:?}", o.refusal);
         }
-        // The fixture does limit: with the bucket spent, asking at once is refused.
-        let limited = |r: &Result<Outcome, pe_seams::world_api::ApiError>| matches!(r, Err(e) if e.code == pe_seams::world_api::ErrorCode::RateLimited);
-        assert!((0..10).any(|_| limited(&api.apply(&c, tx.clone(), &dry))), "asked at once, past the burst");
+        // Since the friend test 11-27 the bucket is 2,000 a second with a burst of 4,000 (pe-api rate.rs), which a
+        // test asking back to back can't spend; pe-api's own test (the_rate_limit_applies_per_principal) shows the
+        // bucket refusing at a lower rate.
     }
 }

@@ -499,13 +499,16 @@ fn measure_vote_cost_in_a_stall() {
 
 /// pe-world's shape limit is a rule of the history (world-model.md 7.1, 7.6 step 5; @coordinator-opus):
 /// two replicas, one stepping frame by frame and one in a single call, refuse the same edit with the same reason and
-/// agree on every root. Genesis (its floor's shape) and `MAX_SHAPES - 2` shaped objects; an edit adding two is
-/// refused at `MAX_SHAPES + 1`, and a later one adding one applies.
+/// agree on every root. Genesis (its floor's shape) and `limit - 2` shaped objects; an edit adding two is refused at
+/// `limit + 1`, and a later one adding one applies.
 #[test]
 fn an_edit_past_the_shape_limit_is_refused_by_every_replica() {
-    use pe_world::edit::MAX_SHAPES;
-    let max = MAX_SHAPES;
+    // The world's own limit, as a `Limits` row (7.1): the build's `MAX_SHAPES` (52,000 since the friend test 11-27)
+    // would make this test step 52,000 bodies.
+    let max = 520;
     let mut world = genesis();
+    world.create(oid(9_999), None, MemberKey([1; 32]), GENESIS).expect("the settings object");
+    world.set_limits(oid(9_999), pe_world::components::Limits { max_shapes: max as u32 }).expect("its limits");
     for n in 0..(max - 2) as u128 {
         world.create(oid(10_000 + n), None, MemberKey([1; 32]), GENESIS).expect("an object");
         world.insert(oid(10_000 + n), Transform::at(pos(0.0, 5.0, 0.0))).expect("its transform");

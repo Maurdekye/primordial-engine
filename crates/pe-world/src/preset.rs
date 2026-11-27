@@ -182,6 +182,8 @@ pub mod plane_names {
     pub const LAMP: &str = "Lamp";
     /// The empty root spawned objects go under.
     pub const SPAWNED: &str = "Spawned";
+    /// The root that carries the world's `Limits` row (7.1).
+    pub const SETTINGS: &str = "World settings";
     pub const TEMPLATES: &str = crate::templates::FOLDER;
     /// The templates, in their folder's order.
     pub const BOX: &str = "Box";
@@ -252,6 +254,8 @@ pub fn plane_on(line: LineId, seed: u64, blobs: BlobStore, origin: Pos) -> World
     w.line = line;
     // The plane gives each member a player body (8.2).
     crate::components::register_player(&mut w.store);
+    // The world's limits as a row on their own `World settings` root, so an edit can change them mid-session (7.1).
+    crate::components::register_limits(&mut w.store);
     let tx = plane_transaction(&blobs, origin);
     w.set_member(MemberKey::LOGIC, perm::EDIT);
     let (outcome, mut w) = w.dry_run_draft_state(Frame(0), &draft_in("pe.m1.plane.chain", line, seed), &tx);
@@ -354,6 +358,10 @@ fn plane_transaction(blobs: &BlobStore, origin: Pos) -> Transaction {
         create(&mut ops, under, rows);
         x += f64::from(half[0]) + 1.0;
     }
+    // The world's limits, on a root of their own and as the last op, so the course's and the templates' objects
+    // keep their ids (@world-model).
+    let limits = crate::components::Limits { max_shapes: crate::edit::MAX_SHAPES as u32 };
+    create(&mut ops, Target::Root, vec![row(Transform::at(origin)), name(blobs, &mut used, n::SETTINGS), row(limits)]);
     Transaction {
         inline: vec![],
         actor: Actor::Person,

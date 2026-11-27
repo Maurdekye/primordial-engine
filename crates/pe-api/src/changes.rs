@@ -1515,7 +1515,8 @@ mod tests {
             l.record(&[], Some(4));
         });
         let local = log.wait(tx(7), Wait::Local, Instant::now() + Duration::from_secs(5)).unwrap();
-        assert_eq!(local.status, Status::Accepted);
+        // Final already, if this thread was slower than the other's 20 ms (a loaded machine): local is then answered too.
+        assert!(matches!(local.status, Status::Accepted | Status::Final), "{:?}", local.status);
         let fin = log.wait(tx(7), Wait::Final, Instant::now() + Duration::from_secs(5)).unwrap();
         assert_eq!(fin.status, Status::Final);
         t.join().unwrap();

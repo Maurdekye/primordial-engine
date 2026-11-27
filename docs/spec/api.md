@@ -625,6 +625,12 @@ From `crates/pe-mcp` at 757219f, about 930 lines (file 06; [V] by reading `src/`
   stdio. pe-app's `--agent` gets none, because pe-app reads its own console there (B's reply code, `quit`). On
   Windows, a child that shared a pipe pe-app was reading could hang at start-up (the self-test agent did, in about
   half its runs).
+- **No harness, an agent started by hand** (the friend test 11-27, user): `--mcp-http` without
+  `--agent` writes `friend-test/mcp.json` beside the identity file, holding the URL, a fresh token (24 h, revoked
+  when pe-app quits) and the header to send it in. The file is made new each start, owner-only on Unix and in the
+  per-user data folder on Windows, and removed when hosting ends. The token is never printed, since logs are
+  shared. The friend kit's launchers pass `--mcp-http`, so the game always has its server, on 127.0.0.1 and ::1
+  only.
 
 Dropped: the backends, the engine thread, the simulator view, the test-bench tools (`world_step`, `scenario_*`),
 the `interact` scope, and the server text that called a live peer a simulator (file 06, M6). pe-mcp runs no engine
@@ -936,15 +942,20 @@ one that counts (2, rule 3).
 
 ### 9.3 Limits
 
-A token bucket per principal (file 06, D38 re-run), defaults [I]: 20 transactions per second with a burst of 40; per
+A token bucket per principal (file 06, D38 re-run), defaults [I]: 2,000 transactions per second with a burst of
+4,000 (x100 for the friend test 11-27's stress test; it was 20 and 40), so the shared queue of 256 changes binds
+first; per
 transaction pe-world's limits, 4,096 ops (as written and after selector expansion), 65,536 new objects (copies
 and templates count their whole subtree; pe-world owns the bound) and 1 MiB of payload apart from blobs
 (world-model.md 7.1); at most 1,000,000 objects examined by one change's `where` selectors, each distinct selector
 once [I]; 4 queries and 2 long polls in flight per principal. pe-agree's per-member entry rule (plan 4.3) bounds the member as a whole, whatever its principals do.
 
-**The world's shape limit** (world-model.md 7.1). The world holds at most 520 collision shapes (pe-world's
-`MAX_SHAPES`), the bound the slowest M1 machine was measured to keep up with. A change that would leave more, and more
-than the world has, is refused `too_large` at its dry run, before anything is signed. The refusal gives `limit` and
+**The world's shape limit** (world-model.md 7.1). The world holds at most its `Limits` row's `max_shapes`
+collision shapes, else pe-world's `MAX_SHAPES` (52,000 for the friend test 11-27; it was 520, the bound the slowest
+M1 machine was measured to keep up with). An admin changes it like any field: `set` on `/World settings`,
+`Limits.max_shapes`, refused `not_permitted` for anyone else and `invalid_argument` for 0 or past the ceiling. A
+change that would leave more, and more than the world has, is refused `too_large` at its dry run, before anything
+is signed. The refusal gives `limit` and
 `count`, and its `next` says how many shapes to delete first. A change that adds no shape always passes.
 
 **Names travel inside the entry** (world-model.md 3.4; rulings). A name is at most 255

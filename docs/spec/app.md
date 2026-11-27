@@ -836,9 +836,12 @@ panel sits to the right of the menu's, turned 20 degrees toward the head, and is
 
 - **Buttons:** Box, Sphere, Capsule, Box stack and Clear, with the last result below them ("Box: spawned", "Cleared
   2", "Box: refused (…)"). The console has the same: `spawn box|sphere|capsule|stack|clear` (@engine-architect). For a self-test that fills the world (K4's R5', the shape limit), `spawn <kind> <count>` queues
-  that many, each its own spawn, on a grid of their own: from 3 m in front of the origin, 30 to a row 0.3 m apart,
-  each row 0.3 m further ahead, past the single spawns' rows (which repeat every 20), so all 520 fit on the floor;
-  a count is 1 to 520, and a Clear starts the grid over. pe-api takes 20 changes a second with a burst of 40
+  that many, each its own spawn, on a grid of their own: from 3 m in front of the origin, 38 to a row 0.3 m apart,
+  each row 0.3 m further ahead, past the single spawns' rows (which repeat every 20), as far as the ground
+  @world-chunks keeps clear of the course (30 m ahead) or the floor's edge less 1 m, then in layers 0.3 m above
+  (a stack's layers 0.8 m apart, so each settles on the one below); a count is 1 to `MAX_SHAPES` (52,000), and a Clear starts the grid over.
+  `limit` says the world's shape limit, and `limit shapes <n>` changes it, an admin's edit of `/World settings`
+  that every member takes at its frame (world-model.md 7.1). pe-api takes 2,000 changes a second with a burst of 4,000
   (section 9.3 of api.md), so the worker waits out a `rate_limited` answer and asks again, for up to 5 s a change,
   for every spawn and clear batch, buttons included.
 - **What a press does** (@world-model's interface): one pe-api `apply`, as this machine's member with a
