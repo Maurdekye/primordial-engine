@@ -533,6 +533,14 @@ pub struct Sim {
     leave_wait: Option<Duration>,
     /// The members whose link is down (S4's `LinkDown`, until a `LinkUp`).
     down: std::collections::BTreeSet<MemberKey>,
+    /// The members whose link went quiet (S4's `LinkDegraded`) and was said to have dropped, until a `LinkUp` or a
+    /// `LinkDown`.
+    quiet: std::collections::BTreeSet<MemberKey>,
+    /// The members whose link closed with no `Leave`: nobody comes back into this session, so the console says nothing
+    /// more about their link (@chunks-reviewer's Low).
+    closed: std::collections::BTreeSet<MemberKey>,
+    /// The menu's note about a member's link ([`Sim::with_link_notes`]), and whether this machine opened the session.
+    link_notes: Option<(crate::leave::LinkNotes, bool)>,
     /// What the console should say (app.md 4), drained by [`Sim::take_notices`].
     notices: Vec<String>,
     /// `--inject-fault-at`'s fault ([`crate::fault`]): this process's armed one, which its replica injects. The loop
@@ -873,6 +881,9 @@ impl Sim {
             view_time: ViewTime::default(),
             leave_wait: None,
             down: std::collections::BTreeSet::new(),
+            quiet: std::collections::BTreeSet::new(),
+            closed: std::collections::BTreeSet::new(),
+            link_notes: None,
             notices: Vec::new(),
             fault: crate::fault::armed(),
             replay: None,
@@ -1047,18 +1058,68 @@ impl Sim {
     /// in hand left before the session confirmed it; one with no `Leave` dropped and may come back; one already out of
     /// the epoch left as it should.
     fn link_down(&mut self, peer: MemberKey, present: Frame) {
+        self.quiet.remove(&peer);
         // A member that is leaving itself says only how its own quit ended (`SimThread::leave_and_stop`).
         if !self.down.insert(peer) || self.local_member() == Some(peer) || self.leaving != Leaving::Staying {
             return;
         }
-        let notice = if !self.agree.members().contains(&peer) {
-            crate::leave::left(peer)
+        let (notice, note) = if !self.agree.members().contains(&peer) {
+            (crate::leave::left(peer), None)
         } else if self.holds_leave_of(peer, present) {
-            crate::leave::stranded(peer)
+            (crate::leave::stranded(peer), None)
         } else {
-            crate::leave::dropped(peer)
+            // Closed at `T_idle` with no `Leave`: nobody can come back into this session (app.md 4, step 3).
+            self.closed.insert(peer);
+            let opener = self.link_notes.as_ref().is_some_and(|(_, o)| *o);
+            (crate::leave::gone(peer, opener), Some(crate::leave::LinkNote::gone(peer, opener)))
         };
         self.notices.push(notice);
+        self.set_link_note(note);
+    }
+
+    /// A member's link went quiet (S4's `LinkDegraded`): the console and the menu say it dropped, and for how long it
+    /// may come back (app.md 4, step 3).
+    fn link_quiet(&mut self, peer: MemberKey) {
+        if self.down.contains(&peer)
+            || self.closed.contains(&peer)
+            || self.local_member() == Some(peer)
+            || self.leaving != Leaving::Staying
+            || !self.agree.members().contains(&peer)
+            || !self.quiet.insert(peer)
+        {
+            return;
+        }
+        self.notices.push(crate::leave::dropped(peer));
+        self.set_link_note(Some(crate::leave::LinkNote::dropped(peer)));
+    }
+
+    /// A member's link came up (S4's `LinkUp`): after [`Sim::link_quiet`], it is back.
+    fn link_up(&mut self, peer: MemberKey) {
+        self.down.remove(&peer);
+        if !self.closed.contains(&peer) && self.quiet.remove(&peer) {
+            self.notices.push(crate::leave::back(peer));
+            if self.quiet.is_empty() {
+                self.set_link_note(None);
+            }
+        }
+    }
+
+    fn set_link_note(&mut self, note: Option<crate::leave::LinkNote>) {
+        if let Some((notes, _)) = &self.link_notes {
+            let mut n = notes.lock().unwrap_or_else(|e| e.into_inner());
+            // A closed link's note stays: nobody comes back into this session. Set only on a change: each new line
+            // redraws the menu's panel (@xr-eng).
+            if !n.as_ref().is_some_and(|n| n.gone) && *n != note {
+                *n = note;
+            }
+        }
+    }
+
+    /// The menu's note about members' links (app.md 4.1): set on a link that drops, comes back or closes. `opener`:
+    /// this machine opened the session, so a closed link's note says to make a new one.
+    pub fn with_link_notes(mut self, notes: crate::leave::LinkNotes, opener: bool) -> Sim {
+        self.link_notes = Some((notes, opener));
+        self
     }
 
     /// Stamp-ahead's lead (app.md 3.2), M1's settings by default: `None` stamps this member's entries at the present,
@@ -1633,8 +1694,9 @@ impl Sim {
                     hook.on_event(&e, &mut *self.agree, &ReplicaFacts(&*self.replica, self.diverge.as_ref()));
                 }
                 match e {
-                    NetEvent::LinkUp { peer } => links.push((peer, true)),
-                    NetEvent::LinkDown { peer } => links.push((peer, false)),
+                    NetEvent::LinkUp { peer } => links.push((peer, Some(true))),
+                    NetEvent::LinkDegraded { peer } => links.push((peer, None)),
+                    NetEvent::LinkDown { peer } => links.push((peer, Some(false))),
                     _ => {}
                 }
             }
@@ -1643,10 +1705,10 @@ impl Sim {
             }
         }
         for (peer, up) in links {
-            if up {
-                self.down.remove(&peer);
-            } else {
-                self.link_down(peer, p);
+            match up {
+                Some(true) => self.link_up(peer),
+                None => self.link_quiet(peer),
+                Some(false) => self.link_down(peer, p),
             }
         }
         self.stats.phases.ingest_ns += lap(&mut mark);
@@ -6627,8 +6689,8 @@ pub(crate) mod tests {
 
     /// The remaining member is told at once why the other went (app.md 4, @coordinator-opus). B signs its
     /// `Leave` and vanishes before A can confirm E: when B's link drops, A, holding the `Leave` with B still in its
-    /// epoch, says B left before the session could confirm it. Without a `Leave` in hand, a dropped link says the other
-    /// may come back.
+    /// epoch, says B left before the session could confirm it. Without a `Leave` in hand, a closed link says nobody can
+    /// come back into this session (@coordinator-opus).
     #[test]
     fn the_remaining_member_hears_at_once_why_the_other_went() {
         let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
@@ -6654,9 +6716,50 @@ pub(crate) mod tests {
             pair[0].3.lock().expect("the events").push(NetEvent::LinkDown { peer: b });
             f += 1;
             tick_at(&mut pair, &clock, &hub, &[0], f);
-            let want = if leaves { crate::leave::stranded(b) } else { crate::leave::dropped(b) };
+            let want = if leaves { crate::leave::stranded(b) } else { crate::leave::gone(b, false) };
             assert_eq!(pair[0].0.take_notices(), vec![want], "with a Leave in hand: {leaves}");
         }
+    }
+
+    /// @ticket:primordial-engine/friend-test-rejoining-after-a-drop-is-refused-wi (@coordinator-opus): at
+    /// n = 2 a member that drops without a `Leave` can't come back into the session once its link closes. The opener's
+    /// console and menu say so as it happens: a quiet link "dropped" with `T_idle` to come back, "back" if it does, and
+    /// once it closes, that the other can't rejoin and New session makes a new invite. That last note stays.
+    #[test]
+    fn a_dropped_member_is_told_on_the_console_and_the_menu_and_a_closed_link_says_to_start_a_new_session() {
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let hub = Hub::default();
+        let mut pair = agreeing_pair(&clock, &hub);
+        let notes: crate::leave::LinkNotes = Default::default();
+        let (sim, slot, key, events) = pair.remove(0);
+        pair.insert(0, (sim.with_link_notes(notes.clone(), true), slot, key, events));
+        let note = || notes.lock().unwrap().clone();
+        let mut f = 0;
+        for _ in 0..120 {
+            f += 1;
+            tick_at(&mut pair, &clock, &hub, &[0, 1], f);
+        }
+        let b = pair[1].2;
+        let _ = pair[0].0.take_notices();
+        type Pair = Vec<(Sim, Arc<FrameSlot>, MemberKey, Arc<std::sync::Mutex<Vec<NetEvent>>>)>;
+        let push = |p: &mut Pair, e: NetEvent, f: &mut u64| {
+            p[0].3.lock().expect("the events").push(e);
+            *f += 1;
+            tick_at(p, &clock, &hub, &[0], *f);
+            p[0].0.take_notices().into_iter().filter(|n| !n.starts_with("status:")).collect::<Vec<_>>()
+        };
+        let dropped = crate::leave::dropped(b);
+        assert_eq!(push(&mut pair, NetEvent::LinkDegraded { peer: b }, &mut f), vec![dropped.clone()]);
+        assert_eq!(note(), Some(crate::leave::LinkNote::dropped(b)));
+        assert_eq!(push(&mut pair, NetEvent::LinkUp { peer: b }, &mut f), vec![crate::leave::back(b)]);
+        assert_eq!(note(), None, "back: the note comes down");
+        assert_eq!(push(&mut pair, NetEvent::LinkDegraded { peer: b }, &mut f), vec![dropped]);
+        let gone = crate::leave::gone(b, true);
+        assert_eq!(push(&mut pair, NetEvent::LinkDown { peer: b }, &mut f), vec![gone.clone()]);
+        assert_eq!(note(), Some(crate::leave::LinkNote::gone(b, true)));
+        assert!(push(&mut pair, NetEvent::LinkUp { peer: b }, &mut f).is_empty(), "a closed link isn't back");
+        assert!(push(&mut pair, NetEvent::LinkDegraded { peer: b }, &mut f).is_empty(), "nor does it drop again");
+        assert_eq!(note(), Some(crate::leave::LinkNote::gone(b, true)), "the closed link's note stays");
     }
 
     /// F3 S1 (@engine-architect's M1 on fc24bc9c): at n = 2, B stalls for 20 s, past the receivers' pending cap for A's

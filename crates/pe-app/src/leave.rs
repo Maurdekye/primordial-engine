@@ -128,13 +128,83 @@ pub fn stranded(m: MemberKey) -> String {
     ))
 }
 
-/// The remaining member, when `m`'s link drops with no `Leave` from it in hand.
+/// The remaining member, when `m`'s link goes quiet (pe-net's `LinkDegraded`, nothing heard for `T_degraded`) while
+/// `m` is in its epoch: the link resumes on the same connection within `T_idle` (transport.md 6.5;
+/// @coordinator-opus).
 pub fn dropped(m: MemberKey) -> String {
     format!(
-        "{}'s connection dropped. They may come back; until then, changes wait to be confirmed.",
-        capitalized(player(m))
+        "{}'s connection dropped. If they're back within {} s, play goes on.",
+        capitalized(player(m)),
+        pe_net::core::T_IDLE_M1.as_secs()
     )
 }
+
+/// The member's link is back after [`dropped`].
+pub fn back(m: MemberKey) -> String {
+    format!("{}'s connection is back.", capitalized(player(m)))
+}
+
+/// The remaining member, when `m`'s link closes (`T_idle`) with no `Leave` from it in hand. At n = 2 nobody can come
+/// back into this session: `m` stays a member and every cut needs its vote, so no `Admit` can be final, and a member
+/// whose process restarted can't rechain yet (agreement.md 8). The opener (`opener`) makes a new session; a joiner
+/// asks for its new invite (@coordinator-opus).
+pub fn gone(m: MemberKey, opener: bool) -> String {
+    if opener {
+        format!("{} can't rejoin this session: press New session and send them the new invite.", capitalized(player(m)))
+    } else {
+        format!(
+            "{}'s connection closed, and this session can't go on: ask them for a new invite (their New session).",
+            capitalized(player(m))
+        )
+    }
+}
+
+/// What the menu shows about a member's link (app.md 4.1): the last of [`dropped`] or [`gone`], until the link is back.
+/// `gone` puts New session first on the opener's menu. The panel's lines are its own short ones: a panel row cuts
+/// text past about 35 characters (pe-render's menu, 480 px at 30 px text; @xr-eng's Medium), so the console's long
+/// lines would lose their instruction.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LinkNote {
+    pub lines: Vec<String>,
+    pub gone: bool,
+}
+
+/// The most characters a menu note line may have: a panel row is 480 px less its margins, about 430 px of 30 px text.
+pub const NOTE_LINE_MAX: usize = 34;
+
+impl LinkNote {
+    /// [`dropped`]'s note.
+    pub fn dropped(m: MemberKey) -> LinkNote {
+        LinkNote {
+            lines: vec![
+                format!("{}'s link dropped", capitalized(player(m))),
+                format!("Back within {} s: play goes on", pe_net::core::T_IDLE_M1.as_secs()),
+            ],
+            gone: false,
+        }
+    }
+
+    /// [`gone`]'s note.
+    pub fn gone(m: MemberKey, opener: bool) -> LinkNote {
+        let lines = if opener {
+            vec![
+                format!("{} can't rejoin", capitalized(player(m))),
+                "Press New session and send".to_string(),
+                "them the new invite".to_string(),
+            ]
+        } else {
+            vec![
+                format!("{}'s link closed", capitalized(player(m))),
+                "This session can't go on:".to_string(),
+                "ask them for a new invite".to_string(),
+            ]
+        };
+        LinkNote { lines, gone: true }
+    }
+}
+
+/// The simulation thread sets it, the menu reads it.
+pub type LinkNotes = std::sync::Arc<std::sync::Mutex<Option<LinkNote>>>;
 
 /// The remaining member, when `m`'s link drops after its leave was confirmed.
 pub fn left(m: MemberKey) -> String {
@@ -196,7 +266,14 @@ mod tests {
     fn the_messages_name_the_player() {
         let m = MemberKey([0xab; 32]);
         assert!(stranded(m).starts_with("Player abababab left before the session could confirm it."));
-        assert!(dropped(m).starts_with("Player abababab's connection dropped. They may come back"));
+        assert_eq!(dropped(m), "Player abababab's connection dropped. If they're back within 30 s, play goes on.");
+        assert_eq!(back(m), "Player abababab's connection is back.");
+        assert!(gone(m, true).starts_with("Player abababab can't rejoin this session: press New session"));
+        assert!(gone(m, false).ends_with("ask them for a new invite (their New session)."));
+        // Every menu note line fits a panel row (@xr-eng's Medium).
+        for n in [LinkNote::dropped(m), LinkNote::gone(m, true), LinkNote::gone(m, false)] {
+            assert!(n.lines.iter().all(|l| l.chars().count() <= NOTE_LINE_MAX), "{:?}", n.lines);
+        }
         assert_eq!(left(m), "Player abababab left the session.");
         assert!(left_unconfirmed(&[m]).starts_with("Left before player abababab confirmed it. Player abababab can"));
         assert!(leave_not_sent(&[m]).starts_with("Couldn't send your leave, so player abababab will see"));

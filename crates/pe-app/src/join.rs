@@ -58,6 +58,12 @@ pub const SCRIPTS: &str = "this world has scripts; joining it comes after M1";
 /// joiner's check of the welcome could pass (app.md 4's M1 limits). After B's join that refuses every third player.
 pub const PLAYERS_CHANGED: &str = "the players changed since the invite was made";
 
+/// Why a member's own join request is refused: one whose link dropped and that came back by its invite, a restarted
+/// process. At n = 2 it is still a member, no cut can be final without its vote, and restarting in place (`Rechain`)
+/// isn't built (agreement.md 8), so nothing lets it back in (@coordinator-opus).
+pub const BACK_AFTER_DROP: &str =
+    "this session can't take you back after a drop: ask them for a new invite (their New session)";
+
 /// The tag pe-app's own Protocol-lane messages start with (module doc).
 pub const TAG: &[u8] = b"pe.app/";
 
@@ -360,6 +366,13 @@ impl Inviter {
                 true
             }
             Some(_) => false,
+            // A member's own key: it dropped and came back (a relaunch by the invite), so it says why first, whichever
+            // invite it dials with.
+            None if peer != self.me && peer != DEV_MEMBER && members.contains(&peer) => {
+                self.acts.push(Act::Refuse(peer, refusal(BACK_AFTER_DROP)));
+                self.notices.push(couldnt_join(peer, BACK_AFTER_DROP));
+                true
+            }
             // Another invite's id: one of this key's earlier sessions (a relaunch, a restart). No reply can let it in,
             // since a reply to another invite is refused, so it is refused at once, saying why (@design-reviewer's M1
             // on e7dff1eb). Every build's dial sends its invite's id; an empty token is held for a reply.
@@ -796,6 +809,24 @@ mod tests {
         assert_eq!(inv.join(), Some((B, Step::Dialing, false)), "a second join waits");
         assert!(!inv.on_join_request(c, &[], &[A], 0, false, T0), "C's hello is refused while B joins");
         assert_eq!(inv.stats.replies_refused, 4);
+    }
+
+    /// @ticket:primordial-engine/friend-test-rejoining-after-a-drop-is-refused-wi: B joined, its link dropped, and it
+    /// came back by the same invite (or another of A's). It is still a member, so it is told it can't be taken back and
+    /// to ask for a new invite, not that the players changed; a third player still hears that they did.
+    #[test]
+    fn a_member_back_after_a_drop_is_told_to_ask_for_a_new_invite() {
+        for token in [[4u8; 8], [5u8; 8]] {
+            let (mut inv, _) = inviter();
+            assert!(inv.on_join_request(B, &token, &[A, B], 1, false, T0), "the inviter answers it itself");
+            assert_eq!(inv.take_acts(), vec![Act::Refuse(B, refusal(BACK_AFTER_DROP))], "token {token:?}");
+            assert_eq!(inv.take_notices(), vec![couldnt_join(B, BACK_AFTER_DROP)]);
+            assert_eq!(inv.join(), None);
+        }
+        let (mut inv, _) = inviter();
+        let c = MemberKey([0xcc; 32]);
+        assert!(inv.on_join_request(c, &[4; 8], &[A, B], 1, false, T0));
+        assert_eq!(inv.take_acts(), vec![Act::Refuse(c, refusal(PLAYERS_CHANGED))], "a third player");
     }
 
     /// After B's join the invite's pin no longer holds (it pins epoch 0's members), so a third player's hello is
