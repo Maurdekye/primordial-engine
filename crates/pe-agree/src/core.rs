@@ -11,9 +11,9 @@
 //!   previous view and its parent is at least as high (by view) as the highest certificate in it.
 //! - **Two-chain finality:** a block is final when its child, proposed in the very next view, is certified. Its
 //!   ancestors are final with it.
-//! - **Leader reputation** (DiemBFT v4, window of one): a seeded rotation, skipping the leader of the latest view that
-//!   timed out, derived from the chain the proposal itself certifies (option (b), @design-reviewer; the model's
-//!   `committed_in`): the highest ancestor of its parent whose child in that chain came in the very next view is
+//! - **Leader reputation** (DiemBFT v4, a window of `n - quorum(n)` leaders, at least one: one up to n = 5; agreement.md
+//!   3): a seeded rotation, skipping the leaders of the latest views that timed out, derived from the chain the
+//!   proposal itself certifies (option (b), @design-reviewer; the model's `committed_in`): the highest ancestor of its parent whose child in that chain came in the very next view is
 //!   final, and a view between two consecutive final blocks' views had no certified block, so it timed out.
 //!   Proposer and voters derive the leader from the same data, whatever each has committed itself.
 //! - **The adaptive timeout:** derived from the measured time a view takes, and growing after each timeout until views
@@ -329,12 +329,24 @@ struct Stored {
     rep: Rep,
 }
 
-/// Leader reputation along a chain of final blocks: the view of the latest, and the member index of the leader of
-/// the latest view that timed out (window of one).
+/// Most leaders the reputation window holds (`n - quorum(n)` is 2 up to n = 8, 5 at n = 16). The model's
+/// `rep_window` has no cap; the two differ only from n = 27 (`n - q` = 9).
+const MAX_BAD: usize = 8;
+
+/// Leader reputation along a chain of final blocks: the view of the latest, and the member indices of the leaders of
+/// the latest views that timed out, newest first: a window of `n - quorum(n)` leaders (at least one), as many as may
+/// crash with the rest still a quorum. Up to n = 5 that is one, the latest timed-out view's leader.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Rep {
     prev_view: u64,
-    last_bad: Option<usize>,
+    bad: [u16; MAX_BAD],
+    bad_len: u8,
+}
+
+impl Rep {
+    fn bad(&self) -> &[u16] {
+        &self.bad[..self.bad_len as usize]
+    }
 }
 
 /// What the leader derivation needs of a block, kept for committed blocks after their bodies are pruned.
@@ -887,17 +899,43 @@ impl Core {
         ((v.wrapping_sub(1)).wrapping_add(self.offset) % n) as usize
     }
 
-    fn rep_leader(&self, v: u64, last_bad: Option<usize>) -> usize {
-        let r = self.rot(v);
-        if last_bad == Some(r) { (r + 1) % self.cfg.members.len() } else { r }
+    /// The reputation window's size at this epoch's n (the `Rep` doc).
+    fn bad_window(&self) -> usize {
+        let n = self.cfg.members.len();
+        (n - quorum(n)).clamp(1, MAX_BAD)
+    }
+
+    /// The rotation's leader of view `v`, or the next member after it in rotation order that isn't in the window.
+    fn rep_leader(&self, v: u64, r: &Rep) -> usize {
+        let n = self.cfg.members.len();
+        let mut l = self.rot(v);
+        // The window holds fewer than n members (n - quorum(n) < n, and 1 < n whenever a view can time out), so
+        // this ends; the bound guards a corrupt window.
+        for _ in 0..n {
+            if !r.bad().contains(&(l as u16)) {
+                break;
+            }
+            l = (l + 1) % n;
+        }
+        l
     }
 
     /// The chain's reputation once a block of view `bv` is final on top of `r`: the views between it and the previous
-    /// final block timed out. Only the latest timed-out view's leader counts (window of one); every view of the gap
+    /// final block timed out. Only the gap's last view's leader goes in the window; every view of the gap
     /// derives its leader from the chain before it.
     fn rep_step(&self, r: Rep, bv: u64) -> Rep {
-        let last_bad = if bv > r.prev_view + 1 { Some(self.rep_leader(bv - 1, r.last_bad)) } else { r.last_bad };
-        Rep { prev_view: bv, last_bad }
+        let mut next = Rep { prev_view: bv, ..r };
+        if bv > r.prev_view + 1 {
+            // The latest timed-out view's leader goes in first; the oldest past the window drops out. It is never
+            // already in the window: the rule skipped every leader there.
+            let l = self.rep_leader(bv - 1, &r) as u16;
+            let keep = (r.bad_len as usize).min(self.bad_window() - 1);
+            next.bad[0] = l;
+            next.bad[1..=keep].copy_from_slice(&r.bad[..keep]);
+            next.bad[keep + 1..].fill(0);
+            next.bad_len = (keep + 1) as u8;
+        }
+        next
     }
 
     /// A block's header: the genesis, a stored block, or a committed block whose body was pruned.
@@ -932,7 +970,7 @@ impl Core {
     /// The leader of view `v` for a proposal on `parent`, derived from what that parent certifies.
     pub fn leader_on(&self, v: u64, parent: &BlockId) -> Option<MemberKey> {
         let r = self.committed_rep(parent)?;
-        Some(self.cfg.members[self.rep_leader(v, r.last_bad)])
+        Some(self.cfg.members[self.rep_leader(v, &r)])
     }
 
     /// The leader of view `v` for a proposal on this member's highest certificate.

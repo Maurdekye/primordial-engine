@@ -213,7 +213,9 @@ impl NodeConfig {
         // v8: no new setting, but a member that missed its epoch's end fetches the epoch certificate (Wire::FetchEpochCert,
         // Wire::EpochCert), a wire change.
         // v9: no new setting, but members send `Progress` (Wire::Progress, F3 S2), a wire change.
-        let mut h = Hasher::new("pe.agree.consensus.v9");
+        // v10: no new setting, but the leader rule changes at n >= 6: the reputation window holds n - quorum(n)
+        // leaders (agreement.md 3), and a voter refuses a proposal from any other leader.
+        let mut h = Hasher::new("pe.agree.consensus.v10");
         h.write_u64(frame_tolerance_s.to_bits());
         h.write_u64(*entries_per_frame as u64).write_u64(*extra_per_s as u64);
         h.write_u64(budget_slack.to_bits()).write_u64(burst_s.to_bits()).write_u64(pending_s.to_bits());

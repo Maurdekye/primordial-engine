@@ -564,6 +564,29 @@ So **(e) bites**: the rule's argument above is now also checked, on every run.
 - The n = 3 and n = 4 base rows remain UNFINISHED at their budgets (bounded searches, not proofs).
 - Not modelled yet: Admit by a non-member's request, the invite's pinned epoch, more than two epochs in one run.
 
+## v1.1: the reputation window of n - q (2026-11-27; coordinator, @item:primordial-engine/m2-s1-s3-agreement-at-3-8-players-open-internet-h)
+
+- **The rule.** The window holds the leaders of the latest `n - q` timed-out views, at least one (`Cuts::rep_window`):
+  per gap between two consecutive committed blocks, the leader of the gap's last view, derived from the chain before
+  it, as pe-agree's `Rep`. The leader of view v is the first member from the rotation's that isn't in the window. Up
+  to n = 5, n - q is 1 and the rule is v0.2's (skip the latest timed-out view's leader); at n = 6-8 it is 2, so two
+  crashed members (as many as n = 6-8 carry) are both skipped. Two dead leaders in one gap (adjacent in rotation)
+  enter one at a time, so one of them times out twice. pe-agree caps the window at 8 (`MAX_BAD`); the model doesn't,
+  which differs only from n = 27. Why: in pe-agree's sim, two members down at n = 6-8
+  paused finality 570-1,000 ms again and again under the window of one (the two dead leaders take turns timing out),
+  against 120-130 ms with the window of two.
+- **The model now goes to n = 6** (`NMAX` 6) and may have several silent members (`Cuts::silent(k)`: members 0 .. k,
+  the honest authors moved up past them). Rows (`results/v1.1-window.txt`): `n6-silent2-live` (offset 0: the silent
+  two lead views 1 and 2, then view 7 again) and `n6-silent2-live-o2` (they lead views 5 and 6), liveness and bounded
+  progress, all properties hold; `n6-silent2`, safety, 4 views (6 views with two authors passed 22 M states in 9 min
+  without finishing).
+- **No control for the window's size.** At n = 6 the rotation brings the silent leaders round a second time only
+  after about ten blocks, past `HMAX` = 6; within six blocks both windows give the same three timed-out views. The
+  difference is measured in the sim (pe-agree `node_tests/scale.rs`, `the_quorum_bounds_how_many_may_crash_at_3_to_8`
+  with `PE_SCALE_LONG`).
+- **Regression:** every liveness row (the ones with reputation on) gives its last recorded state count exactly; the
+  safety rows keep plain rotation, and `NMAX` changes no behaviour.
+
 ## Not in v0
 
 - **Bounded progress** (coordinator, still to add): an entry an honest member holds is covered within a

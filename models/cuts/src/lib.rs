@@ -16,7 +16,7 @@ use std::fmt;
 
 use stateright::{Model, Property};
 
-pub const NMAX: usize = 4;
+pub const NMAX: usize = 6;
 /// Block heights the state can hold: content heights, the child that makes the last final, and up to P more empty
 /// ones in the early-timeout profile (a real chain has no cap; each spoiled view can cost one height).
 pub const HMAX: usize = 6;
@@ -172,7 +172,15 @@ pub struct Cuts {
     /// leader of the latest view that timed out, as the proposer's committed chain shows it (a view between two
     /// consecutive committed blocks' views had no block certified). On in the liveness profile; the safety checks keep
     /// plain rotation, since the voting rules don't depend on who leads.
+    ///
+    /// v1.1 (coordinator, M2 S1/S3): the window holds the leaders of the latest `n - q` timed-out views
+    /// (at least one), each the leader of the last view of its gap between committed blocks, as pe-agree's `Rep`;
+    /// the leader is the first member from the rotation's that isn't in it. Up to n = 5 that is one, the rule above.
     pub reputation: bool,
+    /// The reputation window's size when non-zero, in place of `n - q` (controls only).
+    pub window_override: u8,
+    /// Members 0 .. `silent` are silent under `Fault::Silent` (1 unless set by [`Cuts::silent`]).
+    pub silent: u8,
 }
 
 impl Cuts {
@@ -206,12 +214,40 @@ impl Cuts {
             }
         }
         assert!(entries.len() <= 16);
-        Cuts { n, fault, views, heights, honest_authors, offset, liveness: false, mutation: None, send_entries: adv.send, productive_only: false, corrupt: None, repair: false, repair_views: 0, entries, frame_choice: true, early: 0, backoff: None, progress: false, reputation: false }
+        Cuts { n, fault, views, heights, honest_authors, offset, liveness: false, mutation: None, send_entries: adv.send, productive_only: false, corrupt: None, repair: false, repair_views: 0, entries, frame_choice: true, early: 0, backoff: None, progress: false, reputation: false, window_override: 0, silent: 1 }
     }
 
     pub fn progress(mut self) -> Self {
         self.progress = true;
         self
+    }
+
+    /// Members 0 .. `k` silent (needs `Fault::Silent`); the honest authors move up past them.
+    pub fn silent(mut self, k: u8) -> Self {
+        assert!(self.fault == Fault::Silent && k >= 1 && self.honest_authors + k <= self.n);
+        for e in &mut self.entries {
+            e.author += k - 1;
+            e.signer += k - 1;
+            e.name = format!("m{}.{}", e.author, e.seq);
+        }
+        self.silent = k;
+        self
+    }
+
+    /// The reputation window forced to `k` (a control).
+    pub fn window(mut self, k: u8) -> Self {
+        self.window_override = k;
+        self
+    }
+
+    /// The reputation window: `n - q`, at least one, unless overridden.
+    pub fn rep_window(&self) -> usize {
+        if self.window_override > 0 {
+            return self.window_override as usize;
+        }
+        let n = self.n as usize;
+        let q = (n + (n - 1) / 3) / 2 + 1;
+        (n - q).max(1)
     }
 
     pub fn rotation(mut self) -> Self {
@@ -328,6 +364,8 @@ impl Cuts {
         }
         // The leaders of the views that timed out, oldest first, each derived from the chain before it.
         let mut bad: Vec<u8> = Vec::new();
+        // The window's (v1.1): per gap between committed blocks, the leader of its last view.
+        let mut window: Vec<u8> = Vec::new();
         let mut prev_view = 0u8;
         for k in 0..chain.h {
             let bv = chain.ancestor(k + 1).view();
@@ -335,6 +373,9 @@ impl Cuts {
             for u in prev_view + 1..bv.min(v) {
                 if let Some(l) = self.leader_in(u, &prefix) {
                     bad.push(l);
+                    if u + 1 == bv.min(v) {
+                        window.push(l);
+                    }
                 }
             }
             prev_view = bv;
@@ -342,7 +383,8 @@ impl Cuts {
         if self.mutation == Some(Mutation::SkipEveryTimedOut) {
             return (0..self.n).map(|i| (rot + i) % self.n).find(|l| !bad.contains(l));
         }
-        Some(if bad.last() == Some(&rot) { (rot + 1) % self.n } else { rot })
+        let w = &window[window.len().saturating_sub(self.rep_window())..];
+        (0..self.n).map(|i| (rot + i) % self.n).find(|l| !w.contains(l))
     }
 
     /// The block final within `b`'s own certified chain (option (b), @design-reviewer m.. Q2): the highest ancestor
@@ -372,12 +414,12 @@ impl Cuts {
 
     /// Runs the cut protocol (honest members, and an author-faulty member).
     pub fn protocol(&self, m: u8) -> bool {
-        m < self.n && !(m == 0 && matches!(self.fault, Fault::Silent | Fault::Byzantine))
+        m < self.n && !(m < self.silent && self.fault == Fault::Silent) && !(m == 0 && self.fault == Fault::Byzantine)
     }
 
     /// Whom the properties are about.
     pub fn honest(&self, m: u8) -> bool {
-        m < self.n && (m != 0 || self.fault == Fault::None)
+        m < self.n && (m >= self.silent || self.fault != Fault::Silent) && (m != 0 || matches!(self.fault, Fault::None | Fault::Silent))
     }
 
     fn has(&self, m: u16, e: u8) -> bool {

@@ -252,6 +252,23 @@ Jolteon), as modelled. Stay on the published rules: any departure from Jolteon g
   voter's leader check). Keep-while-good was rejected: at n = 2 its votes cross the
   slow link twice per view (600 ms against 300 ms with a 150 ms member) and it never finalizes under a timeout below
   that; rotation alone collapses with a crashed member (2.1 cuts/s at n = 3). Model: leader_in, control ctl-skipall.
+- **The reputation window is `n - quorum(n)` leaders** (coordinator, M2 S1/S3,
+  @item:primordial-engine/m2-s1-s3-agreement-at-3-8-players-open-internet-h): the leaders of the latest `n - q`
+  timed-out views, at least one, newest first; per gap between two consecutive final blocks, the leader of the gap's
+  last view. The leader is the first member from the rotation's that isn't in the window. `n - q` is as many members as
+  may crash with the rest still a quorum: 1 up to n = 5, so the rule above is unchanged there, and 2 at n = 6-8. A
+  dead leader times out once before it enters the window, or twice when two dead leaders fall in one gap (adjacent in
+  rotation): only the gap's last view's leader enters, and the other enters when the rotation brings it round again
+  (@chunks-reviewer's Low on de73476b). Measured [V, pe-agree sim, `node_tests/scale.rs`],
+  two members down at n = 6, 7 and 8, the longest finality pause from 6 to 20 s: 120-130 ms, against 570-1,000 ms again
+  and again under the window of one (the two dead leaders took turns), and 110-130 ms healthy. A removal (agreement.md
+  8, `Remove`) takes a dead member out for good; the window covers the seconds before it and a member that is slow but
+  alive, which no removal catches. Model: `rep_window`, rows n6-silent2-live, n6-silent2-live-o2 and n6-silent2
+  (models/cuts v1.1). There is no control for the window's size: the rotation comes round to the dead leaders a second
+  time only past the model's six blocks, so the model checks the rule is safe and live at n = 6 with two silent, and
+  the sim measures what it saves.
+  - The consensus hash is v10: no new setting, but at n >= 6 builds before and after it pick different leaders, and a
+    voter refuses a proposal from any leader but its own rule's.
 - **Cadence.** A proposer names any frame above its parent's (not a frame fixed by height), so one cut catches up
   after a stall and a link whose round trip exceeds the cadence doesn't fall behind without limit. Proposals come on a
   cadence that is a duration in the world's settings. A cut includes, for each author, its chain up to the head it

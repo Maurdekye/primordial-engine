@@ -89,6 +89,9 @@ struct Sim {
     partition: Option<(usize, i64, i64)>,
     /// A member cut off for good (as if crashed): every message to or from it is lost.
     cut_off: Option<usize>,
+    /// Members down for good from a moment on (ms; `i64::MAX` never): every message to or from one sent after it is
+    /// lost, as `cut_off` for several members and from a time (scale.rs).
+    down_from: Vec<i64>,
     /// (from, to, from ms, until ms): one direction of one link is down; what `from` sends `to` then is lost.
     link_down: Option<(usize, usize, i64, i64)>,
     /// (from, to, extra ms, jitter ms): one direction of one link is slower by extra plus up to jitter ms.
@@ -219,6 +222,7 @@ impl Sim {
             vote_results: Vec::new(),
             partition: None,
             cut_off: None,
+            down_from: vec![i64::MAX; n as usize],
             link_down: None,
             slow_link: None,
             clock: Clock(60),
@@ -322,7 +326,12 @@ impl Sim {
             {
                 continue;
             }
-            if self.cut_off.is_some_and(|k| i == k || j == k) || self.now < self.blackout_until || self.absent[j] {
+            if self.cut_off.is_some_and(|k| i == k || j == k)
+                || self.now >= self.down_from[i].saturating_mul(MS)
+                || self.now >= self.down_from[j].saturating_mul(MS)
+                || self.now < self.blackout_until
+                || self.absent[j]
+            {
                 continue;
             }
             if self.holding == Some(i) {
@@ -4166,3 +4175,6 @@ fn receive_cost_by_finality_lag() {
         println!("behind {d} frames: final frames {:?} {:?}", s.final_frame(0), s.final_frame(1));
     }
 }
+
+/// Agreement at 3 to 8 members (M2 S1/S3).
+mod scale;

@@ -1,0 +1,37 @@
+# v1.1: the reputation window of n - q (coordinator), 2026-11-27, cuts-model --threads 3, NMAX 6
+
+## New rows (n = 6, two silent: window 2)
+n6-silent2-live           524          1441     61       1.0  OK   all properties hold; examples found
+n6-silent2-live-o2          644          1697     69       1.0  OK   all properties hold; examples found
+n6-silent2             479068       2402497     49       5.0  OK   all properties hold; examples found
+
+n6-silent2 at 6 views and two honest authors passed 22,283,738 unique states (105 M generated, depth 74) in 540 s without finishing; cut to 4 views and one author.
+A control (the same with the window forced to one) cannot bite inside HMAX = 6: at n = 6 the rotation brings the silent leaders round a second time only after about ten blocks; both windows give the same three timed-out views within six. The steady-state difference is measured in pe-agree's sim (node_tests/scale.rs, PE_SCALE_LONG).
+
+## Regression: every liveness (reputation) row, against its last recorded count (window 1 up to n = 5: unchanged)
+n3-chain-live          233634        784805     28       4.0  OK   all properties hold; examples found
+n3-crash-live              46            73     16       1.0  OK   all properties hold; examples found
+n4-byz-live            228864        825480     27       4.0  OK   all properties hold; examples found
+n2-live                   224           342     20       1.0  OK   all properties hold; examples found
+n2-live-early         1016494       1655414     46      29.3  OK   all properties hold; examples found
+n2-live-early-o1       348138        566932     44      17.1  OK   all properties hold; examples found
+bound-n2-early         157095        262288     41       5.0  OK   counterexample as expected: "liveness: every end state has a final cut at every honest member"
+n2-live-h2                859          1517     25       1.0  OK   all properties hold; examples found
+ctl-skipempty             301           467     24       1.0  OK   counterexample as expected: "liveness: every content cut ends final"
+n3-live-h2           16421414      38251317     40     402.8  OK   all properties hold; examples found
+n2-live-early-h2       368248        595333     44      10.0  OK   all properties hold; examples found
+ctl-skipall              5213          8196     40       1.0  OK   counterexample as expected: "liveness: every content cut ends final"
+ctl-early                1547          2908     30       1.0  OK   counterexample as expected: "liveness: every end state has a final cut at every honest member"
+n2-live-backoff       1455880       2999674     44      33.0  OK   all properties hold; examples found
+bound-n2-backoff         1516          3005     22       1.0  OK   counterexample as expected: "liveness: every end state has a final cut at every honest member"
+ctl-backoff-reset         1553          2712     42       1.0  OK   counterexample as expected: "liveness: every end state has a final cut at every honest member"
+n4-crash-live             130           301     24       1.0  OK   all properties hold; examples found
+n2-repair-live            350           524     31       1.0  OK   all properties hold; examples found
+bound-n2-wrongroot         1513          2371     41       1.0  OK   counterexample as expected: "liveness: every end state has a final cut at every honest member"
+n2-pin-k2                 246           373     42       1.0  OK   all properties hold; examples found
+n2-pin-k3                 280           431     50       1.0  OK   all properties hold; examples found
+ctl-nopin                 524           945     63       1.0  OK   counterexample as expected: "liveness: every end state has a final cut at every honest member"
+ctl-notimeout            1509          4119     16       1.0  OK   counterexample as expected: "liveness: every end state has a final cut at every honest member"
+all 13 check(s) met their expectation
+
+bound-n2-early is a control that stops at its first counterexample under 3 threads: its count varies run to run (recorded 147,254-184,343). n3-silent-progress (34 M states, no reputation) not rerun: the window code is off without reputation, and NMAX changes no behaviour.
