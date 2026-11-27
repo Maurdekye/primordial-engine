@@ -16,14 +16,17 @@
 //!   and overlapping bodies are pushed out by Box3D's soft contacts at the world's contact speed (3 m/s), so a flip
 //!   inside a pile moves its balls apart gently instead of throwing them (8.1).
 //! - **Within an input's span** the body is driven to the target in one frame: `set_target`, so it pushes what it
-//!   meets at the speed it moves. The move is measured from where the body is to its target, for the hand and for
-//!   everything it holds (each held object carried rigidly with the hand), and its farthest point decides
-//!   (world-model.md 8.1's cap by `max_push_speed`; @coordinator-opus, option (b)):
+//!   meets at the speed it moves. **A hand that holds something has no speed cap** (the user's ruling of 2026-11-26: "remove any maximum throw speed (for v1); the grip strength should be what governs maximum throw
+//!   speed"): it reaches its target every frame, and its teleport test is a jump away from its own motion
+//!   ([`jump_from_motion`]), so a fast swing is never mistaken for a teleport. **An empty hand** keeps the cap: the
+//!   move is measured from where the body is to its target (world-model.md 8.1's cap by `max_push_speed`;
+//!   @coordinator-opus, option (b)):
 //!   - **faster than [`MAX_HAND_PUSH_SPEED`]:** the body moves only that far towards the target this frame, its
-//!     position and turn scaled alike, so neither it nor what it holds pushes faster than the cap. It trails its
-//!     target and catches up when the hand slows, and a throw leaves at up to the cap;
+//!     position and turn scaled alike, so it pushes no faster than the cap. It trails its target and catches up when
+//!     the hand slows;
 //!   - **beyond the teleport distance** ([`teleport_distance`]: [`TELEPORT_DISTANCE`], or two frames at the cap at
-//!     low rates), a tracking glitch, a real teleport, or a body trailing that far: the body is put at the target
+//!     low rates; for a holding hand, the jump from its motion), a tracking glitch, a real teleport, or a body
+//!     trailing that far: the body is put at the target
 //!     with no velocity, moved but not swept, and each object the hand's claims hold goes with it, keeping its
 //!     rotation relative to the hand, with no velocity too (@design-reviewer's Low on cc037c10): a light hold, whose
 //!     force the object's mass caps ([`follows_tightly`]), to its place in the hand, and a heavy one keeping its
@@ -36,14 +39,15 @@
 //!     lies in its way ([`PhysicsWorld::static_in_way`]), so a held object never passes through a wall: one left
 //!     behind stays where it is, held by its spring (@coordinator-opus). A real teleport carries it
 //!     through.
-//! - **A hold is tight, and its force is capped** ([`grab_spring`], world-model.md 8.1): a stiff spring ([`HOLD_HZ`])
-//!   keeps a light held object within millimetres of its place in the hand, and its force is at most the holder's
-//!   strength (its `Hand` row's) and at most what speeds the object up at [`HOLD_ACCELERATION`] against gravity, so a
-//!   heavy object lags and a blocked light one is never pushed through what blocks it (@coordinator-opus).
-//! - **A hold's spring is bounded** ([`reaches`], world-model.md 8.1): for each step it sees at most the error the
-//!   room under the cap leaves, `(max_push_speed - v_hold) / k`, so a held object kept from its place comes back no
-//!   faster than the cap, and one that lags a hand at the cap catches up when the hand slows; the part of the error
-//!   that holds the object up keeps up to the hold's [`support`]. The bound moves the joint's anchor on the hand for
+//! - **A hold is tight, and its force is the grip's** ([`grab_spring`], world-model.md 8.1; the user's ruling of
+//!   2026-11-26, option (c)): a stiff spring ([`HOLD_HZ`]) keeps a light held object within
+//!   millimetres of its place in the hand through the fastest swing or twist, and its force is at most the holder's
+//!   strength (its `Hand` row's), so a heavy object lags. Nothing else limits it, so a hold presses a light object
+//!   into what blocks it with the whole grip, and one held against the floor or a wall can sink into it or go through
+//!   (accepted for the 11-27 kit).
+//! - **A hold's spring is bounded** ([`reaches`], world-model.md 8.1): for each step it sees at most the error its
+//!   force can brake from, so a heavy object settles at its place instead of overshooting; the part of the error that
+//!   holds the object up keeps up to the hold's [`support`]. The bound moves the joint's anchor on the hand for
 //!   the step only ([`PhysicsWorld::step_holding`]), so it is never in an image.
 //! - **After the span, with no newer input:** if the input came as part of a stream (within its predecessor's span
 //!   plus [`COAST`]), the body coasts at its last velocity, at most [`COAST_SPEED`], until [`COAST`] after the span;
@@ -102,36 +106,33 @@ pub fn teleport_distance(rate: SimRate) -> f64 {
 /// 3.6, 1.7 and 0.9 mm, where M1's 5 Hz trailed by 94 mm.
 pub const HOLD_HZ: f32 = 60.0;
 
-/// The most a hold speeds up what it holds beyond holding it up against gravity, m/s^2 (A; provisional,
-/// @coordinator-opus): a hold's force is at most `mass (A + g)` as well as the holder's strength
-/// ([`grab_spring`]), what makes the object follow a hand speeding up at A. Without it a stiff spring pushes a light
-/// object at up to strength / mass (6,000 m/s^2 for an 18 g ball at 110 N), which Box3D's 30 Hz soft contacts can't
-/// hold: measured, the ball sank 43-47 mm into the floor and went through a 2 cm wall. With A at 200 it sinks 1.5 mm
-/// and never goes through. Flicks past A trail: at 60 Hz, 3.7 mm at 150 m/s^2 and 19 mm at 200; at a 30 Hz world
-/// rate, whose hand changes speed every 33 ms, already 19 mm at 150 m/s^2.
+/// The acceleration that makes a held object light, m/s^2 (A): an object of mass `m` whose `m (A + g)` is at most the
+/// holder's strength follows the hand tightly ([`follows_tightly`]), so a placement carries it to its place in the
+/// hand ([`placed`]), and the hold's [`support`] is the error at which the spring's pull on it reaches `m (A + g)`.
+/// Until the user's ruling of 2026-11-26 (option (c)) it also capped every hold's force at `m (A + g)`;
+/// a hold's force is now the grip's alone ([`grab_spring`]). That cap held a light object to 1.5 mm in the floor and
+/// never through a wall, and kept an 18 g ball from following any arm swing faster than 12 m/s or a wrist twist past
+/// about 40 rad/s (measured on 2026-11-26).
 pub const HOLD_ACCELERATION: f32 = 200.0;
 
 /// The largest strength a hand's row gives, N: a strength outside `0..=MAX_STRENGTH` is clamped into it before the
 /// physics sees it.
 pub const MAX_STRENGTH: f32 = 10_000.0;
 
-/// The grab spring of a hold by a hand of `strength` N on an object of `mass` kg, under gravity of magnitude `g`
-/// (world-model.md 8.1): it pulls the held object to its place in the hand at [`HOLD_HZ`], critically damped, with at
-/// most `min(strength, mass (A + g))` ([`HOLD_ACCELERATION`]). So a light object follows the hand within millimetres,
-/// and a heavier one lags once the hand asks for more than the strength: at 110 N, 0.5 kg follows tightly up to
-/// 200 m/s^2 and 1 kg up to 100 m/s^2, and a hand can't lift 11.2 kg or more (measured: a 100 m/s^2 flick trails
-/// 1.0 mm up to 0.5 kg, 18 mm at 1 kg, 92 mm at 2 kg). It has no angular part (`max_torque` 0): pe-physics's grab joint
-/// has no frame rotation, so an angular spring would turn the object to the hand's own rotation instead of keeping the
-/// one it was grabbed at. The joint's linear velocity drive stays off: it is solved after the spring and is stiff, so
-/// it cancelled every velocity the spring gave, and a held object only copied the hand's velocity, left wherever a jump
-/// or a knock put it (measured on cc037c10). [`hold`] takes the force when it makes the joint.
-pub fn grab_spring(strength: f32, mass: f32, g: f32) -> GrabSpring {
-    GrabSpring {
-        hertz: HOLD_HZ,
-        damping_ratio: 1.0,
-        max_force: strength_of(strength).min(follow(mass, g)),
-        max_torque: 0.0,
-    }
+/// The grab spring of a hold by a hand of `strength` N (world-model.md 8.1): it pulls the held object to its place in the hand at [`HOLD_HZ`], critically damped, with at
+/// most the holder's strength. Nothing else limits it (the user's ruling of 2026-11-26, option (c):
+/// "the grip strength should be what governs"; until then also `mass (A + g)`, [`HOLD_ACCELERATION`]). So a light
+/// object follows the fastest swing or twist of a hand within millimetres, and a heavier one lags once the hand asks
+/// for more than the strength. It also means a hold presses a light object into what blocks it with the whole strength,
+/// so a held object pushed against the floor or a wall can sink into it or pass through (measured in
+/// `measure_push_through_at_the_grip_s_strength`). It has no
+/// angular part (`max_torque` 0): pe-physics's grab joint has no frame rotation, so an angular spring would turn the
+/// object to the hand's own rotation instead of keeping the one it was grabbed at. The joint's linear velocity drive
+/// stays off: it is solved after the spring and is stiff, so it cancelled every velocity the spring gave, and a held
+/// object only copied the hand's velocity, left wherever a jump or a knock put it (measured on cc037c10). [`hold`]
+/// takes the force when it makes the joint.
+pub fn grab_spring(strength: f32) -> GrabSpring {
+    GrabSpring { hertz: HOLD_HZ, damping_ratio: 1.0, max_force: strength_of(strength), max_torque: 0.0 }
 }
 
 /// Whether a hand of `strength` N holds an object of `mass` kg tightly, under gravity of magnitude `g`: when its hold's
@@ -218,7 +219,7 @@ pub fn sync<W: WorldModel + ?Sized>(
             claims.iter().filter(|c| c.hand == hand.hand && physics.has_body(c.object)).map(|c| c.object).collect();
         faults += u64::from(drive(physics, hand, &held, origin, rate, frame, g).is_err());
     }
-    faults += grabs(physics, &claims, &bodies, hands, g);
+    faults += grabs(physics, &claims, &bodies, hands);
     (faults, reaches(physics, &claims, 1.0 / rate.hz() as f32, gravity))
 }
 
@@ -239,7 +240,7 @@ pub fn sync<W: WorldModel + ?Sized>(
 /// 60 Hz: 4.65 m/s for a pinned pit ball). Every grab joint of `claims`, keyed once.
 pub fn reaches(physics: &PhysicsWorld, claims: &[ClaimRow], dt: f32, gravity: [f32; 3]) -> Vec<(JointKey, HoldReach)> {
     // The rate depends on the spring's stiffness and damping alone, not its force.
-    let per_metre = f64::from(physics.grab_spring_rate(grab_spring(0.0, 0.0, 0.0), dt));
+    let per_metre = f64::from(physics.grab_spring_rate(grab_spring(0.0), dt));
     let g = f64::from((gravity[0] * gravity[0] + gravity[1] * gravity[1] + gravity[2] * gravity[2]).sqrt());
     let up = if g > 0.0 { gravity.map(|c| -f64::from(c) / g) } else { [0.0; 3] };
     let support = support(g);
@@ -249,14 +250,13 @@ pub fn reaches(physics: &PhysicsWorld, claims: &[ClaimRow], dt: f32, gravity: [f
         if physics.joint_kind(key) != Some(JointKind::Grab) || out.iter().any(|&(k, _)| k == key) {
             continue;
         }
-        let poses = (physics.velocity(c.hand), physics.pose(c.hand), physics.grab_anchor(key), physics.pose(c.object));
-        let (speed, error) = match poses {
-            (Ok((v, w)), Ok(hand), Ok(anchor), Ok(object)) => {
+        let poses = (physics.pose(c.hand), physics.grab_anchor(key), physics.pose(c.object));
+        let error = match poses {
+            (Ok(hand), Ok(anchor), Ok(object)) => {
                 let r = rotate(hand.rotation, anchor);
-                let error = [0usize, 1, 2].map(|i| hand.position[i] + f64::from(r[i]) - object.position[i]);
-                (point_speed(v, w, r), error)
+                [0usize, 1, 2].map(|i| hand.position[i] + f64::from(r[i]) - object.position[i])
             }
-            _ => (0.0, [0.0; 3]),
+            _ => [0.0; 3],
         };
         let e = error.iter().map(|c| c * c).sum::<f64>().sqrt();
         let brake = match (physics.grab_force(key), physics.mass(c.object)) {
@@ -267,7 +267,11 @@ pub fn reaches(physics: &PhysicsWorld, claims: &[ClaimRow], dt: f32, gravity: [f
             }
             _ => f64::INFINITY,
         };
-        let reach = (MAX_HAND_PUSH_SPEED - speed).max(0.0).min(brake) / per_metre;
+        // A holding hand has no speed cap (the user's ruling of 2026-11-26), so the hold's own force, the speed it
+        // can brake from, is the only bound: a held object kept from its place comes back as fast as its grip pulls.
+        // At most the error itself, which is all the spring sees anyway: the brake bound is infinite for an object at
+        // its place (or one whose force or mass can't be read), and pe-physics refuses a step with an infinite reach.
+        let reach = (brake / per_metre).min(e);
         out.push((key, HoldReach { reach: reach as f32, support: support as f32 }));
     }
     out
@@ -315,7 +319,17 @@ fn drive(
         .iter()
         .map(|(_, at, to)| distance(at.position, to.position))
         .fold(distance(now.position, target.position), f64::max);
-    if farthest > teleport_distance(rate) {
+    // A hand that holds something has no speed cap (the user's ruling of 2026-11-26: "remove any
+    // maximum throw speed (for v1); the grip strength should be what governs maximum throw speed"), so its move in a
+    // frame can't tell a teleport from a fast swing. What tells them apart is a jump away from the hand's own motion:
+    // how far the move lands from where the hand's velocity would have taken it and what it holds.
+    let holding = !held.is_empty();
+    let jump = if holding {
+        jump_from_motion(physics.velocity(hand.hand)?, &now, &target, &carried, f64::from(dt))
+    } else {
+        farthest
+    };
+    if jump > teleport_distance(rate) {
         // A body slowed by the cap in the last frame trails its target, so this is a trailing placement: it carries a
         // held object only where no static geometry lies in its way, so a held object never passes through a wall
         // (@coordinator-opus); one left behind stays where it is, held by its spring. A body that was
@@ -334,9 +348,31 @@ fn drive(
         }
         return Ok(());
     }
+    if holding {
+        return physics.set_target(hand.hand, target, dt, true);
+    }
     let cap = MAX_HAND_PUSH_SPEED * f64::from(dt);
     let to = if farthest > cap { towards(&now, &target, cap / farthest) } else { target };
     physics.set_target(hand.hand, to, dt, true)
+}
+
+/// How far a holding hand's move from `now` to `target` lands from where its velocity `(v, w)` (the physics', which a
+/// kinematic body keeps from its last move) would have taken it in a frame of `dt` s, m: at the hand itself and at
+/// each held object (`carried`: its pose now, and where the move carries it). A steady swing at any speed lands where
+/// its motion leads, so only a jump is far from it: a tracking glitch, a teleport, or a body made or placed at rest
+/// whose hand is already moving fast.
+fn jump_from_motion(
+    (v, w): ([f32; 3], [f32; 3]),
+    now: &Pose,
+    target: &Pose,
+    carried: &[(ObjectId, Pose, Pose)],
+    dt: f64,
+) -> f64 {
+    let led = |p: [f64; 3], to: [f64; 3]| {
+        let r = [0usize, 1, 2].map(|i| (p[i] - now.position[i]) as f32);
+        distance(to, [0usize, 1, 2].map(|i| p[i] + point_velocity(v, w, r)[i] * dt))
+    };
+    carried.iter().map(|(_, at, to)| led(at.position, to.position)).fold(led(now.position, target.position), f64::max)
 }
 
 /// Where a placement of `hand`'s body at `target` puts `object`, which `carried` would put at its offset in the hand
@@ -384,8 +420,14 @@ fn was_slowed(
 
 /// The speed of the point `r` from a body's origin, for the body's linear and angular velocity `v` and `w`.
 fn point_speed(v: [f32; 3], w: [f32; 3], r: [f32; 3]) -> f64 {
-    let at = [v[0] + w[1] * r[2] - w[2] * r[1], v[1] + w[2] * r[0] - w[0] * r[2], v[2] + w[0] * r[1] - w[1] * r[0]];
-    f64::from((at[0] * at[0] + at[1] * at[1] + at[2] * at[2]).sqrt())
+    let at = point_velocity(v, w, r);
+    (at[0] * at[0] + at[1] * at[1] + at[2] * at[2]).sqrt()
+}
+
+/// The velocity of the point `r` from a body's origin, `v + w x r`, for the body's linear and angular velocity.
+fn point_velocity(v: [f32; 3], w: [f32; 3], r: [f32; 3]) -> [f64; 3] {
+    [v[0] + w[1] * r[2] - w[2] * r[1], v[1] + w[2] * r[0] - w[0] * r[2], v[2] + w[0] * r[1] - w[1] * r[0]]
+        .map(f64::from)
 }
 
 /// The pose a fraction `f` of the way from `from` to `to`: the position along the straight line, the rotation along
@@ -421,8 +463,8 @@ pub fn grab_key(object: ObjectId) -> JointKey {
 /// The grab joints for `claims`, after the hands are driven: one for each claim by a hand with a body on an object
 /// with one, and none other. `bodies` are the world model's physical objects, in id order: every object a grab
 /// joint can hold, so probing their keys finds every grab joint (a removed body takes its joints with it). `hands`
-/// are the world model's, in id order, for each holder's strength; `g` is gravity's magnitude.
-fn grabs(physics: &mut PhysicsWorld, claims: &[ClaimRow], bodies: &[ObjectId], hands: &[HandRow], g: f32) -> u64 {
+/// are the world model's, in id order, for each holder's strength.
+fn grabs(physics: &mut PhysicsWorld, claims: &[ClaimRow], bodies: &[ObjectId], hands: &[HandRow]) -> u64 {
     let mut faults = 0;
     let held = |id: ObjectId| claims.iter().find(|c| c.object == id && c.hand != ObjectId::NONE).map(|c| c.hand);
     // A hand with a body is one of `hands` (`sync` removes any other), so a missing one never holds.
@@ -433,13 +475,13 @@ fn grabs(physics: &mut PhysicsWorld, claims: &[ClaimRow], bodies: &[ObjectId], h
         let hand = held(object).filter(|&hand| physics.has_body(hand) && physics.has_body(object));
         match (joint, hand) {
             (Some(JointKind::Grab), None) => faults += u64::from(physics.remove_joint(key).is_err()),
-            (None, Some(hand)) => faults += u64::from(hold(physics, key, hand, object, strength(hand), g).is_err()),
+            (None, Some(hand)) => faults += u64::from(hold(physics, key, hand, object, strength(hand)).is_err()),
             // A renewing grab that names another of its author's hands moves the claim to it (world-model.md 7.2), so
             // the joint is made again from that hand, holding the object where it is (@design-reviewer's Medium on
             // cc037c10).
             (Some(JointKind::Grab), Some(hand)) if physics.joint_objects(key).map(|(a, _)| a) != Some(Some(hand)) => {
                 faults += u64::from(physics.remove_joint(key).is_err());
-                faults += u64::from(hold(physics, key, hand, object, strength(hand), g).is_err());
+                faults += u64::from(hold(physics, key, hand, object, strength(hand)).is_err());
             }
             _ => {}
         }
@@ -448,18 +490,17 @@ fn grabs(physics: &mut PhysicsWorld, claims: &[ClaimRow], bodies: &[ObjectId], h
 }
 
 /// A grab joint from `hand` to `object`, holding the object where it is now in the hand, with the spring
-/// [`grab_spring`] gives for the hand's `strength` and the object's mass under gravity `g`.
+/// [`grab_spring`] gives for the hand's `strength`.
 fn hold(
     physics: &mut PhysicsWorld,
     key: JointKey,
     hand: ObjectId,
     object: ObjectId,
     strength: f32,
-    g: f32,
 ) -> Result<(), PhysicsError> {
     let h = physics.pose(hand)?;
     let o = physics.pose(object)?;
-    let spring = grab_spring(strength, physics.mass(object)?, g);
+    let spring = grab_spring(strength);
     let offset = [o.position[0] - h.position[0], o.position[1] - h.position[1], o.position[2] - h.position[2]];
     let anchor_a = inverse_rotate(h.rotation, offset.map(|c| c as f32));
     let desc = JointDesc::Grab {
@@ -546,31 +587,36 @@ pub fn held_away(was_away: bool, gap: Option<f64>) -> bool {
     gap.is_some_and(|gap| gap > bound)
 }
 
-/// A throw (world-model.md 8.1; @item:primordial-engine/throws-leave-at-the-hand-s-speed-letting-go-carr): if `t.object`
-/// is with the hand that held it, its grab joint still there and the object within [`pe_seams::BREAK_AWAY`] of its
-/// place in the hand ([`hold_gap`]), its velocity becomes the throw's, capped:
-/// - linear: scaled down to [`MAX_HAND_PUSH_SPEED`], its direction kept;
-/// - angular: scaled down to `MAX_HAND_PUSH_SPEED / radius`, so the spin moves the object's rim at most at the cap
-///   (`radius` the body's bounding radius about its centre of mass, [`PhysicsWorld::local_center`]; none or zero sets
-///   no spin).
-///
-/// Otherwise (no joint from a hand, blocked or stretched past the break-away) the object keeps its solver velocity, as
-/// a `Release` leaves it. Whether the velocity was set. The test is the physics' alone, the same on every replica: the
-/// view's hysteresis ([`held_away`]'s `was_away`) is the publishing machine's, so it can't decide a simulated outcome.
-pub fn throw(physics: &mut PhysicsWorld, t: &ThrowFx, radius: Option<f32>) -> Result<bool, PhysicsError> {
-    let Some((Some(hand), _)) = physics.joint_objects(grab_key(t.object)) else { return Ok(false) };
-    if hold_gap(physics, t.object, hand).is_none_or(|gap| gap > pe_seams::BREAK_AWAY) {
+/// A throw (world-model.md 8.1; @item:primordial-engine/friend-test-11-27-hold-and-release-unfiltered-th): if
+/// `t.object` is held by a hand's grab joint, it leaves with the throw's velocity, as far as the hold's force could have
+/// changed its velocity in a frame of `dt` s: the change from its solver velocity is at most `F dt / m`, `F` the hold's
+/// force, the holder's strength ([`grab_spring`]). There is no speed cap (the user's ruling of 2026-11-26: "the grip strength should be what governs maximum throw speed"): a light object a hand carries leaves
+/// at the hand's velocity, and a heavy one that lags it keeps most of what its hold gave it. Nothing else gates it: not
+/// how far the object is from its place, nor a wall between them ("keep it straightforward and
+/// predictable"). The spin is the throw's, under Box3D's own limit of an eighth of a turn a frame. With no joint from a
+/// hand the object keeps its solver velocity, as a `Release` leaves it. Whether the velocity was set. The test is the
+/// physics' alone, the same on every replica.
+pub fn throw(physics: &mut PhysicsWorld, t: &ThrowFx, dt: f32) -> Result<bool, PhysicsError> {
+    let key = grab_key(t.object);
+    let Some((Some(_), _)) = physics.joint_objects(key) else { return Ok(false) };
+    if physics.joint_kind(key) != Some(JointKind::Grab) {
         return Ok(false);
     }
-    let cap = MAX_HAND_PUSH_SPEED as f32;
-    let linear = capped(t.linear, cap);
-    let angular = match radius.filter(|r| *r > 0.0) {
-        Some(r) => capped(t.angular, cap / r),
-        None => [0.0; 3],
-    };
+    let (v, _) = physics.velocity(t.object)?;
+    let mass = physics.mass(t.object)?;
+    let most = if mass > 0.0 { physics.grab_force(key)? * dt / mass } else { f32::INFINITY };
+    let change = capped([0usize, 1, 2].map(|i| t.linear[i] - v[i]), most);
+    // Box3D's own limits, which it would clamp to in the step anyway: its top linear speed (400 m/s, box3d-fork's
+    // `maximum_linear_speed`, which pe-physics never changes) and an eighth of a turn a frame. Bounding here keeps a
+    // wild input (a very light object, a huge spin) inside what `set_velocity` takes, instead of a fault.
+    let linear = capped([0usize, 1, 2].map(|i| v[i] + change[i]), BOX3D_TOP_SPEED);
+    let angular = capped(t.angular, 0.25 * std::f32::consts::PI / dt);
     physics.set_velocity(t.object, linear, angular)?;
     Ok(true)
 }
+
+/// Box3D's top linear speed, m/s (box3d-fork `WorldDef::maximum_linear_speed`; pe-physics never changes it).
+const BOX3D_TOP_SPEED: f32 = 400.0;
 
 /// `v` scaled down to length `max`, its direction kept.
 fn capped(v: [f32; 3], max: f32) -> [f32; 3] {

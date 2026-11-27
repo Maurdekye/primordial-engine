@@ -760,10 +760,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
                 // Throws, as the entry applies (world-model.md 8.1): the hold's joint is still there to say whether
                 // the object is with the hand, and `hands::sync` removes it before the frame's physics step.
                 for t in &fx.throws {
-                    let centre = self.physics.local_center(t.object).unwrap_or([0.0; 3]);
-                    let radius =
-                        self.world.body(t.object).ok().flatten().map(|row| bounding_radius_about(&row.shapes, centre));
-                    self.faults += u64::from(hands::throw(&mut self.physics, t, radius).is_err());
+                    self.faults += u64::from(hands::throw(&mut self.physics, t, self.dt).is_err());
                 }
             }
         }

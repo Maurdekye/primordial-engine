@@ -51,6 +51,9 @@ pub struct HandsSent {
     pub opens: [u32; 2],
     /// Per hand: the `Release`s agreement took.
     pub releases: [u32; 2],
+    /// Per hand: the objects it handed over at its open to the other hand, still closed on them, by a `Grab` from that
+    /// hand instead of a release (two-hand holds, @coordinator-opus). Each such grab is in `grabs` too.
+    pub handovers: [u32; 2],
     /// The `Grab`s agreement took, each with its hand (0 left, 1 right), so the views' records can tell their
     /// outcomes.
     pub grabs: Vec<(usize, EntryRef)>,
@@ -292,7 +295,10 @@ pub fn world_pose(rig: &RigTransform, h: &HandInput) -> Option<HandPose> {
 /// on the pick, after @fable-reviewer). A close also sends a `Grab`, in the same frame, for the object `world` picks
 /// within reach of the target just sent; it is never tried again while the hand stays closed, refused or not. An
 /// open sends a `Release` for each object that hand holds, and for its last close's grab, except what the other hand
-/// last grabbed: a ball passed between hands stays in the hand that took it.
+/// last grabbed: a ball passed between hands stays in the hand that took it. **A two-hand hold** is held by one hand
+/// at a time (one claim an object, world-model.md 7.2): if the other hand is closed when the holding hand opens, and
+/// `world` picks the object for it within its reach, the open sends a `Grab` from the other hand instead, so the object
+/// stays in the hand still holding it and leaves only when both have let go (@coordinator-opus).
 #[allow(clippy::too_many_arguments)]
 pub fn submit_hands(
     chain: &mut Chain,
@@ -363,6 +369,17 @@ pub fn submit_hands(
             }
             (true, false) => {
                 out.opens[i] += 1;
+                // The other hand, if it is closed now and stays so this tick (its sample closed and its last edge a
+                // close), at its world pose: the hand a two-hand hold passes to.
+                let other_side = if i == 0 { Hand::Right } else { Hand::Left };
+                let other =
+                    view.objects.iter().find(|o| o.hand_of == Some((chain.me(), other_side))).map(|o| o.id).zip(
+                        grasp.sent[1 - i]
+                            .then(|| feed.hand_at(other_side, at))
+                            .flatten()
+                            .filter(|o| o.closed)
+                            .and_then(|o| world_pose(&view.local_rig, &o)),
+                    );
                 let mut held = world.held(hand, p);
                 held.extend(grasp.grabbed[i].take());
                 // What the other hand last grabbed stays with it: pe-world's `Release` ends the member's claim whichever
@@ -372,6 +389,20 @@ pub fn submit_hands(
                 held.sort();
                 held.dedup();
                 for object in held {
+                    if let Some((other, at_other)) = &other
+                        && world.pick(chain.me(), *other, at_other.pos, p) == Some(object)
+                    {
+                        match send_input(chain, agree, domain, p, &Input::Grab { object, hand: Some(*other) }) {
+                            Some(id) => {
+                                grasp.grabbed[1 - i] = Some(object);
+                                out.grabs.push((1 - i, id));
+                                out.handovers[i] += 1;
+                                continue;
+                            }
+                            // Refused: it leaves as a release would, below.
+                            None => out.refused += 1,
+                        }
+                    }
                     // A throw where the hand's velocity at the real opening is known and finite (world-model.md 8.1):
                     // the grasp goes in at the stamp, after the opening, on a hand that may already be slowing, so
                     // the object takes the velocity it had with the hand when the player opened it. Else a release.

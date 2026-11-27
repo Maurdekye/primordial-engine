@@ -1750,76 +1750,11 @@ fn fast_run() -> (World, Vec<SignedEntry>) {
     (with_hands_and_balls(&[(HAND, start)], &balls), entries)
 }
 
-/// A hand kept faster than the cap (world-model.md 8.1's test): through the second at 15 m/s its body trails its
-/// target, and is placed at it again, carrying the ball it holds, whenever it would trail by more than the teleport
-/// distance, so it never trails by more (its contacts come in bursts). The balls it runs through move no faster than
-/// the cap plus the solver's push-out speed (Box3D's soft contacts resolving the overlap of a body driven at exactly
-/// the cap: measured 10.5 m/s, with or without the held ball), and the ball stays in the hand.
+/// A throw leaves at the hand's speed, with no cap (the user's ruling of 2026-11-26): the ball is
+/// carried along with the hand at `v` and thrown at it.
 #[test]
-fn a_hand_kept_faster_than_the_cap_trails_by_at_most_the_teleport_distance() {
-    let (world, entries) = fast_run();
-    let mut s = Source::default();
-    entries.into_iter().for_each(|e| s.add(e));
-    let mut r = replica_of(world);
-    r.advance(Frame(10), &mut s);
-    let run_through: Vec<u128> = (100..128).collect();
-    let mut last: Vec<[f64; 3]> = run_through.iter().map(|&id| at(&r, id)).collect();
-    let (mut lag, mut top) = (0.0_f64, 0.0_f64);
-    for f in 10..72u64 {
-        let target = at(&r, HAND);
-        r.advance(Frame(f + 1), &mut s);
-        lag = lag.max(distance(r.physics().pose(oid(HAND)).expect("the hand's body").position, target));
-        for (k, &id) in run_through.iter().enumerate() {
-            let p = at(&r, id);
-            top = top.max(distance(p, last[k]) * 60.0);
-            last[k] = p;
-        }
-    }
-    let teleport = pe_replica::hands::teleport_distance(pe_seams::SimRate::DEFAULT);
-    assert!(lag > 0.2 && lag <= teleport, "it trails, by at most {teleport} m: {lag} m");
-    assert!(top > 5.0 && top < pe_replica::hands::MAX_HAND_PUSH_SPEED + contact_speed(), "what it hits: {top} m/s");
-    assert_eq!(held_by(&r, BALL), Some(oid(HAND)), "the ball stays in the hand");
-    assert_eq!(r.faults(), 0);
-}
-
-/// A flick with an object held half a metre out (world-model.md 8.1's test): a 36 cm ball, light enough (1 kg/m3,
-/// 0.2 kg) for the grab's spring to swing it at the hand's speed, held 0.5 m from the hand's centre, turns 45 degrees
-/// with it in one frame, which would carry it 38 cm (23 m/s; Box3D alone would turn the hand that far in one step,
-/// and the pit ball on its arc would leave at 16 m/s). The turn is slowed so that the held ball, and the pit ball,
-/// move no faster than the cap, and the held ball ends at its turned place.
-#[test]
-fn a_flick_with_an_object_held_half_a_metre_out_stays_under_the_cap() {
-    let keys = keys();
-    let mut b = EntryBuilder::new(&keys, 0);
-    let mut s = Source::default();
-    let hand = [2.0, 0.36, 0.0];
-    let half = std::f32::consts::FRAC_PI_8;
-    let turned = [0.0, half.sin(), 0.0, half.cos()];
-    s.add(input(&mut b, 2, &hand_at(&[hand; 10], true)));
-    s.add(input(&mut b, 6, &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) }));
-    s.add(input(&mut b, 12, &hand_of(HAND, &[hand; 16], turned, true)));
-    let big = Shape { kind: shape_kind::SPHERE, density: 1.0, size: [0.36, 0.0, 0.0], ..Shape::default() };
-    let (c, n) = (std::f64::consts::FRAC_PI_8.cos(), std::f64::consts::FRAC_PI_8.sin());
-    let balls = [(BALL, [2.5, 0.36, 0.0], big), (NEXT, [2.0 + 0.5 * c, 0.03, -0.5 * n], pit_ball())];
-    let mut r = replica_of(with_hands_and_balls(&[(HAND, hand)], &balls));
-    r.advance(Frame(12), &mut s);
-    assert_eq!(held_by(&r, BALL), Some(oid(HAND)));
-    let top = fastest(&mut r, &mut s, &[BALL, NEXT], 40);
-    assert!(top < pe_replica::hands::MAX_HAND_PUSH_SPEED, "the held ball and the one on its arc: {top} m/s");
-    let quarter = std::f64::consts::FRAC_PI_4;
-    let place = [2.0 + 0.5 * quarter.cos(), 0.36, -0.5 * quarter.sin()];
-    assert!(distance(at(&r, BALL), place) < 0.01, "at its turned place: {:?}, {place:?}", at(&r, BALL));
-    assert_eq!(r.faults(), 0);
-}
-
-/// Throws (world-model.md 8.1; @coordinator-opus): a pit ball thrown straight up, the hand speeding up
-/// over three frames and keeping its speed for two (0.2 to 0.9 m of travel), then opening and releasing it, leaves at
-/// the hand's speed up to the cap: at 4, 8, 11 and 14 m/s, within 10% of the smaller of the two (the grab's spring
-/// trails a little while the hand speeds up, and overshoots a little catching up).
-#[test]
-fn a_throw_leaves_at_the_hand_s_speed_up_to_the_cap() {
-    let cap = pe_replica::hands::MAX_HAND_PUSH_SPEED;
-    for v in [4.0, 8.0, 11.0, 14.0] {
+fn a_throw_leaves_at_the_hand_s_speed_with_no_cap() {
+    for v in [4.0, 8.0, 11.0, 14.0, 25.0, 40.0] {
         let keys = keys();
         let mut b = EntryBuilder::new(&keys, 0);
         let mut s = Source::default();
@@ -1836,14 +1771,16 @@ fn a_throw_leaves_at_the_hand_s_speed_up_to_the_cap() {
         s.add(input(&mut b, 6, &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) }));
         s.add(input(&mut b, 10, &hand_at(&path[..4], true)));
         s.add(input(&mut b, 14, &hand_at(&path[4..], false)));
-        s.add(input(&mut b, 14, &Input::Release { object: oid(BALL) }));
+        let linear = [0.0, v as f32, 0.0];
+        s.add(input(&mut b, 14, &Input::Throw { object: oid(BALL), linear, angular: [0.0; 3] }));
         let mut r = replica_of(with_hands_and_balls(&[(HAND, start)], &[(BALL, [2.0, 0.03, 0.0], pit_ball())]));
         r.advance(Frame(15), &mut s);
         assert_eq!(r.physics().joint_count(), 0, "released");
         let left = f64::from(r.physics().velocity(oid(BALL)).expect("the ball's body").0[1]);
-        let expected = v.min(cap);
         println!("RESULT a {v} m/s throw leaves at {left:.2} m/s");
-        assert!((left - expected).abs() < 0.1 * expected, "a {v} m/s throw leaves at {left} m/s");
+        // Upward, less the frame of gravity after the throw applies.
+        let expected = v - 9.81 / 60.0;
+        assert!((left - expected).abs() < 0.01 * v, "a {v} m/s throw leaves at {left} m/s");
         assert_eq!(r.faults(), 0);
     }
 }
@@ -1902,31 +1839,45 @@ fn a_holder_s_throw_gives_the_ball_its_velocity_as_the_entry_applies() {
     assert_eq!(r.faults(), 0);
 }
 
-/// A throw's caps (world-model.md 8.1): the linear speed is scaled down to `max_push_speed`, its direction kept, and
-/// the spin so its rim moves at most at the cap (`max_push_speed` / the bounding radius: 27.8 rad/s for a 36 cm ball).
+/// What limits a throw is the grip (the user's ruling of 2026-11-26): the change it makes to the held
+/// object's velocity is at most what the holder's strength gives it in a frame, `F dt / m`. A 36 cm ball of 195 g held
+/// still and thrown at 15 m/s leaves at 110 N / 0.195 kg / 60 Hz, 9.4 m/s, in the throw's direction; an 8 kg ball at
+/// 0.23 m/s. The spin is the throw's, under Box3D's own limit of an eighth of a turn a frame (47.1 rad/s at 60 Hz).
 #[test]
-fn a_throw_is_capped_at_the_push_speed_and_its_spin_at_the_rim_s() {
+fn a_throw_is_limited_by_the_grip_and_its_spin_by_box3d_alone() {
     let g = 9.81 / 60.0;
-    let cap = pe_replica::hands::MAX_HAND_PUSH_SPEED;
-    let big = Shape { kind: shape_kind::SPHERE, density: 1.0, size: [0.36, 0.0, 0.0], ..Shape::default() };
-    let throw = Input::Throw { object: oid(BALL), linear: [12.0, 0.0, 9.0], angular: [0.0, 100.0, 0.0] };
-    let (world, entries) = held_then(big, 0.36, true, throw);
-    let (v, w, r) = velocity_after(world, entries, 41);
-    assert!((v[0] - 0.8 * cap).abs() < 0.05 && (v[2] - 0.6 * cap).abs() < 0.05, "15 m/s scaled to 10: {v:?}");
-    assert!((v[1] + g).abs() < 0.05, "and only gravity's frame down: {v:?}");
-    assert!((w[1] - cap / 0.36).abs() < 0.3, "100 rad/s capped at the rim's 10 m/s: {w:?}");
-    assert_eq!(r.faults(), 0);
+    let strength = f64::from(pe_world::components::DEFAULT_STRENGTH);
+    for (density, label) in [(1.0_f32, "195 g"), (41.0, "8 kg")] {
+        let big = Shape { kind: shape_kind::SPHERE, density, size: [0.36, 0.0, 0.0], ..Shape::default() };
+        let throw = Input::Throw { object: oid(BALL), linear: [12.0, 0.0, 9.0], angular: [0.0, 30.0, 0.0] };
+        let (world, entries) = held_then(big, 0.36, true, throw);
+        let (v, w, r) = velocity_after(world, entries, 41);
+        let mass = f64::from(r.physics().mass(oid(BALL)).expect("the ball's mass"));
+        let most = (strength / mass / 60.0).min(15.0);
+        let along = (v[0] * 0.8 + v[2] * 0.6, v[0] * 0.6 - v[2] * 0.8);
+        println!(
+            "RESULT a {label} ball held still, thrown at 15 m/s: leaves at {:.2} m/s (the grip's {most:.2})",
+            along.0
+        );
+        assert!((along.0 - most).abs() < 0.03 * most + 0.02 && along.1.abs() < 0.02, "{label}: {v:?}");
+        // The light ball sits still in the hand, so only gravity's frame moves it down; the heavy one still bobs on
+        // its spring (110 N against its 78 N weight), and keeps that vertical speed.
+        if density < 2.0 {
+            assert!(v[1] < 0.0 && v[1] > -g - 0.05, "{label}: only gravity's frame down: {v:?}");
+        }
+        assert!((w[1] - 30.0).abs() < 0.3, "{label}: the spin is the throw's: {w:?}");
+        assert_eq!(r.faults(), 0);
+    }
 }
 
 /// The far end of a dumbbell: a compound child of `BALL`.
 const FAR_END: u128 = 74;
 
-/// A throw's spin is capped at the rim's speed about the object's centre of mass (world-model.md 8.1), not about its
-/// origin: a dumbbell of two 3 cm pit balls 50 cm apart, held by one, has its centre 25 cm along, so it spins at up to
-/// 10 m/s over 28 cm (35.7 rad/s), where the radius about its origin (53 cm) would allow only 18.9. Both are under
-/// Box3D's own limit of 45 degrees a tick (47.1 rad/s at 60 Hz, replica.md 3.5).
+/// A throw's spin has no cap of its own (the user's ruling of 2026-11-26): a dumbbell, a pit ball with a second at
+/// 0.5 m, thrown at 100 rad/s turns at Box3D's own limit of an eighth of a turn a frame, 47.1 rad/s at 60 Hz, where it
+/// was 10 m/s at its 28 cm rim (36 rad/s) before.
 #[test]
-fn a_throw_s_spin_cap_takes_the_radius_about_the_centre_of_mass() {
+fn a_throw_s_spin_is_limited_only_by_box3d() {
     let throw = Input::Throw { object: oid(BALL), linear: [0.0; 3], angular: [0.0, 100.0, 0.0] };
     let (mut world, entries) = held_then(pit_ball(), 0.03, true, throw);
     let k = keys().key(0);
@@ -1934,17 +1885,16 @@ fn a_throw_s_spin_cap_takes_the_radius_about_the_centre_of_mass() {
     world.insert(oid(FAR_END), Transform::local([0.0, 0.0, 0.5])).expect("its place");
     world.insert(oid(FAR_END), pit_ball()).expect("its shape");
     let (_, w, r) = velocity_after(world, entries, 41);
-    let centre = r.physics().local_center(oid(BALL)).expect("the dumbbell's body");
-    assert!(centre[0].abs() < 1e-4 && centre[1].abs() < 1e-4 && (centre[2] - 0.25).abs() < 1e-4, "{centre:?}");
-    let cap = pe_replica::hands::MAX_HAND_PUSH_SPEED;
-    assert!((w[1] - cap / 0.28).abs() < 0.5 && w[0].abs() < 0.5 && w[2].abs() < 0.5, "capped at 10 m/s / 28 cm: {w:?}");
+    let limit = 0.25 * std::f64::consts::PI * 60.0;
+    assert!((w[1] - limit).abs() < 0.1 && w[0].abs() < 0.5 && w[2].abs() < 0.5, "Box3D's 47.1 rad/s: {w:?}");
     assert_eq!(r.faults(), 0);
 }
 
-/// A throw of a ball the wall keeps more than the break-away distance from its place in the hand (world-model.md 8.1):
-/// it isn't with the hand, so it keeps the solver's velocity, pressed against the wall, and the hold ends.
+/// A throw applies whenever the hand's joint holds the object (the user's ruling of 2026-11-26: "keep
+/// it straightforward and predictable"): a ball held away from its place by a wall, its hand carried 1 m past it, is
+/// thrown back at 5 m/s. Until then it kept its solver velocity.
 #[test]
-fn a_throw_of_a_ball_held_away_by_a_wall_keeps_the_solver_s_velocity() {
+fn a_throw_of_a_ball_held_away_by_a_wall_still_applies() {
     // `pinned`'s scene (the hand carried 1 m past the wall the ball is held against), with the throw on its chain.
     let keys = keys();
     let mut b = EntryBuilder::new(&keys, 0);
@@ -1958,12 +1908,11 @@ fn a_throw_of_a_ball_held_away_by_a_wall_keeps_the_solver_s_velocity() {
     entries.into_iter().for_each(|e| s.add(e));
     let mut r = replica_of(world);
     r.advance(Frame(45), &mut s);
-    let gap = pe_replica::hands::hold_gap(r.physics(), oid(BALL), oid(HAND)).expect("held");
-    assert!(gap > pe_seams::BREAK_AWAY, "held away by the wall: {gap}");
+    assert!(held_by(&r, BALL) == Some(oid(HAND)), "held");
     r.advance(Frame(46), &mut s);
     assert_eq!(held_by(&r, BALL), None, "the throw ended the hold");
     let v = r.physics().velocity(oid(BALL)).expect("the ball").0;
-    assert!(v[0] > -1.0, "not thrown back at 5 m/s: {v:?}");
+    assert!((v[0] + 5.0).abs() < 0.2, "thrown back at 5 m/s: {v:?}");
     assert_eq!(r.faults(), 0);
 }
 
@@ -2184,107 +2133,6 @@ fn pinned(by: f64, lift: bool) -> (Vec<SignedEntry>, World, u64) {
     (entries, world, 60)
 }
 
-/// A held ball pinned by a wall (world-model.md 8.1's test, @coordinator-opus): with the hand 1 m or
-/// 3 m past the wall it stays on its side, pressed less than a centimetre in, and when the wall is deleted it comes
-/// back to its place no faster than the cap, because its spring sees at most the cap's reach of the error. With the
-/// tight hold's stiff spring it closes that reach within a frame, so it comes back at about its reach a frame,
-/// below the cap (measured: 4.65 m/s by the distance it moves a frame, 3.40 m/s at a frame's end; 8.2 and 8.4 m/s with
-/// M1's 5 Hz spring; unbounded it came back at 10.1 and 30.7 m/s).
-#[test]
-fn a_ball_pinned_by_a_wall_stays_on_its_side_and_comes_back_no_faster_than_the_cap() {
-    for by in [1.0, 3.0] {
-        let (entries, world, clear) = pinned(by, false);
-        let mut s = Source::default();
-        entries.into_iter().for_each(|e| s.add(e));
-        let mut r = replica_of(world);
-        let mut deepest = f64::MIN;
-        while r.frame().0 < clear {
-            let next = r.frame().0 + 1;
-            r.advance(Frame(next), &mut s);
-            deepest = deepest.max(at(&r, BALL)[0]);
-        }
-        let (mut top, mut moved, mut last) = (0.0_f64, 0.0_f64, at(&r, BALL));
-        while r.frame().0 < 120 {
-            let next = r.frame().0 + 1;
-            r.advance(Frame(next), &mut s);
-            top = top.max(ball_speed(&r, BALL));
-            moved = moved.max(distance(at(&r, BALL), last) * 60.0);
-            last = at(&r, BALL);
-        }
-        println!(
-            "RESULT pinned {by} m past: x {deepest:.4} m at deepest, back at {moved:.2} m/s ({top:.2} at a frame's end)"
-        );
-        let cap = pe_replica::hands::MAX_HAND_PUSH_SPEED;
-        assert!(deepest < 2.23, "{by} m past: on its side, less than 1 cm in: {deepest}");
-        assert!(
-            moved > 4.0 && moved < cap && top < cap,
-            "{by} m past: comes back at {moved} m/s ({top} at a frame's end)"
-        );
-        assert!(distance(at(&r, BALL), place_in(&r, HAND, BALL)) < 0.01, "{by} m past: back in its place");
-        assert_eq!(r.faults(), 0);
-    }
-}
-
-/// The realistic way past a wall (@design-reviewer): the hand 1 m past it lifts to 2.5 m, the ball
-/// slides up the wall's face (until the pull's angle from the face's normal is within its friction's, which a lift to
-/// only 1.3 m never passes), crosses the face's plane only above the wall, and comes to its place under the cap.
-#[test]
-fn a_ball_held_against_a_wall_is_lifted_over_it() {
-    let (entries, world, _) = pinned(1.0, true);
-    let mut s = Source::default();
-    entries.into_iter().for_each(|e| s.add(e));
-    let mut r = replica_of(world);
-    let (mut last, mut top) = (at(&r, BALL), 0.0_f64);
-    while r.frame().0 < 150 {
-        let next = r.frame().0 + 1;
-        r.advance(Frame(next), &mut s);
-        let a = at(&r, BALL);
-        if last[0] < 2.25 && a[0] >= 2.25 {
-            let u = (2.25 - last[0]) / (a[0] - last[0]);
-            let y = last[1] + u * (a[1] - last[1]);
-            assert!(y > 1.0, "crosses the face's plane above the wall: at y = {y}");
-        }
-        top = top.max(ball_speed(&r, BALL));
-        last = a;
-    }
-    assert!(at(&r, BALL)[0] > 2.35, "over the wall: {:?}", at(&r, BALL));
-    assert!(distance(at(&r, BALL), place_in(&r, HAND, BALL)) < 0.01, "in its place: {:?}", at(&r, BALL));
-    assert!(top < pe_replica::hands::MAX_HAND_PUSH_SPEED, "{top} m/s");
-    assert_eq!(r.faults(), 0);
-}
-
-/// The wall check on a trailing placement (@coordinator-opus): a hand at 12 m/s carried 3 m past a wall
-/// trails its target and is placed again and again, but a placement carries the ball it holds only where no static
-/// geometry is in the way, so the ball stays on its side at 30, 60 and 120 Hz (as built on 0eebdfca, a placement
-/// carried it 0.72 m through the wall in one frame).
-#[test]
-fn an_overrun_past_a_wall_leaves_the_held_ball_on_its_side() {
-    for hz in [30, 60, 120] {
-        let keys = keys();
-        let mut b = EntryBuilder::new(&keys, 0);
-        let fr = |t: f64| (t * f64::from(hz)).round() as u64;
-        let start = [2.08, 0.03, 0.0];
-        let past = [5.08, 0.03, 0.0];
-        let mut s = Source::default();
-        path_inputs(&mut b, HAND, hz, 2, fr(1.5), &move |t| lerp(start, past, (t - 0.2) / 0.25))
-            .into_iter()
-            .for_each(|e| s.add(e));
-        s.add(input(&mut b, fr(0.1), &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) }));
-        let mut world = with_hands_and_balls(&[(HAND, start)], &[(BALL, [2.2, 0.03, 0.0], pit_ball())]);
-        add_wall(&mut world);
-        let mut r = replica_at(world, hz);
-        let mut deepest = f64::MIN;
-        while r.frame().0 < fr(1.5) {
-            let next = r.frame().0 + 1;
-            r.advance(Frame(next), &mut s);
-            deepest = deepest.max(at(&r, BALL)[0]);
-        }
-        assert!(deepest < 2.24, "{hz} Hz: on its side: {deepest}");
-        assert_eq!(held_by(&r, BALL), Some(oid(HAND)), "{hz} Hz: still held");
-        assert_eq!(r.faults(), 0);
-    }
-}
-
 /// The corner (@design-reviewer): a ball held against the wall's face 3 cm from its end, the hand
 /// overrunning diagonally past the end at 25 m/s, so a trailing placement comes while the ball is still at the
 /// corner. The ball's centre would pass 2 cm beside the end, but its volume overlaps it, so the shape cast keeps it;
@@ -2364,48 +2212,6 @@ fn a_held_object_goes_away_above_five_cm_and_comes_back_below_three() {
     assert!(!held_away(true, None) && !held_away(false, None), "no hold, no break-away");
 }
 
-/// Two hands, two holds, each bounded by its own hand's speed (@design-reviewer): the left holds a ball
-/// pinned against the wall with the hand still 1 m past it, while the right carries another along in the open at
-/// 15 m/s, above the cap. The pinned ball stays on its side; the right's ball catches up no faster than the cap
-/// allows (its excess is at most the support's, about 0.44 m/s), and stays up in its hand.
-#[test]
-fn two_holds_are_bounded_each_by_its_own_hand() {
-    let keys = keys();
-    let mut b = EntryBuilder::new(&keys, 0);
-    let (start, past) = ([2.08, 0.03, 0.0], [3.08, 0.03, 0.0]);
-    let right = [-5.0 - 0.03 - f64::from(pe_replica::world::HAND_RADIUS), 0.03, -3.0];
-    let mut s = Source::default();
-    path_inputs(&mut b, HAND, 60, 2, 120, &move |t| lerp(start, past, (t - 0.17) / 0.5))
-        .into_iter()
-        .for_each(|e| s.add(e));
-    let run = move |t: f64| {
-        let up = lerp(right, [right[0], 1.0, -3.0], (t - 0.2) / 0.3);
-        [up[0] + 15.0 * (t - 0.8).clamp(0.0, 0.5), up[1], up[2]]
-    };
-    path_inputs(&mut b, RIGHT, 60, 2, 120, &run).into_iter().for_each(|e| s.add(e));
-    s.add(input(&mut b, 6, &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) }));
-    s.add(input(&mut b, 6, &Input::Grab { object: oid(NEXT), hand: Some(oid(RIGHT)) }));
-    let balls = [(BALL, [2.2, 0.03, 0.0], pit_ball()), (NEXT, [-5.0, 0.03, -3.0], pit_ball())];
-    let mut world = with_hands_and_balls(&[(HAND, start), (RIGHT, right)], &balls);
-    add_wall(&mut world);
-    let mut r = replica_of(world);
-    let (mut deepest, mut top, mut below) = (f64::MIN, 0.0_f64, 0.0_f64);
-    while r.frame().0 < 120 {
-        let next = r.frame().0 + 1;
-        r.advance(Frame(next), &mut s);
-        deepest = deepest.max(at(&r, BALL)[0]);
-        if next > 48 {
-            top = top.max(ball_speed(&r, NEXT));
-            below = below.max(place_in(&r, RIGHT, NEXT)[1] - at(&r, NEXT)[1]);
-        }
-    }
-    assert!(deepest < 2.23, "the pinned ball stays on its side: {deepest}");
-    assert!(top > 8.0 && top < pe_replica::hands::MAX_HAND_PUSH_SPEED + 0.5, "the carried ball: {top} m/s");
-    assert!(below < 0.02, "and stays up in its hand: {below} m below its place");
-    assert_eq!((held_by(&r, BALL), held_by(&r, NEXT)), (Some(oid(HAND)), Some(oid(RIGHT))));
-    assert_eq!(r.faults(), 0);
-}
-
 /// The bound is a function of the state at each step's start, never kept outside the physics image (an anchor moved
 /// for a step is put back after it), so a rollback across frames where it acts replays to the same roots: the wall's
 /// deletion arriving late, and a hand input of the pinned stretch arriving late.
@@ -2431,70 +2237,6 @@ fn a_rollback_across_frames_where_a_hold_is_bounded_replays_the_same_roots() {
         assert!(adv.rolled_back_to.is_some_and(|f| f <= entries[late].entry.stamp), "rolled back: {adv:?}");
         assert_eq!(roots(&c, 96), roots(&a, 96));
         assert_eq!((a.faults(), c.faults()), (0, 0));
-    }
-}
-
-/// A held ball with the hand at 1.5 times the cap for 2 s (world-model.md 8.1's test), sideways at 1 m up, straight up
-/// and straight down: it trails its place and catches up once the hand stops, moving at most about the cap, and, the
-/// support part of its hold keeping it up, it never sags more than a centimetre or so below its place sideways or
-/// downwards. Measured with the tight hold: 10.47, 10.02 and 10.61 m/s, the last with gravity's fall (it falls freely
-/// while the hand goes down at the cap, until it is below its place); trails of 0.22, 0.23 and 0.20 m; 4.0 mm below
-/// its place sideways. Each placement of the hand carries the light ball to its place in the hand with no velocity
-/// ([`pe_replica::hands::follows_tightly`]), and the hold's force cap takes about three frames to bring it back to the
-/// cap, so it lags by about that much and no more; carried at its offset instead it lagged more at every placement
-/// (1.5 m after 2 s). With M1's 5 Hz spring and a cap of 1,000 N it was 9.95, 10.20 and 10.12 m/s, under 1 m of trail
-/// and 1.0 cm below.
-#[test]
-fn a_held_ball_kept_above_the_cap_for_two_seconds_trails_and_stays_up() {
-    for dir in 0..3u8 {
-        let keys = keys();
-        let mut b = EntryBuilder::new(&keys, 0);
-        let x0 = -9.0 - 0.03 - f64::from(pe_replica::world::HAND_RADIUS);
-        let floor = [x0, 0.03, 0.0];
-        let (t_run, path): (f64, Box<dyn Fn(f64) -> [f64; 3]>) = match dir {
-            0 => (
-                1.0,
-                Box::new(move |t: f64| {
-                    let up = lerp(floor, [x0, 1.0, 0.0], (t - 0.2) / 0.5);
-                    [up[0] + 15.0 * (t - 1.0).clamp(0.0, 2.0), up[1], 0.0]
-                }),
-            ),
-            1 => (1.0, Box::new(move |t: f64| [x0, 0.03 + 15.0 * (t - 1.0).clamp(0.0, 2.0), 0.0])),
-            _ => (
-                4.0,
-                Box::new(move |t: f64| {
-                    let lifted = [x0, 0.03 + 10.0 * (t - 0.2).clamp(0.0, 3.1), 0.0];
-                    [x0, lifted[1] - 15.0 * (t - 4.0).clamp(0.0, 2.0), 0.0]
-                }),
-            ),
-        };
-        let end = ((t_run + 2.5) * 60.0) as u64;
-        let mut s = Source::default();
-        path_inputs(&mut b, HAND, 60, 2, end, &*path).into_iter().for_each(|e| s.add(e));
-        s.add(input(&mut b, 6, &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) }));
-        let mut r = replica_of(with_hands_and_balls(&[(HAND, floor)], &[(BALL, [-9.0, 0.03, 0.0], pit_ball())]));
-        let (mut top, mut below, mut trail) = (0.0_f64, 0.0_f64, 0.0_f64);
-        while r.frame().0 < end {
-            let next = r.frame().0 + 1;
-            r.advance(Frame(next), &mut s);
-            if next as f64 >= t_run * 60.0 {
-                let (ball, place) = (at(&r, BALL), place_in(&r, HAND, BALL));
-                top = top.max(ball_speed(&r, BALL));
-                below = below.max(place[1] - ball[1]);
-                trail = trail.max(distance(ball, place));
-            }
-        }
-        let cap = pe_replica::hands::MAX_HAND_PUSH_SPEED;
-        println!("RESULT overrun direction {dir}: top {top:.2} m/s, trail {trail:.3} m, below {below:.4} m");
-        // Straight down, gravity's fall adds to the cap.
-        let over = if dir == 2 { 0.7 } else { 0.5 };
-        assert!(top > 9.0 && top < cap + over, "direction {dir}: {top} m/s");
-        assert!(trail > 0.1 && trail < 0.3, "direction {dir}: it trails, at most {trail} m");
-        if dir != 1 {
-            assert!(below < 0.02, "direction {dir}: it stays up, at most {below} m below its place");
-        }
-        assert!(distance(at(&r, BALL), place_in(&r, HAND, BALL)) < 0.02, "direction {dir}: back in its place");
-        assert_eq!(r.faults(), 0);
     }
 }
 
@@ -2534,73 +2276,12 @@ fn a_placement_carries_a_heavy_hold_at_its_offset_never_up_to_the_hand() {
     assert_eq!(r.faults(), 0);
 }
 
-const SHELF: u128 = 71;
-const UPPER: u128 = 72;
-
 fn add_static(w: &mut World, id: u128, center: [f64; 3], half: [f32; 3]) {
     let k = keys().key(0);
     w.create(oid(id), None, k, GENESIS).expect("static box");
     w.insert(oid(id), Transform::at(pos(center[0], center[1], center[2]))).expect("its transform");
     w.insert(oid(id), Body { friction: 0.6, ..Body::default() }).expect("its body");
     w.insert(oid(id), cuboid(half)).expect("its shape");
-}
-
-/// A ball pinned in a corner at 45 degrees from its place, then released with the hand still (@design-reviewer's
-/// Medium on 9d3a0270). `below`: the ball under a ceiling against the wall, its place up and beyond (the hand carried 1
-/// m up and 1 m past); otherwise the ball on a shelf against a wall above it, its place down and beyond. At 1 s both
-/// obstacles are deleted. The ball's top speed after.
-fn diagonal(below: bool) -> f64 {
-    let keys = keys();
-    let mut b = EntryBuilder::new(&keys, 0);
-    let y0 = if below { 0.03 } else { 1.03 };
-    let start = [2.08, y0, 0.0];
-    let to = [3.08, if below { 1.03 } else { 0.03 }, 0.0];
-    let mut s = Source::default();
-    path_inputs(&mut b, HAND, 60, 2, 150, &move |t| lerp(start, to, (t - 0.17) / 0.5))
-        .into_iter()
-        .for_each(|e| s.add(e));
-    s.add(input(&mut b, 6, &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) }));
-    let delete =
-        tx(vec![Op::Delete { id: Target::Existing(oid(SHELF)) }, Op::Delete { id: Target::Existing(oid(UPPER)) }]);
-    s.add(b.next(Class::Edit, Frame(60), Bytes::from(delete.encode())));
-    let mut world = with_hands_and_balls(&[(HAND, start)], &[(BALL, [2.2, y0, 0.0], pit_ball())]);
-    if below {
-        add_static(&mut world, SHELF, [1.9, 0.35, 0.0], [0.35, 0.05, 1.0]);
-        add_static(&mut world, UPPER, [2.30, 0.5, 0.0], [0.05, 0.5, 1.0]);
-    } else {
-        add_static(&mut world, SHELF, [1.9, 0.95, 0.0], [0.35, 0.05, 1.0]);
-        add_static(&mut world, UPPER, [2.30, 1.5, 0.0], [0.05, 0.5, 1.0]);
-    }
-    let mut r = replica_of(world);
-    r.advance(Frame(60), &mut s);
-    let pinned = at(&r, BALL);
-    assert!(pinned[0] < 2.23, "pinned against the wall: {pinned:?}");
-    let (mut top, mut last) = (0.0_f64, pinned);
-    while r.frame().0 < 150 {
-        let next = r.frame().0 + 1;
-        r.advance(Frame(next), &mut s);
-        top = top.max(ball_speed(&r, BALL)).max(distance(at(&r, BALL), last) * 60.0);
-        last = at(&r, BALL);
-    }
-    assert!(distance(at(&r, BALL), place_in(&r, HAND, BALL)) < 0.01, "back in its place: {:?}", at(&r, BALL));
-    assert_eq!(r.faults(), 0);
-    top
-}
-
-/// The 45 degree pins (world-model.md 8.1): a ball pinned below and beside its place, or above and beside it, comes
-/// back with the hand still at no more than the cap plus the support's excess (k s_min, 0.16 m/s at 60 Hz; above,
-/// gravity also pulls it down, by about g times its return), its speed the larger of its velocity at a frame's end and
-/// the distance it moves a frame. Measured with the tight hold, which closes its reach within a frame: 4.65 and 4.85
-/// m/s (8.39 and 8.57 m/s with M1's 5 Hz spring). Cut part by part, as on 9d3a0270, the spring would see sqrt(2) times
-/// the reach: about 12 m/s by the linear model at 5 Hz [I].
-#[test]
-fn a_ball_pinned_at_45_degrees_from_its_place_comes_back_under_the_cap() {
-    let cap = pe_replica::hands::MAX_HAND_PUSH_SPEED;
-    let below = diagonal(true);
-    let above = diagonal(false);
-    println!("RESULT 45 degree pins: below and beside {below:.2} m/s, above and beside {above:.2} m/s");
-    assert!(below > 4.0 && below < cap + 0.5, "below and beside: {below} m/s");
-    assert!(above > 4.0 && above < cap + 0.5, "above and beside: {above} m/s");
 }
 
 // ---- the tight hold (world-model.md 8.1; @item:primordial-engine/tight-hold-for-light-objects-capped-by-a-per-pla) --
@@ -2690,44 +2371,6 @@ fn a_hands_strength_decides_what_it_can_lift() {
     println!("RESULT 8 kg: {:.1} mm below its place at 110 N, {:.3} m at 60 N", strong * 1e3, weak);
     assert!(strong < 0.005, "lifted by 110 N: {strong} m below its place");
     assert!(weak > 0.9, "not lifted by 60 N: {weak} m below its place");
-}
-
-/// A ball held into the floor stays on it (world-model.md 8.1; @coordinator-opus): the hand comes down
-/// at 1 m/s until the ball's place is 20 cm under the floor's top, stays 0.5 s, and lifts it out. The hold's force cap
-/// keeps it from sinking in (measured: 1.55 mm deep at 30, 60 and 120 Hz; a stiff spring capped at 110 N alone sank
-/// it 43-47 mm), it doesn't creep sideways, and it comes out with the hand.
-#[test]
-fn a_ball_held_into_the_floor_stays_on_it_and_comes_out_with_the_hand() {
-    let hr = f64::from(pe_replica::world::HAND_RADIUS);
-    for hz in [30_u32, 60, 120] {
-        let rate = f64::from(hz);
-        let over = [0.0, 0.5 + 0.03 + hr, 0.0];
-        let low = 0.03 - 0.2 + 0.03 + hr;
-        let down = 0.3 + over[1] - low;
-        let p = move |t: f64| {
-            let y = if t < down + 0.5 { (over[1] - (t - 0.3).max(0.0)).max(low) } else { low + (t - down - 0.5) };
-            [0.0, y.min(over[1]), 0.0]
-        };
-        let mut b = EntryBuilder::new(&keys(), 0);
-        let end = ((down + 1.5) * rate) as u64;
-        let mut s = Source::default();
-        path_inputs(&mut b, HAND, hz, 2, end, &p).into_iter().for_each(|e| s.add(e));
-        s.add(input(&mut b, u64::from(hz / 10), &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) }));
-        let mut r = replica_at(with_hands_and_balls(&[(HAND, over)], &[(BALL, [0.0, 0.5, 0.0], pit_ball())]), hz);
-        let (mut deepest, mut aside) = (0.0_f64, 0.0_f64);
-        while r.frame().0 < end {
-            let next = r.frame().0 + 1;
-            r.advance(Frame(next), &mut s);
-            let ball = at(&r, BALL);
-            deepest = deepest.max(0.03 - ball[1]);
-            aside = aside.max(ball[0].abs()).max(ball[2].abs());
-        }
-        println!("RESULT {hz} Hz: {:.2} mm into the floor, {:.3} mm aside", deepest * 1e3, aside * 1e3);
-        assert!(deepest < 0.003, "{hz} Hz: {deepest} m into the floor");
-        assert!(aside < 0.001, "{hz} Hz: crept {aside} m aside");
-        assert!(distance(at(&r, BALL), place_in(&r, HAND, BALL)) < 0.01, "{hz} Hz: out with the hand");
-        assert_eq!(r.faults(), 0);
-    }
 }
 
 const PEDESTAL: u128 = 73;
@@ -2841,39 +2484,6 @@ fn a_ball_held_into_a_stack_pushes_it_gently_and_a_late_input_replays_the_same_r
     assert!(adv.rolled_back_to.is_some_and(|f| f <= entries[late].entry.stamp), "rolled back: {adv:?}");
     assert_eq!(roots(&l, end), roots(&r, end), "the same roots");
     assert_eq!(l.faults(), 0);
-}
-
-/// A trailing placement still carries a held box sliding along the floor (@design-reviewer): the box's
-/// enclosing capsule overlaps the floor more than the box does, and the mover cast passes it because the move goes
-/// along the floor, not into it. Each time the hand's body is placed, the box moves with it.
-#[test]
-fn a_trailing_placement_carries_a_held_box_sliding_along_the_floor() {
-    let keys = keys();
-    let mut b = EntryBuilder::new(&keys, 0);
-    let start = [-6.0 - 0.05 - f64::from(pe_replica::world::HAND_RADIUS), 0.05, 0.0];
-    let mut s = Source::default();
-    path_inputs(&mut b, HAND, 60, 2, 90, &move |t| [start[0] + 15.0 * (t - 0.2).clamp(0.0, 1.0), 0.05, 0.0])
-        .into_iter()
-        .for_each(|e| s.add(e));
-    s.add(input(&mut b, 6, &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) }));
-    let box_shape = Shape { kind: shape_kind::BOX, density: 200.0, size: [0.05, 0.05, 0.15], ..Shape::default() };
-    let mut r = replica_of(with_hands_and_balls(&[(HAND, start)], &[(BALL, [-6.0, 0.05, 0.0], box_shape)]));
-    r.advance(Frame(12), &mut s);
-    let (mut placements, mut carried) = (0, 0);
-    while r.frame().0 < 72 {
-        let hand = r.physics().pose(oid(HAND)).expect("the hand's body").position;
-        let held = at(&r, BALL);
-        let next = r.frame().0 + 1;
-        r.advance(Frame(next), &mut s);
-        if distance(r.physics().pose(oid(HAND)).expect("the hand's body").position, hand) > 0.3 {
-            placements += 1;
-            carried += usize::from(distance(at(&r, BALL), held) > 0.3);
-        }
-    }
-    assert!(placements > 0, "the hand's body was placed");
-    assert_eq!(carried, placements, "and the box went with it every time");
-    assert_eq!(held_by(&r, BALL), Some(oid(HAND)));
-    assert_eq!(r.faults(), 0);
 }
 
 /// A script runner that holds no module: a world's scripts never run on it, each counted missing (crate::logic).
@@ -3242,7 +2852,7 @@ fn measure_the_tight_hold_at_30_60_and_120_hz() {
         // The rate and the reach at rest.
         let k = {
             let r = replica_at(ball_world([0.0, 1.0, 0.0], [0.12, 1.0, 0.0]), hz);
-            r.physics().grab_spring_rate(pe_replica::hands::grab_spring(0.0, 0.0, 0.0), 1.0 / hz as f32)
+            r.physics().grab_spring_rate(pe_replica::hands::grab_spring(0.0), 1.0 / hz as f32)
         };
         // Held still: grabbed on the floor, lifted to 1 m over 0.5 s, then held 1 s.
         let start = [-0.03 - hr, 0.03, 0.0];
@@ -3776,4 +3386,483 @@ fn a_body_the_physics_refuses_is_a_fault_at_the_start() {
     assert!(PeWorld::new(w.clone(), DomainId(0)).body(oid(2)).is_ok_and(|b| b.is_some()), "the world model builds it");
     let r = replica_of(w);
     assert_eq!((r.faults(), r.physics().has_body(oid(2))), (1, false));
+}
+
+/// The friend test's fast throw (11-26; @item:primordial-engine/friend-test-11-27-hold-and-release-unfiltered-th):
+/// a pit ball grabbed, lifted 0.97 m and held still, then swung at `v` m/s (speeding up over 9 frames, steady for 6)
+/// along a straight line or an arc of radius 0.6 m (an arm's swing), and thrown with the tracked hand's velocity at
+/// the opening. Prints, per case, the ball's gap from its place in the hand the frame before the opening and its
+/// velocity a frame after the throw applies, against the throw's.
+#[test]
+fn a_fast_swing_s_throw_leaves_at_the_hand_s_speed() {
+    use pe_world::input::MAX_POSES;
+    for radius in [None, Some(0.6_f64)] {
+        for v in [8.0, 12.0, 15.0, 20.0, 25.0, 40.0] {
+            let keys = keys();
+            let mut b = EntryBuilder::new(&keys, 0);
+            let mut s = Source::default();
+            let hr = f64::from(pe_replica::world::HAND_RADIUS);
+            let start = [2.0 - 0.03 - hr, 0.03, 0.0];
+            let mut path: Vec<[f64; 3]> =
+                (1..=30).map(|k| [start[0], 0.03 + 0.97 * f64::from(k) / 30.0, 0.0]).collect();
+            path.extend(std::iter::repeat_n([start[0], 1.0, 0.0], 30));
+            let top = [start[0], 1.0, 0.0];
+            // Arc length s along the swing, to a point and the swing's direction there.
+            let place = |s: f64| -> ([f64; 3], [f64; 3]) {
+                match radius {
+                    None => ([top[0] + s, top[1], top[2]], [1.0, 0.0, 0.0]),
+                    Some(r) => {
+                        let th = s / r;
+                        ([top[0] + r * th.sin(), top[1], top[2] + r * (1.0 - th.cos())], [th.cos(), 0.0, th.sin()])
+                    }
+                }
+            };
+            let (speeding, steady) = (9_usize, 6_usize);
+            let mut arc = 0.0;
+            for k in 1..=speeding + steady {
+                arc += v * (k.min(speeding) as f64 / speeding as f64) / 60.0;
+                path.push(place(arc).0);
+            }
+            let open = path.len();
+            let dir = place(arc).1;
+            for _ in 0..12 {
+                arc += v / 60.0;
+                path.push(place(arc).0);
+            }
+            s.add(input(&mut b, 2, &hand_at(&[start; 8], true)));
+            s.add(input(&mut b, 6, &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) }));
+            for (i, pack) in path[..open].chunks(MAX_POSES).enumerate() {
+                s.add(input(&mut b, 10 + (i * MAX_POSES) as u64, &hand_at(pack, true)));
+            }
+            let release = 10 + open as u64;
+            let linear = dir.map(|c| (c * v) as f32);
+            s.add(input(&mut b, release, &hand_at(&path[open..], false)));
+            s.add(input(&mut b, release, &Input::Throw { object: oid(BALL), linear, angular: [0.0; 3] }));
+            let mut r = replica_of(with_hands_and_balls(&[(HAND, start)], &[(BALL, [2.0, 0.03, 0.0], pit_ball())]));
+            r.advance(Frame(release), &mut s);
+            let gap = pe_replica::hands::hold_gap(r.physics(), oid(BALL), oid(HAND));
+            let trail = distance(r.physics().pose(oid(HAND)).expect("the hand's body").position, at(&r, HAND));
+            r.advance(Frame(release + 2), &mut s);
+            let left = r.physics().velocity(oid(BALL)).expect("the ball's body").0.map(f64::from);
+            let speed = left.iter().map(|c| c * c).sum::<f64>().sqrt();
+            let along = (0..3).map(|i| left[i] * dir[i]).sum::<f64>();
+            let shape = radius.map_or("straight".to_string(), |r| format!("arc r {r} m"));
+            println!(
+                "RESULT swing {shape}, {v} m/s: hand body trails its target by {trail:.3} m, ball {} from its place \
+                 before the open; leaves at {speed:.2} m/s ({along:.2} along the throw's {v} m/s), velocity {:?}",
+                gap.map_or("unheld".to_string(), |g| format!("{:.1} mm", g * 1000.0)),
+                left.map(|c| (c * 100.0).round() / 100.0)
+            );
+            // The hand is never placed (a 40 m/s swing included, @fable-reviewer), and the ball leaves
+            // at the hand's speed from within millimetres of its place.
+            assert!(trail < 1e-6, "{shape}, {v} m/s: the hand's body is on its target: {trail}");
+            assert!(gap.is_some_and(|g| g < 0.005), "{shape}, {v} m/s: held within 5 mm: {gap:?}");
+            assert!((along - v).abs() < 0.01 * v, "{shape}, {v} m/s: leaves at {along}");
+            assert_eq!(r.faults(), 0);
+        }
+    }
+}
+
+/// The hold at the grip's strength alone (the user's ruling of 2026-11-26): a pit ball held in a hand
+/// that presses it into a fixed surface. Run along `path` (one hand point a frame after the lift, the ball grabbed on
+/// the floor at x = 2 and lifted to `path[0]`), with an optional static wall (`wall`: its centre and half extents).
+/// Returns the ball's deepest overlap with the floor (its radius less its height), the farthest x its centre reached,
+/// and where it ends.
+fn press(path: &[[f64; 3]], wall: Option<([f64; 3], [f32; 3])>) -> (f64, f64, [f64; 3]) {
+    use pe_world::input::MAX_POSES;
+    let keys = keys();
+    let mut b = EntryBuilder::new(&keys, 0);
+    let mut s = Source::default();
+    let hr = f64::from(pe_replica::world::HAND_RADIUS);
+    let start = [2.0 - 0.03 - hr, 0.03, 0.0];
+    let first = path[0];
+    let mut all: Vec<[f64; 3]> = (1..=30)
+        .map(|k| {
+            let f = f64::from(k) / 30.0;
+            [0usize, 1, 2].map(|i| start[i] + (first[i] - start[i]) * f)
+        })
+        .collect();
+    all.extend(std::iter::repeat_n(first, 20));
+    all.extend_from_slice(path);
+    all.extend(std::iter::repeat_n(*path.last().expect("a path"), 60));
+    s.add(input(&mut b, 2, &hand_at(&[start; 8], true)));
+    s.add(input(&mut b, 6, &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) }));
+    for (i, pack) in all.chunks(MAX_POSES).enumerate() {
+        s.add(input(&mut b, 10 + (i * MAX_POSES) as u64, &hand_at(pack, true)));
+    }
+    let mut world = with_hands_and_balls(&[(HAND, start)], &[(BALL, [2.0, 0.03, 0.0], pit_ball())]);
+    if let Some((c, half)) = wall {
+        let k = keys.key(0);
+        world.create(oid(70), None, k, GENESIS).expect("wall");
+        world.insert(oid(70), Transform::at(pos(c[0], c[1], c[2]))).expect("wall transform");
+        world.insert(oid(70), Body { friction: 0.6, ..Body::default() }).expect("wall body");
+        world.insert(oid(70), cuboid(half)).expect("wall shape");
+    }
+    let mut r = replica_of(world);
+    r.advance(Frame(10 + 50), &mut s);
+    assert_eq!(held_by(&r, BALL), Some(oid(HAND)), "held after the lift");
+    let (mut deepest, mut farthest) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for f in 10 + 50..10 + all.len() as u64 {
+        r.advance(Frame(f + 1), &mut s);
+        let p = at(&r, BALL);
+        deepest = deepest.max(0.03 - p[1]);
+        farthest = farthest.max(p[0]);
+    }
+    assert_eq!(r.faults(), 0);
+    (deepest, farthest, at(&r, BALL))
+}
+
+/// A path from `a` to `b` at `v` m/s, one point a frame at 60 Hz.
+fn line(a: [f64; 3], b: [f64; 3], v: f64) -> Vec<[f64; 3]> {
+    let n = ((distance(a, b) / (v / 60.0)).ceil() as usize).max(1);
+    (1..=n)
+        .map(|k| {
+            let f = k as f64 / n as f64;
+            [a[0] + f * (b[0] - a[0]), a[1] + f * (b[1] - a[1]), a[2] + f * (b[2] - a[2])]
+        })
+        .collect()
+}
+
+/// How far a held pit ball is pushed into the floor and through a 2 cm wall when the hand goes into or through them
+/// (the user's rulings of 2026-11-26). Prints; asserts only that nothing faulted.
+#[test]
+fn measure_push_through_at_the_grip_s_strength() {
+    let x = 2.0 - 0.03 - f64::from(pe_replica::world::HAND_RADIUS);
+    for (depth, v) in [(0.1, 1.0), (0.3, 1.0), (0.3, 5.0)] {
+        let path = line([x, 0.3, 0.0], [x, -depth, 0.0], v);
+        let (deepest, _, end) = press(&path, None);
+        println!(
+            "RESULT floor: hand {depth} m under the floor's top at {v} m/s: ball sinks {:.1} mm at most, ends at y {:.3} \
+             ({})",
+            deepest * 1000.0,
+            end[1],
+            if end[1] < -0.03 { "UNDER the floor's top" } else { "above it" }
+        );
+    }
+    // A wall 2 cm thick across x = 2.5, from the floor to 2 m.
+    let wall = ([2.5, 1.0, 0.0], [0.01, 1.0, 1.0]);
+    for v in [1.0, 5.0, 15.0] {
+        let path = line([2.2, 1.0, 0.0], [3.0, 1.0, 0.0], v);
+        let (_, farthest, end) = press(&path, Some(wall));
+        println!(
+            "RESULT wall: hand through a 2 cm wall at {v} m/s: ball reaches x {:.3} (the wall's near face 2.490), ends \
+             at x {:.3} ({})",
+            farthest + 0.03,
+            end[0],
+            if end[0] > 2.51 { "THROUGH the wall" } else { "this side" }
+        );
+    }
+}
+
+/// A hand input for `hand` with one pose per (point, rotation), closed or open.
+fn hand_turned(hand: u128, poses: &[([f64; 3], [f32; 4])], closed: bool) -> Input {
+    let pose = |(p, rot): &([f64; 3], [f32; 4])| HandPose {
+        pos: pos(p[0], p[1], p[2]),
+        rot: *rot,
+        grip: if closed { 1.0 } else { 0.0 },
+        engaged: closed,
+    };
+    Input::Hand { hand: oid(hand), poses: poses.iter().map(pose).collect(), hold: 0 }
+}
+
+/// The friend test's twist (11-26 point 4: "when i twist my hand quickly while holding an object, it
+/// would often arc outward before returning to my hand's position"): a pit ball grabbed beside the hand and lifted to
+/// 1 m, then the hand turns about the vertical through its centre at `w` rad/s (speeding up over 3 frames, steady for
+/// 12, slowing over 3) and holds still. Prints the ball's largest distance from its place in the hand and how much
+/// farther from the hand's centre it got than its grip (the arc outward).
+#[test]
+fn a_fast_twist_keeps_the_ball_in_the_hand() {
+    use pe_world::input::MAX_POSES;
+    let hr = f64::from(pe_replica::world::HAND_RADIUS);
+    for w in [10.0_f64, 20.0, 30.0, 45.0, 60.0] {
+        let keys = keys();
+        let mut b = EntryBuilder::new(&keys, 0);
+        let mut s = Source::default();
+        let start = [2.0 - 0.03 - hr, 0.03, 0.0];
+        let top = [start[0], 1.0, 0.0];
+        let mut poses: Vec<([f64; 3], [f32; 4])> =
+            (1..=30).map(|k| ([start[0], 0.03 + 0.97 * f64::from(k) / 30.0, 0.0], UNTURNED)).collect();
+        poses.extend(std::iter::repeat_n((top, UNTURNED), 20));
+        let mut angle = 0.0_f64;
+        let rate = |k: usize| match k {
+            0..3 => w * (k + 1) as f64 / 3.0,
+            3..15 => w,
+            15..18 => w * (17 - k) as f64 / 3.0,
+            _ => 0.0,
+        };
+        for k in 0..30 {
+            angle += rate(k) / 60.0;
+            let h = (angle / 2.0) as f32;
+            poses.push((top, [0.0, h.sin(), 0.0, h.cos()]));
+        }
+        s.add(input(&mut b, 2, &hand_at(&[start; 8], true)));
+        s.add(input(&mut b, 6, &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) }));
+        for (i, pack) in poses.chunks(MAX_POSES).enumerate() {
+            s.add(input(&mut b, 10 + (i * MAX_POSES) as u64, &hand_turned(HAND, pack, true)));
+        }
+        let mut r = replica_of(with_hands_and_balls(&[(HAND, start)], &[(BALL, [2.0, 0.03, 0.0], pit_ball())]));
+        r.advance(Frame(10 + 50), &mut s);
+        let hand = |r: &ReplicaImpl<PeWorld>| r.physics().pose(oid(HAND)).expect("the hand's body").position;
+        let ball = |r: &ReplicaImpl<PeWorld>| r.physics().pose(oid(BALL)).expect("the ball's body").position;
+        let grip = distance(hand(&r), ball(&r));
+        let (mut gap, mut out) = (0.0_f64, 0.0_f64);
+        for f in 10 + 50..10 + poses.len() as u64 + 20 {
+            r.advance(Frame(f + 1), &mut s);
+            gap = gap.max(pe_replica::hands::hold_gap(r.physics(), oid(BALL), oid(HAND)).unwrap_or(f64::NAN));
+            out = out.max(distance(hand(&r), ball(&r)) - grip);
+        }
+        println!(
+            "RESULT twist {w} rad/s (ball {:.0} mm from the hand's centre): largest gap from its place {:.1} mm, arc \
+             outward {:.1} mm (turned {angle:.2} rad)",
+            grip * 1000.0,
+            gap * 1000.0,
+            out * 1000.0
+        );
+        // Box3D turns the hand's body at most an eighth of a turn a frame (47.1 rad/s), so at 60 rad/s it lags its
+        // target and the ball with it; the ball still stays in the hand. On main c7cbc175 it fell 414 mm from its
+        // place at 45 rad/s (the 200 m/s^2 cap on the hold).
+        assert!(gap < 0.02, "{w} rad/s: the ball stays within 2 cm of its place: {gap}");
+        assert_eq!(r.faults(), 0);
+    }
+}
+
+/// The friend test's two-hand hold (11-26: "when i grab an object with both hands it behaves strangely
+/// and jumps when i let go with both at the same time"): a pit ball between the member's two hands, grabbed by the
+/// right then the left (the left's renewing grab takes the claim, as pe-app sends it), both lifted 0.5 m together and
+/// held still, then both open in one frame, the left with a still throw (pe-app's: the right has given the ball up).
+/// Prints the ball's fastest speed while held still and its speed after the opening.
+#[test]
+fn measure_a_two_hand_hold_and_release() {
+    use pe_world::input::MAX_POSES;
+    const LEFT: u128 = 51;
+    let hr = f64::from(pe_replica::world::HAND_RADIUS);
+    // (the ball's radius, its shape, how far each hand's centre is from the ball's, the frames the right stays closed
+    // after the left opens)
+    let pit = (0.03, pit_ball());
+    let big = (0.1, sphere(0.1));
+    for ((r, shape), apart, later) in
+        [(pit, 0.03 + hr, 0), (pit, 0.03 + hr, 3), (big, 0.05, 0), (big, 0.05, 3), (big, 0.05, 10)]
+    {
+        let keys = keys();
+        let mut b = EntryBuilder::new(&keys, 0);
+        let mut s = Source::default();
+        let right = [2.0 - apart, r, 0.0];
+        let left = [2.0 + apart, r, 0.0];
+        let up = |p: [f64; 3], k: u32| [p[0], p[1] + 0.5 * f64::from(k.min(30)) / 30.0, p[2]];
+        let path = |p: [f64; 3]| (1..=90).map(|k| up(p, k)).collect::<Vec<_>>();
+        s.add(input(&mut b, 2, &hand_of(HAND, &[right; 8], UNTURNED, true)));
+        s.add(input(&mut b, 2, &hand_of(LEFT, &[left; 8], UNTURNED, true)));
+        s.add(input(&mut b, 6, &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) }));
+        s.add(input(&mut b, 8, &Input::Grab { object: oid(BALL), hand: Some(oid(LEFT)) }));
+        for (i, (pr, pl)) in path(right).chunks(MAX_POSES).zip(path(left).chunks(MAX_POSES)).enumerate() {
+            s.add(input(&mut b, 10 + (i * MAX_POSES) as u64, &hand_of(HAND, pr, UNTURNED, true)));
+            s.add(input(&mut b, 10 + (i * MAX_POSES) as u64, &hand_of(LEFT, pl, UNTURNED, true)));
+        }
+        let open = 100;
+        s.add(input(&mut b, open, &hand_of(LEFT, &[up(left, 30); 16], UNTURNED, false)));
+        s.add(input(&mut b, open, &Input::Throw { object: oid(BALL), linear: [0.0; 3], angular: [0.0; 3] }));
+        s.add(input(&mut b, open + later, &hand_of(HAND, &[up(right, 30); 16], UNTURNED, false)));
+        let world = with_hands_and_balls(&[(HAND, right), (LEFT, left)], &[(BALL, [2.0, r, 0.0], shape)]);
+        let mut rep = replica_of(world);
+        rep.advance(Frame(50), &mut s);
+        let held = held_by(&rep, BALL) == Some(oid(LEFT));
+        let speed = |rep: &ReplicaImpl<PeWorld>| {
+            let v = rep.physics().velocity(oid(BALL)).expect("the ball's body").0;
+            f64::from((v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt())
+        };
+        let mut still = 0.0_f64;
+        let at_50 = at(&rep, BALL);
+        for f in 50..open {
+            rep.advance(Frame(f + 1), &mut s);
+            still = still.max(speed(&rep));
+        }
+        let moved = distance(at_50, at(&rep, BALL));
+        let mut after = 0.0_f64;
+        for f in open..open + later + 3 {
+            rep.advance(Frame(f + 1), &mut s);
+            after = after.max(speed(&rep));
+        }
+        println!(
+            "RESULT two hands, ball r {r} m, hands {apart:.3} m from its centre, right opens {later} frames after the left: held by the left {held}; fastest while held still {still:.2} m/s (moved {:.1} mm); fastest after the opening {after:.2} m/s (a fall alone: {:.2})",
+            moved * 1000.0,
+            9.81 * (later + 3) as f64 / 60.0
+        );
+        assert_eq!(rep.faults(), 0);
+    }
+}
+
+/// A small held object pushes large movable ones at the whole grip (the user's correction of 2026-11-26: "push large objects while holding another small object"): a pit ball held at 0.3 m is carried at
+/// 1 m/s into a 1 m crate on the floor, of 10 kg and of 300 kg. Only fixed surfaces lower the hold's force; a crate
+/// never does, so the hold keeps the holder's 110 N against it and the ball stays in the hand. Both crates are pushed
+/// along: the hand's own body is kinematic and pushes them too, whatever their mass.
+#[test]
+fn a_small_held_ball_pushes_a_large_crate_with_the_whole_grip() {
+    use pe_world::input::MAX_POSES;
+    const CRATE: u128 = 80;
+    for kg in [10.0_f32, 300.0] {
+        let keys = keys();
+        let mut b = EntryBuilder::new(&keys, 0);
+        let mut s = Source::default();
+        let hr = f64::from(pe_replica::world::HAND_RADIUS);
+        let start = [2.0 - 0.03 - hr, 0.03, 0.0];
+        let mut path: Vec<[f64; 3]> = (1..=20).map(|k| [start[0], 0.03 + 0.27 * f64::from(k) / 20.0, 0.0]).collect();
+        path.extend((1..=90).map(|k| [start[0] + f64::from(k) / 60.0, 0.3, 0.0]));
+        s.add(input(&mut b, 2, &hand_at(&[start; 8], true)));
+        s.add(input(&mut b, 6, &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) }));
+        for (i, pack) in path.chunks(MAX_POSES).enumerate() {
+            s.add(input(&mut b, 10 + (i * MAX_POSES) as u64, &hand_at(pack, true)));
+        }
+        let mut world = with_hands_and_balls(&[(HAND, start)], &[(BALL, [2.0, 0.03, 0.0], pit_ball())]);
+        let k = keys.key(0);
+        world.create(oid(CRATE), None, k, GENESIS).expect("crate");
+        world.insert(oid(CRATE), Transform::at(pos(2.8, 0.5, 0.0))).expect("crate transform");
+        world.insert(oid(CRATE), dynamic()).expect("crate body");
+        world
+            .insert(oid(CRATE), Shape { kind: shape_kind::BOX, density: kg, size: [0.5; 3], ..Shape::default() })
+            .expect("crate shape");
+        let mut r = replica_of(world);
+        let before = at(&r, CRATE);
+        let mut least = f32::INFINITY;
+        for f in 0..10 + path.len() as u64 {
+            r.advance(Frame(f + 1), &mut s);
+            if f > 40 {
+                least = least.min(r.physics().grab_force(pe_replica::hands::grab_key(oid(BALL))).unwrap_or(f32::NAN));
+            }
+        }
+        let moved = at(&r, CRATE)[0] - before[0];
+        println!("RESULT a held ball pushes a {kg} kg crate: it moves {moved:.3} m; the hold's least force {least} N");
+        assert_eq!(least, pe_world::components::DEFAULT_STRENGTH, "a crate never lowers the grip");
+        assert!(moved > 0.3, "pushed along: {moved}");
+        let gap = pe_replica::hands::hold_gap(r.physics(), oid(BALL), oid(HAND)).expect("still held");
+        assert!(gap < pe_seams::BREAK_AWAY, "the ball stays in the hand: {gap}");
+        assert_eq!(r.faults(), 0);
+    }
+}
+
+/// A fast throw's scene (@coordinator-opus's replays for the 11-27 kit, after @astra-deliberator): a pit
+/// ball grabbed, lifted to 1 m and swung along +x, speeding up to 20 m/s over 9 frames and keeping it 6, then thrown
+/// at 20 m/s as the hand opens. `obstacle` adds what it flies into, given the x the hand opens at. Its world, its
+/// entries (the throw last) and the opening's frame.
+fn fast_throw(obstacle: impl Fn(&mut World, f64)) -> (World, Vec<SignedEntry>, u64) {
+    use pe_world::input::MAX_POSES;
+    let keys = keys();
+    let mut b = EntryBuilder::new(&keys, 0);
+    let hr = f64::from(pe_replica::world::HAND_RADIUS);
+    let start = [2.0 - 0.03 - hr, 0.03, 0.0];
+    let mut path: Vec<[f64; 3]> = (1..=30).map(|k| [start[0], 0.03 + 0.97 * f64::from(k) / 30.0, 0.0]).collect();
+    path.extend(std::iter::repeat_n([start[0], 1.0, 0.0], 20));
+    let mut x = start[0];
+    for k in 1..=15_usize {
+        x += 20.0 * (k.min(9) as f64 / 9.0) / 60.0;
+        path.push([x, 1.0, 0.0]);
+    }
+    let open = 10 + path.len() as u64;
+    let mut entries = vec![
+        input(&mut b, 2, &hand_at(&[start; 8], true)),
+        input(&mut b, 6, &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) }),
+    ];
+    for (i, pack) in path.chunks(MAX_POSES).enumerate() {
+        entries.push(input(&mut b, 10 + (i * MAX_POSES) as u64, &hand_at(pack, true)));
+    }
+    entries.push(input(&mut b, open, &hand_at(&[[x + 0.33, 1.0, 0.0]; 4], false)));
+    entries.push(input(&mut b, open, &Input::Throw { object: oid(BALL), linear: [20.0, 0.0, 0.0], angular: [0.0; 3] }));
+    let mut world = with_hands_and_balls(&[(HAND, start)], &[(BALL, [2.0, 0.03, 0.0], pit_ball())]);
+    obstacle(&mut world, x);
+    (world, entries, open)
+}
+
+/// A fast throw's scene run twice: straight, and on a machine that gets the throw late and rolls back to it. Returns
+/// both replicas at `open + 60` after asserting their roots agree.
+fn fast_throw_both_ways(
+    world: World,
+    entries: Vec<SignedEntry>,
+    open: u64,
+) -> (ReplicaImpl<PeWorld>, ReplicaImpl<PeWorld>) {
+    let end = open + 60;
+    let mut all = Source::default();
+    entries.iter().cloned().for_each(|e| all.add(e));
+    let mut a = replica_of(world.clone());
+    a.advance(Frame(end), &mut all);
+    let (head, last) = entries.split_at(entries.len() - 1);
+    let mut late = Source::default();
+    head.iter().cloned().for_each(|e| late.add(e));
+    let mut c = replica_of(world);
+    c.advance(Frame(open + 8), &mut late);
+    late.add(last[0].clone());
+    let adv = c.advance(Frame(end), &mut late);
+    assert!(adv.rolled_back_to.is_some_and(|f| f.0 <= open), "the late throw rolls back: {adv:?}");
+    assert_eq!(roots(&c, end), roots(&a, end), "both machines agree after the rollback");
+    assert_eq!((a.faults(), c.faults()), (0, 0));
+    (a, c)
+}
+
+/// The ball's speed the frame after the throw, run straight.
+fn left_at(world: World, entries: &[SignedEntry], open: u64) -> f64 {
+    let mut s = Source::default();
+    entries.iter().cloned().for_each(|e| s.add(e));
+    let mut r = replica_of(world);
+    r.advance(Frame(open + 1), &mut s);
+    let v = r.physics().velocity(oid(BALL)).expect("the ball's body").0;
+    f64::from((v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt())
+}
+
+/// Replay 1: a 20 m/s throw released 0.5 m before a 2 cm static wall. The ball leaves at the hand's speed; whether it
+/// passes the wall is printed (Box3D's continuous collision against static shapes; tunnelling is accepted for the kit); a late throw rolls back to the same roots.
+#[test]
+fn a_fast_throw_at_a_thin_wall_leaves_at_the_hand_s_speed_and_rolls_back_alike() {
+    let wall_at = std::cell::Cell::new(0.0);
+    let (world, entries, open) = fast_throw(|w, x| {
+        let k = keys().key(0);
+        wall_at.set(x + 0.5);
+        w.create(oid(70), None, k, GENESIS).expect("wall");
+        w.insert(oid(70), Transform::at(pos(x + 0.5, 1.0, 0.0))).expect("wall transform");
+        w.insert(oid(70), Body { friction: 0.6, ..Body::default() }).expect("wall body");
+        w.insert(oid(70), cuboid([0.01, 1.0, 1.0])).expect("wall shape");
+    });
+    let speed = left_at(world.clone(), &entries, open);
+    let (a, _) = fast_throw_both_ways(world, entries, open);
+    let end = at(&a, BALL);
+    println!(
+        "RESULT thin wall: leaves at {speed:.2} m/s; ends at x {:.3} against the wall at {:.3} ({})",
+        end[0],
+        wall_at.get(),
+        if end[0] > wall_at.get() { "THROUGH" } else { "stopped by it" }
+    );
+    assert!((speed - 20.0).abs() < 0.2, "leaves at the hand's speed: {speed}");
+}
+
+/// Replay 2: a 20 m/s throw into a stack of six 20 cm crates (to 1.2 m, across the ball's path), beside another member's hand (always physical, a
+/// kinematic sphere like their body's part). The ball leaves at the hand's speed and knocks the stack; a late throw
+/// rolls back to the same roots.
+#[test]
+fn a_fast_throw_into_a_stack_beside_another_player_rolls_back_alike() {
+    const OTHER: u128 = 90;
+    let stack_x = std::cell::Cell::new(0.0);
+    let (world, entries, open) = fast_throw(|w, x| {
+        stack_x.set(x + 0.6);
+        let k = keys().key(0);
+        for (n, id) in [71_u128, 72, 73, 74, 75, 76].into_iter().enumerate() {
+            w.create(oid(id), None, k, GENESIS).expect("crate");
+            w.insert(oid(id), Transform::at(pos(x + 0.6, 0.1 + 0.2 * n as f64, 0.0))).expect("crate transform");
+            w.insert(oid(id), dynamic()).expect("crate body");
+            w.insert(oid(id), cuboid([0.1; 3])).expect("crate shape");
+        }
+        let other = keys().key(1);
+        w.create(oid(OTHER), None, other, GENESIS).expect("the other's hand");
+        w.insert(oid(OTHER), Transform::at(pos(x + 0.6, 0.6, 0.35))).expect("its transform");
+        w.insert(oid(OTHER), Hand { owner: other, mode: hand_mode::ALWAYS_WITHIN_REACH, ..Hand::default() })
+            .expect("its row");
+    });
+    let speed = left_at(world.clone(), &entries, open);
+    let before = [71_u128, 72, 73, 74, 75, 76]
+        .map(|id| (world.store().world_transform(oid(id)).expect("placed").pos - Pos::ORIGIN).0);
+    let (a, _) = fast_throw_both_ways(world, entries, open);
+    let moved =
+        [71_u128, 72, 73, 74, 75, 76].iter().zip(before).map(|(&id, p)| distance(at(&a, id), p)).fold(0.0, f64::max);
+    println!(
+        "RESULT stack: leaves at {speed:.2} m/s; the stack's crates moved up to {moved:.3} m; the ball ends at x {:.3} (the stack's far face {:.3}); roots agree after the rollback",
+        at(&a, BALL)[0],
+        stack_x.get() + 0.1
+    );
+    assert!((speed - 20.0).abs() < 0.2, "leaves at the hand's speed: {speed}");
 }
