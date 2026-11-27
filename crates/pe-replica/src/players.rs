@@ -27,6 +27,19 @@ use crate::world::{ClaimRow, HandRow, PlayerRow};
 /// thinned or held Move leaves between two samples (about 0.2 m).
 pub const ROOM_JUMP: f32 = 0.5;
 
+/// How far below the world's origin, m, a player's feet may fall before the body is put back at the world's respawn
+/// point ([`respawn`]; world-model.md 8.2). The plane's floor top is the origin, so 30 m is the void past its edge
+/// and below anything a course builds. The template folder parked 50 m down holds no player.
+pub const VOID_DEPTH: f64 = 30.0;
+
+/// Put player `body` back at `feet` (relative to the domain's origin), at rest: the player is removed and added
+/// again, so its velocity, ground, coyote time and press buffer start over, as a new body's do. The hands follow
+/// their moved body as from any teleport (crate::hands).
+pub fn respawn(physics: &mut PhysicsWorld, body: ObjectId, feet: [f64; 3]) -> Result<(), pe_physics::PhysicsError> {
+    physics.remove_body(body)?;
+    physics.add_player(body, feet, &PLAYER)
+}
+
 /// Bring the players in line with the world model's player rows, before a frame's moves: a player for every row, at
 /// its feet when it is new, and none for a body the rows no longer list. `rows` is [`WorldModel::players`], in id
 /// order. Returns the number of refused physics calls (faults, replica.md 3.1).

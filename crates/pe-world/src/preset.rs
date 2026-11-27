@@ -21,6 +21,8 @@ use crate::components::{
 use crate::edit::{Actor, Op, Row, Target, Transaction};
 use crate::world::{BlobStore, World, perm};
 
+pub mod course;
+
 /// The context of the reserved line M1's disposable worlds are made on.
 pub const M1_LINE_CONTEXT: &str = "pe.m1.disposable";
 
@@ -197,8 +199,9 @@ pub mod plane_names {
     pub const SLAB: &str = "Slab";
 }
 
-/// The plane's floor: a static box this many metres on a side, 1 m thick, its top at the origin.
-pub const PLANE_SIDE: f64 = 20.0;
+/// The plane's floor: a static box this many metres on a side, 1 m thick, its top at the origin. Room for the test
+/// course ([`course`]) around the open ground at the spawn row.
+pub const PLANE_SIDE: f64 = 64.0;
 /// How far below the floor's top the template folder is parked, in metres: out of sight, though it is inert anyway.
 pub const TEMPLATES_DEPTH: f64 = 50.0;
 /// A player body's drawn capsule (8.2): its radius and half-height in metres, its centre's height above the feet,
@@ -234,8 +237,8 @@ pub const HEAVY: [(&str, [f32; 3], f32, [f32; 3]); 3] = [
 pub const HEAVY_FRICTION: f32 = 0.9;
 
 /// The friend test's flat plane at frame 0 on line `line` (world-model.md 2.4, "The plane"; the friend-test
-/// prototype): a root `Plane` holding a static floor [`PLANE_SIDE`] m square with its top at `origin`, and a lamp; an
-/// empty root `Spawned`; and a template folder `Templates` [`TEMPLATES_DEPTH`] m below, holding a box, a sphere, a
+/// prototype): a root `Plane` holding a static floor [`PLANE_SIDE`] m square with its top at `origin`, a lamp, and the
+/// movement test course ([`course`], all static) around the open ground at the spawn row; an empty root `Spawned`; and a template folder `Templates` [`TEMPLATES_DEPTH`] m below, holding a box, a sphere, a
 /// capsule and a stack of boxes, each a ready dynamic, grabbable body. Spawning is a copy of a template under
 /// `Spawned` (pe-api's `create` with `template`); the folder itself is inert ([`crate::templates`]). One genesis
 /// transaction by world logic, as for [`ball_pit_on`], with the M1 marker. Deterministic: the same arguments give the
@@ -282,7 +285,7 @@ fn template_shape(kind: u32, size: [f32; 3]) -> Row {
     row(Shape { kind, density: TEMPLATE_DENSITY, size, ..Shape::default() })
 }
 
-/// The plane's one transaction: `Plane`, its floor and lamp; `Spawned`; `Templates` and its templates. New index 0
+/// The plane's one transaction: `Plane`, its floor, lamp and course; `Spawned`; `Templates` and its templates. New index 0
 /// is `Plane`; the rest follow in op order.
 fn plane_transaction(blobs: &BlobStore, origin: Pos) -> Transaction {
     use plane_names as n;
@@ -308,6 +311,7 @@ fn plane_transaction(blobs: &BlobStore, origin: Pos) -> Transaction {
         Target::New(plane),
         vec![row(Transform::local([0.0, 3.0, 0.0])), name(blobs, &mut used, n::LAMP), row(lamp)],
     );
+    course::ops(Target::New(plane), blobs, &mut used, &mut ops, &mut create);
     create(&mut ops, Target::Root, vec![row(Transform::at(origin)), name(blobs, &mut used, n::SPAWNED)]);
     let parked = origin.checked_add(Offset([0.0, -TEMPLATES_DEPTH, 0.0])).expect("the template folder fits");
     let folder = create(&mut ops, Target::Root, vec![row(Transform::at(parked)), name(blobs, &mut used, n::TEMPLATES)]);

@@ -507,6 +507,11 @@ impl WorldModel for PeWorld {
         hands
     }
 
+    /// The lowest free spawn slot, where a member admitted now would stand (pe-world's `World::join_spawn`).
+    fn respawn_point(&self) -> Option<Pos> {
+        Some(self.world.join_spawn())
+    }
+
     fn players(&self) -> Vec<PlayerRow> {
         let store = self.world.store();
         self.world

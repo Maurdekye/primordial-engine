@@ -465,6 +465,12 @@ pub trait WorldModel: Send {
     fn players(&self) -> Vec<PlayerRow> {
         Vec::new()
     }
+    /// Where a player body that fell into the void is put back (world-model.md 8.2; [`crate::players::VOID_DEPTH`]):
+    /// a function of the world's state at the frame, so every replica puts it in the same place. Asked only when a
+    /// body has fallen. `None`, the default, never respawns: the body falls on.
+    fn respawn_point(&self) -> Option<Pos> {
+        None
+    }
     fn settings(&self) -> PhysicsSettings;
 
     // what the frame view draws (S5)

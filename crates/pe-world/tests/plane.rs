@@ -8,7 +8,7 @@ use pe_seams::{Class, Outcome, Reason, SignedEntry};
 use pe_sim::{Component, Transform};
 use pe_world::components::{Body, Hand, Name, Shape, body_kind, ids, shape_kind};
 use pe_world::edit::{Actor, Op, Row, Target, Transaction};
-use pe_world::preset::{Preset, Session, find, m1_session, plane_names as n};
+use pe_world::preset::{Preset, Session, course, find, m1_session, plane_names as n};
 use pe_world::templates::{FOLDER, is_folder_name};
 use pe_world::{BlobStore, Footprint, GENESIS, HandPose, Input, World, perm};
 
@@ -147,8 +147,11 @@ fn the_plane_has_its_floor_an_empty_spawned_root_and_inert_templates() {
         assert!(w.inert(b));
     }
     assert!(w.inert(folder) && w.inert(stack) && w.is_template_folder(folder));
-    // Physical: the floor alone, nothing of the folder (the members' hands have no body).
-    assert_eq!(w.physical(), [floor]);
+    // Physical: the floor and the course's pieces, nothing of the folder (the members' hands have no body).
+    let mut want = vec![floor];
+    want.extend(course_pieces(&w));
+    want.sort();
+    assert_eq!(w.physical(), want);
     assert!(!w.inert(floor) && !w.inert(spawned));
     // The stack's boxes start apart, bottom first.
     let y = |id| (w.store().world_transform(id).expect("placed").pos - Pos::ORIGIN).0[1];
@@ -156,7 +159,88 @@ fn the_plane_has_its_floor_an_empty_spawned_root_and_inert_templates() {
     // The folder is parked below the floor; the floor's shape, the templates' and each member's drawn body (8.2).
     assert!(y(folder) < -40.0);
     let heavy = pe_world::preset::HEAVY.len();
-    assert_eq!(w.store().count(ids::SHAPE), 1 + 3 + n::STACK_BOXES + heavy + w.players().len());
+    assert_eq!(w.store().count(ids::SHAPE), 1 + course::piece_count() + 3 + n::STACK_BOXES + heavy + w.players().len());
+}
+
+/// The course's pieces: every object under `Course` with a `Body`.
+fn course_pieces(w: &World) -> Vec<ObjectId> {
+    let c = find(w, course::names::COURSE).expect("the course");
+    subtree(w, c).into_iter().filter(|&id| w.store().get::<Body>(id).is_some()).collect()
+}
+
+/// The rotation `q` applied to `v`.
+fn rotate(q: [f32; 4], v: [f64; 3]) -> [f64; 3] {
+    let [x, y, z, w] = q.map(f64::from);
+    let u = [x, y, z];
+    let cross =
+        |a: [f64; 3], b: [f64; 3]| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    let t = cross(u, v).map(|c| 2.0 * c);
+    let ut = cross(u, t);
+    [v[0] + w * t[0] + ut[0], v[1] + w * t[1] + ut[1], v[2] + w * t[2] + ut[2]]
+}
+
+/// The movement test course (the user's): its eight stations under `Course`, under the plane's root;
+/// every piece a static box or sphere with a unit rotation; all of it on the floor, inside its edge, above the void,
+/// and out of the open ground at the spawn row and the spawn grid ([`course::SPAWN_CLEAR`], [`course::GRID_CLEAR`]).
+/// The slopes' top faces are at their stated angles, the walkable ones within the mover's 50° and the last two past it.
+#[test]
+fn the_course_stands_around_the_spawn_on_the_floor_and_keeps_the_open_ground_clear() {
+    let w = plane();
+    let snap = w.snapshot(w.frame());
+    let c = find(&w, course::names::COURSE).expect("the course");
+    assert_eq!(snap.parent(c), find(&w, n::ROOT));
+    let stations: Vec<String> = snap.children(c).into_iter().map(|s| snap.name(s).expect("named")).collect();
+    assert_eq!(stations, course::names::STATIONS);
+    let pieces = course_pieces(&w);
+    assert_eq!(pieces.len(), course::piece_count());
+    assert_eq!(pieces.len(), 141, "world-model.md 2.4 quotes the count");
+    let edge = pe_world::preset::PLANE_SIDE / 2.0;
+    let outside = |lo: f64, hi: f64, r: [f64; 2]| hi <= r[0] || lo >= r[1];
+    for &p in &pieces {
+        let body = w.store().get::<Body>(p).expect("a body");
+        assert_eq!(body.kind, body_kind::STATIC);
+        let shape = w.store().get::<Shape>(p).expect("a shape");
+        let t = w.store().world_transform(p).expect("placed");
+        let q = t.rot;
+        let norm = q.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>();
+        assert!((norm - 1.0).abs() < 1e-5, "a unit rotation: {q:?}");
+        let at = (t.pos - Pos::ORIGIN).0;
+        // A bound on the piece's extent about its centre, whatever its rotation.
+        let half: [f64; 3] = match shape.kind {
+            shape_kind::BOX => {
+                let h = shape.size.map(f64::from);
+                let mut e = [0.0; 3];
+                for corner in 0..8 {
+                    let s = |b: usize| if corner >> b & 1 == 0 { -1.0 } else { 1.0 };
+                    let v = rotate(q, [s(0) * h[0], s(1) * h[1], s(2) * h[2]]);
+                    (0..3).for_each(|i| e[i] = f64::max(e[i], v[i].abs()));
+                }
+                e
+            }
+            shape_kind::SPHERE => [f64::from(shape.size[0]); 3],
+            k => panic!("a course piece of kind {k}"),
+        };
+        let (lo, hi) = (|i: usize| at[i] - half[i], |i: usize| at[i] + half[i]);
+        assert!(hi(1) > 0.0 && lo(1) > -2.0, "on the floor: {at:?} {half:?}");
+        assert!(lo(0) > -edge && hi(0) < edge && lo(2) > -edge && hi(2) < edge, "inside the edge: {at:?} {half:?}");
+        for clear in [course::SPAWN_CLEAR, course::GRID_CLEAR] {
+            assert!(
+                outside(lo(0), hi(0), clear[0]) || outside(lo(2), hi(2), clear[1]),
+                "out of the open ground {clear:?}: {at:?} {half:?}"
+            );
+        }
+    }
+    // The slopes: the first seven pieces of `Slopes`, each top face's normal at its angle.
+    let slopes = snap.children(find(&w, course::names::SLOPES).expect("slopes"));
+    for (k, tan) in course::SLOPE_TANS.into_iter().enumerate() {
+        let q = w.store().world_transform(slopes[k]).expect("placed").rot;
+        let up = rotate(q, [0.0, 1.0, 0.0])[1];
+        let want = 1.0 / (1.0 + tan * tan).sqrt();
+        assert!((up - want).abs() < 1e-5, "slope {k}: normal y {up}, want {want}");
+        // pe-physics `PLAYER.min_ground_normal` (pe-world doesn't depend on pe-physics; pe-replica's course tests
+        // walk the slopes on the mover).
+        assert_eq!(up >= 0.64, k < 5, "slope {k} walkable or not");
+    }
 }
 
 #[test]

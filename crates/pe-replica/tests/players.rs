@@ -590,3 +590,116 @@ fn bumping_under_lag_converges() {
     assert_eq!(bumping_under_lag(0), ([0.0, 0.0], [0, 0]));
     let _ = bumping_under_lag(6);
 }
+
+/// `world` with member `i`'s body moved to `at` (from the origin), as if it had walked there.
+fn standing_at(mut world: World, i: usize, at: [f64; 3]) -> World {
+    let body = body_of(&world, i);
+    world.insert(body, Transform::at(Pos::ORIGIN.checked_add(Offset(at)).unwrap())).expect("its place");
+    world
+}
+
+/// The friend test's void: a body off the plane's edge falls, and once its feet are more than
+/// `VOID_DEPTH` below the origin it is put back at the lowest free spawn slot, at rest, with its hands; never deeper
+/// than one frame's fall past the depth. Two replicas, one fed the fall's frames late, agree on the roots.
+#[test]
+fn a_body_that_falls_into_the_void_is_put_back_at_the_spawn_at_rest() {
+    let edge = pe_world::preset::PLANE_SIDE / 2.0;
+    let world = standing_at(plane(), 0, [edge + 5.0, 0.0, 0.0]);
+    let body = body_of(&world, 0);
+    // Slot 0 is free: member 0's hands went with its body.
+    let spawn = (world.join_spawn() - Pos::ORIGIN).0;
+    assert_eq!(spawn, [0.0, 0.0, 1.5]);
+    let hand = ObjectId::hand(LINE, member(0), 1, Frame(0));
+    let mut r = replica_of(world.clone(), None);
+    let (mut low, mut back) = (f64::MAX, None);
+    for n in 1..=240u64 {
+        r.advance(Frame(n), &mut Source::default());
+        let y = feet(r.world().world(), body)[1];
+        low = low.min(y);
+        if back.is_none() && low < -5.0 && y > -1.0 {
+            back = Some(n);
+        }
+    }
+    let back = back.expect("put back");
+    // A fall of 30 m at 15 m/s² takes 2 s (120 frames).
+    assert!((110..=135).contains(&back), "put back at frame {back}");
+    assert!(low > -pe_replica::players::VOID_DEPTH - 0.6, "never deeper than a frame's fall past the depth: {low}");
+    let w = r.world().world();
+    let end = feet(w, body);
+    assert!((0..3).all(|i| (end[i] - spawn[i]).abs() < 0.01), "at the spawn: {end:?}");
+    let h = place(w, hand);
+    assert!((h[1] - end[1] - 1.2).abs() < 0.05 && (h[2] - end[2]).abs() < 0.5, "its hand came with it: {h:?}");
+    assert!(r.physics().is_player(body), "still a player");
+    assert_eq!(r.faults(), 0);
+    // At rest: it doesn't keep its fall.
+    r.advance(Frame(300), &mut Source::default());
+    let still = feet(r.world().world(), body);
+    assert!((0..3).all(|i| (still[i] - spawn[i]).abs() < 0.01), "still at the spawn: {still:?}");
+    // The same fall on a replica that rolls back across the respawn (a late, empty-handed Move of the other member).
+    let mut s = Source::default();
+    let mut one = replica_of(world.clone(), None);
+    let b1 = body_of(&world, 1);
+    let mut e1 = EntryBuilder::on_line(&keys(), 1, LINE);
+    let late = input(&mut e1, 100, &walk(b1, [0, 127], 0, 10));
+    s.add(late.clone());
+    one.advance(Frame(241), &mut s);
+    let mut t = Source::default();
+    let mut two = replica_of(world, None);
+    two.advance(Frame(200), &mut t);
+    t.add(late);
+    two.advance(Frame(241), &mut t);
+    assert_eq!(roots(&two, 240), roots(&one, 240));
+    assert_eq!(feet(two.world().world(), body), feet(one.world().world(), body));
+    assert_eq!((one.faults(), two.faults()), (0, 0));
+}
+
+/// Walk member 0's body from `at` with `stick` for `frames` frames on the plane: its feet at the end and the highest
+/// they reached (sampled every 10 frames).
+fn walk_course(at: [f64; 3], stick: [i8; 2], frames: u64) -> ([f64; 3], f64) {
+    let world = standing_at(plane(), 0, at);
+    let body = body_of(&world, 0);
+    let mut b = EntryBuilder::on_line(&keys(), 0, LINE);
+    let mut s = Source::default();
+    let mut f = 1;
+    while f < frames {
+        let hold = (frames - f).min(200) as u8;
+        s.add(input(&mut b, f, &walk(body, stick, 0, hold)));
+        f += u64::from(hold) + 1;
+    }
+    let mut r = replica_of(world, None);
+    let mut top = f64::MIN;
+    for n in (10..=frames + 30).step_by(10) {
+        r.advance(Frame(n), &mut s);
+        top = top.max(feet(r.world().world(), body)[1]);
+    }
+    assert_eq!(r.faults(), 0);
+    (feet(r.world().world(), body), top)
+}
+
+/// The course's slopes on the mover (pe-world `preset::course`): the 30° slope walks up onto the 1.5 m plateau, the
+/// 55° one (past the mover's 50°) doesn't. Stick +x is right with heading 0.
+#[test]
+fn the_course_s_30_degree_slope_climbs_to_the_plateau_and_the_55_degree_one_doesn_t() {
+    use pe_world::preset::course::{SLOPE_H, SLOPE_TANS};
+    let z = |k: usize| (k as f64 - 3.0) * 3.0;
+    // 70 frames at 5 m/s is about 5.8 m: past the slope's 2.6 m run and onto the 4 m plateau.
+    let (end, top) = walk_course([24.0 - SLOPE_H / SLOPE_TANS[2] - 2.0, 0.0, z(2)], [127, 0], 70);
+    assert!(end[0] > 24.0 && end[0] < 28.0, "on the plateau: {end:?}");
+    assert!((end[1] - SLOPE_H).abs() < 0.05 && top < SLOPE_H + 0.05, "up the 30° slope, {SLOPE_H} m: {end:?}");
+    let (end, top) = walk_course([24.0 - SLOPE_H / SLOPE_TANS[5] - 2.0, 0.0, z(5)], [127, 0], 240);
+    assert!(end[0] < 24.0 && top < 0.6, "not up the 55° slope: {end:?}, top {top}");
+}
+
+/// The course's stairs: the 0.2 m flight walks up to the 1.2 m landing, the 0.4 m one (past the 0.3 m step-up)
+/// stops at its first step. Stick -x walks towards the landing.
+#[test]
+fn the_course_s_0_2_m_stairs_climb_to_the_landing_and_the_0_4_m_ones_don_t() {
+    use pe_world::preset::course::STAIRS_H;
+    let z = |k: usize| -1.5 + (k as f64 - 1.5) * 3.0;
+    // The flight is 2 m long from x -16: 120 frames at 5 m/s, 10 m on from -10, is on the 3 m landing.
+    let (end, _) = walk_course([-10.0, 0.0, z(1)], [-127, 0], 120);
+    assert!(end[0] < -18.0 && end[0] > -21.0, "on the landing: {end:?}");
+    assert!((end[1] - STAIRS_H).abs() < 0.05, "up the 0.2 m stairs, {STAIRS_H} m: {end:?}");
+    let (end, top) = walk_course([-10.0, 0.0, z(3)], [-127, 0], 240);
+    assert!(end[0] > -17.0 && top < 0.1, "not up the 0.4 m stairs: {end:?}, top {top}");
+}
