@@ -60,7 +60,8 @@ fn load() -> (Script, Manifest) {
 
 fn registry_for(m: &Manifest) -> (Registry, Vec<String>, Vec<ComponentId>) {
     let own: Vec<_> = m.components.iter().filter(|c| !c.name.starts_with("pe.")).cloned().collect();
-    let ids: Vec<ComponentId> = (0..own.len()).map(|k| ComponentId(ComponentId::FIRST_USER + 100 + k as u128)).collect();
+    let ids: Vec<ComponentId> =
+        (0..own.len()).map(|k| ComponentId(ComponentId::FIRST_USER + 100 + k as u128)).collect();
     let mut registry = Registry::new();
     registry.register(ComponentDesc::new(TAG, "pe.tag", Vec::new()).unwrap()).unwrap();
     for (c, &id) in own.iter().zip(&ids) {
@@ -160,8 +161,9 @@ impl Seq {
 
     fn d(&mut self) -> f32 {
         match self.next() % 10 {
-            0 => self.pick(&[0.0, -0.0, f32::MAX, f32::MIN, f32::INFINITY, f32::NAN, -1e-45, 1024.0, -1024.0]),
-            1 => f32::from_bits(self.next() as u32),
+            // Finite only: the store refuses a non-finite f32 row (pe-sdk's own tests cover infinite and NaN offsets).
+            0 => self.pick(&[0.0, -0.0, f32::MAX, f32::MIN, -1e-45, 1024.0, -1024.0]),
+            1 => Some(f32::from_bits(self.next() as u32)).filter(|x| x.is_finite()).unwrap_or(1.5),
             2 => ((self.next() % 4_000_001) as f32 - 2_000_000.0) * 1e15,
             _ => ((self.next() % 2_000_001) as f32 - 1_000_000.0) / 64.0,
         }
@@ -334,7 +336,7 @@ fn pose_is_read_only_and_only_of_the_bound_object() {
     assert!(other.contains("only the bound object"), "{other}");
     let layout = try_bind(&|m| {
         let c = m.components.iter_mut().find(|c| c.name == "pe.Pose").unwrap();
-        c.fields.swap(1, 2);
+        c.fields.iter_mut().find(|f| f.name == "root").unwrap().kind = pe_sdk::layout::FieldKind::I32;
     })
     .unwrap();
     assert!(layout.contains("layout differs"), "{layout}");
@@ -346,7 +348,12 @@ fn the_sdk_pose_is_the_runners_layout_and_its_id_is_free() {
     let sdk: Vec<_> =
         pe_sdk::engine::Pose::FIELDS.iter().map(|f| (f.name.to_string(), f.offset, f.count, f.kind as u8)).collect();
     let desc = pose::desc();
-    let kinds = [pe_sdk::layout::FieldKind::Pos, pe_sdk::layout::FieldKind::F32, pe_sdk::layout::FieldKind::F32, pe_sdk::layout::FieldKind::U32];
+    let kinds = [
+        pe_sdk::layout::FieldKind::Pos,
+        pe_sdk::layout::FieldKind::F32,
+        pe_sdk::layout::FieldKind::F32,
+        pe_sdk::layout::FieldKind::U32,
+    ];
     let host: Vec<_> =
         desc.fields().iter().zip(kinds).map(|(f, k)| (f.name.clone(), f.offset, f.count, k as u8)).collect();
     assert_eq!(sdk, host);

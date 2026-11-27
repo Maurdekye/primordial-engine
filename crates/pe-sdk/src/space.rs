@@ -515,9 +515,29 @@ mod tests {
     #[test]
     fn floor_is_std_floor_bit_for_bit() {
         let edges = [
-            0.0, -0.0, 0.5, -0.5, 1.0, -1.0, 1.5, -1.5, 2.0f64.powi(52), -(2.0f64.powi(52)), 2.0f64.powi(52) - 0.5,
-            -(2.0f64.powi(52) - 0.5), 2.0f64.powi(63), -(2.0f64.powi(63)), 1e300, -1e300, 5e-324, -5e-324,
-            f64::INFINITY, f64::NEG_INFINITY, f64::MAX, f64::MIN, -0.999_999_999_999_9,
+            0.0,
+            -0.0,
+            0.5,
+            -0.5,
+            1.0,
+            -1.0,
+            1.5,
+            -1.5,
+            2.0f64.powi(52),
+            -(2.0f64.powi(52)),
+            2.0f64.powi(52) - 0.5,
+            -(2.0f64.powi(52) - 0.5),
+            2.0f64.powi(63),
+            -(2.0f64.powi(63)),
+            1e300,
+            -1e300,
+            5e-324,
+            -5e-324,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::MAX,
+            f64::MIN,
+            -0.999_999_999_999_9,
         ];
         for x in edges {
             assert_eq!(floor(x).to_bits(), x.floor().to_bits(), "{x:e}");

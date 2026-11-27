@@ -290,7 +290,8 @@ impl Loaded {
             }
             // `pe.Pose` is computed by the runner, never a store column: its layout is checked against its own.
             if c.name == pose::NAME {
-                let declared = component_desc(c, pose::ID).map_err(|e| BindError(format!("component {}: {e}", c.name)))?;
+                let declared =
+                    component_desc(c, pose::ID).map_err(|e| BindError(format!("component {}: {e}", c.name)))?;
                 if !same_layout(&pose::desc(), &declared) {
                     return Err(BindError(format!("{}: the layout differs from the engine's", c.name)));
                 }
@@ -769,8 +770,10 @@ fn call_system(
         }
         // Where this batch's rows sit in each bound column: batches are consecutive slices of `objects`.
         let lo = batch_no * plan.rows;
-        let places: Vec<Place> =
-            indices.iter().map(|ix| if ix.is_empty() { Place::Rows(&[]) } else { place(&ix[lo..lo + chunk.len()]) }).collect();
+        let places: Vec<Place> = indices
+            .iter()
+            .map(|ix| if ix.is_empty() { Place::Rows(&[]) } else { place(&ix[lo..lo + chunk.len()]) })
+            .collect();
         report.batches += 1;
         for ((b, &at), pl) in plan.bound.iter().zip(&plan.columns).zip(&places) {
             let bytes = b.size * chunk.len();

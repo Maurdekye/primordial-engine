@@ -241,7 +241,8 @@ fn back<A: Space, B: Space>(q: [f32; 4], s: [f32; 3], v: Offset<A>) -> Offset<B>
 /// `v` rotated by the unit quaternion `q`: `v + 2w (u × v) + 2 u × (u × v)`, with `u` the vector part.
 fn rotate(q: [f32; 4], v: [f32; 3]) -> [f32; 3] {
     let [x, y, z, w] = q;
-    let cross = |a: [f32; 3], b: [f32; 3]| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    let cross =
+        |a: [f32; 3], b: [f32; 3]| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
     let u = [x, y, z];
     let t = cross(u, v);
     let t = [2.0 * t[0], 2.0 * t[1], 2.0 * t[2]];
