@@ -49,6 +49,21 @@ someone else's session). Any other pe-app option passes through.
   however far behind it is. Nothing stops, and the other player keeps moving. A short hitch adds about 1.5 s and
   recovers in a few seconds.
 - **Mesh colliders are off in this build.**
+- **Throwing:** a throw leaves with your hand's real speed and direction, with no top speed. Only your grip strength
+  (110 N) limits it, so a light ball goes as fast as you swing, and a heavy object leaves slower.
+- **Walls and floors:** held and thrown objects can pass through them. A held ball pushed into the floor sinks about
+  4 cm into it. Pushing your hand through a thin wall (2 cm) while holding a ball can pull the ball through. A throw
+  is stopped by fixed walls up to about 50 m/s.
+- **Two hands:** a two-hand grab is held by one hand at a time. When you let go with one hand, the object stays in
+  the other.
+- **Fast swings:** a held object swung into a light one can send it off at up to about twice the swing speed. Your
+  empty hand still pushes things at 10 m/s at most.
+
+## If something goes wrong
+
+- **The other player's hands, or the balls they touch, look jumpy or late (more than before):** set
+  `$env:PE_COALESCE_TICKS = 1` in the PowerShell window before starting. It turns off pose-rollback coalescing; the
+  default is 3.
 
 ## The logs
 
