@@ -4558,7 +4558,12 @@ pub(crate) mod tests {
             let i = ((p * v.len() as f64).ceil() as usize).clamp(1, v.len().max(1)) - 1;
             v.get(i).copied().unwrap_or(0) as f64 / 1e6
         };
+        // Roots by their cut's frame. Which frames get cuts, and which view member 0 reads at frame 90, follow the wall
+        // time each tick took (the replay budget is measured in wall time), so heights and views can differ between
+        // runs of the same build: a root is compared only at a frame both runs cut, and every run grabs the point the
+        // first run read.
         let mut all_roots: Vec<(String, BTreeMap<u64, pe_seams::Hash>)> = Vec::new();
+        let mut first_held: Option<[f32; 3]> = None;
         for &(e3, workers) in &runs {
             crate::genesis::set_skip_replay_roots(e3);
             let e3_name = if e3 { "on" } else { "off" };
@@ -4605,8 +4610,10 @@ pub(crate) mod tests {
                 let now = clock.host_time_of(Frame(f));
                 hub.now.store(now.0, Ordering::SeqCst);
                 if f == 90 {
-                    let v = sims[0].1.newest().expect("published");
-                    held = Some(rig_at(&v, top_ball(&v)));
+                    held = Some(*first_held.get_or_insert_with(|| {
+                        let v = sims[0].1.newest().expect("published");
+                        rig_at(&v, top_ball(&v))
+                    }));
                 }
                 let a = f as f32 / RATE.hz() as f32 * std::f32::consts::PI;
                 for (k, (s, _, puppet, lead, _)) in sims.iter_mut().enumerate() {
@@ -4634,11 +4641,11 @@ pub(crate) mod tests {
             for (i, (.., events)) in sims.iter().enumerate() {
                 for e in events.lock().expect("the events").iter() {
                     if let AgreeEvent::CutFinal { cut, root, .. } = e {
-                        let was = roots.insert(cut.height, *root);
+                        let was = roots.insert(cut.frame.0, *root);
                         assert!(
                             was.is_none_or(|r| r == *root),
-                            "workers {workers}: member {i}'s root at {}",
-                            cut.height
+                            "workers {workers}: member {i}'s root at frame {}",
+                            cut.frame.0
                         );
                     }
                 }
@@ -4674,10 +4681,10 @@ pub(crate) mod tests {
         crate::genesis::set_skip_replay_roots(true);
         let (w0, first) = &all_roots[0];
         for (w, roots) in &all_roots[1..] {
-            let shared: Vec<&u64> = first.keys().filter(|h| roots.contains_key(h)).collect();
-            assert!(shared.len() as u64 > secs, "{w0} and {w}: {} heights in common", shared.len());
-            for h in shared {
-                assert_eq!(first[h], roots[h], "the root at height {h} with {w0} and {w}");
+            let shared: Vec<&u64> = first.keys().filter(|f| roots.contains_key(f)).collect();
+            assert!(shared.len() as u64 > secs, "{w0} and {w}: {} cut frames in common", shared.len());
+            for f in shared {
+                assert_eq!(first[f], roots[f], "the root at frame {f} with {w0} and {w}");
             }
         }
     }
