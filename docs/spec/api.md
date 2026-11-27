@@ -1240,7 +1240,7 @@ advice):
     and `QueryResult.summary: Option<QuerySummary { count, types, bounds: Option<Bounds { relative_to, min, max }>,
     objects: Vec<ObjectBrief> }>` (5.2); `Op::Duplicate.count: Option<u32>` and `step: Option<[f64; 3]>` (5.3).
   - **S6 v1.12** (M1 redo F5, @iter-bench): `ObjectView.scripts_not_running: Vec<ScriptNotRunning>`, the session
-    list's entries for the scripts attached to the object, left out when empty (5.1). With S2 v1.10: the replica's
+    list's entries for the scripts attached to the object, left out when empty (5.1). With S2 v1.12: the replica's
     `script_notes()` (`ScriptNotes { not_run, faults }`, empty by default) gives pe-app the runner's reasons.
 
 ## 12. Open points, and whose they are

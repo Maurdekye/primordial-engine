@@ -785,7 +785,7 @@ pub trait Replica: Send {
     /// What its runner says about the scripts of its last live step, this machine's and never world state: each
     /// active script it didn't run, with why in a sentence (its module isn't held here, or it won't bind and why), and
     /// each script's last fault with its system and fault, where the world keeps only the frame and the code (logic.md
-    /// 3.6). For pe-app's console and pe-api's `scripts_not_running` (S2 v1.10; M1 redo F5: the recording's lamp
+    /// 3.6). For pe-app's console and pe-api's `scripts_not_running` (S2 v1.12; M1 redo F5: the recording's lamp
     /// never bound, and nothing said so). Empty by default.
     fn script_notes(&self) -> ScriptNotes {
         ScriptNotes::default()
