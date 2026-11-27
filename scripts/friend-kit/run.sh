@@ -108,6 +108,10 @@ case " ${args[*]} " in *" --vr "*) export PE_STEAM_AUDIO_AUDIBLE=${PE_STEAM_AUDI
 # ball pit. Passed with --join too, where pe-app ignores it, so the menu's relaunches (Leave, New session) keep it
 # (@design-reviewer's L1 on S6).
 case " $* " in *" --preset "*) ;; *) args+=(--preset plane) ;; esac
+# pe-app's MCP server, on this machine only (127.0.0.1 and ::1, never the network): an agent here can drive the
+# game. Its endpoint and token go to friend-test/mcp.json beside the identity file, not to the logs (the friend
+# test 11-27, user).
+case " $* " in *" --mcp-http "*|*" --mcp-pipe "*) ;; *) args+=(--mcp-http) ;; esac
 echo "== pe-app ${args[*]} $* (logs: $logs)"
 "$here/pe-app" "${args[@]}" --log "$logs/pe-app.log" "$@" 2> >(tee "$logs/stderr.txt" >&2)
 code=$?

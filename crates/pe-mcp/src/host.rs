@@ -30,6 +30,12 @@ pub struct HostOpts {
     /// application waits on can hang at start-up (tests/launch.rs). pe-mcp's `serve` turns it on: there the harness
     /// speaks MCP over the stdio it inherits.
     pub inherit_stdin: bool,
+    /// With no harness to launch: a file to write the endpoints and a fresh token to, so an agent started by hand
+    /// (the user's own, on this machine) can connect. Written new each start, and removed when hosting ends; the
+    /// token is never printed, since logs are shared (the friend test 11-27).
+    pub connection_file: Option<std::path::PathBuf>,
+    /// The connection file's token lifetime: a play session's length, not a harness's.
+    pub file_ttl: Duration,
 }
 
 impl HostOpts {
@@ -44,6 +50,8 @@ impl HostOpts {
             ttl: Duration::from_secs(3600),
             cmd: vec![],
             inherit_stdin: false,
+            connection_file: None,
+            file_ttl: Duration::from_secs(24 * 3600),
         }
     }
 }
@@ -53,6 +61,8 @@ pub struct Hosted {
     pub http: Option<HttpServer>,
     pub store: Arc<TokenStore>,
     pub child: Option<tokio::process::Child>,
+    /// The connection file written (`HostOpts::connection_file`), removed when this drops.
+    pub file: Option<std::path::PathBuf>,
 }
 
 impl Hosted {
@@ -70,6 +80,9 @@ impl Hosted {
 impl Drop for Hosted {
     fn drop(&mut self) {
         self.store.revoke_all();
+        if let Some(f) = &self.file {
+            let _ = std::fs::remove_file(f);
+        }
     }
 }
 
@@ -92,6 +105,24 @@ fn line(text: &str) {
 }
 
 /// Start the transports and launch the harness. Requires `pipe` or `http`.
+/// Writes `bytes` to `path` new, replacing any old file. On Unix only its owner may read it; on Windows it sits in
+/// the per-user data folder, beside the identity file.
+fn write_private(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> {
+    if let Some(d) = path.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    let _ = std::fs::remove_file(path);
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.mode(0o600);
+    }
+    use std::io::Write;
+    o.open(path)?.write_all(bytes)
+}
+
 pub async fn start(api: Api, o: &HostOpts) -> io::Result<Hosted> {
     if !o.pipe && !o.http {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "MCP hosting needs a pipe and/or HTTP transport"));
@@ -135,5 +166,30 @@ pub async fn start(api: Api, o: &HostOpts) -> io::Result<Hosted> {
         }
         None => None,
     };
-    Ok(Hosted { pipe, http, store, child })
+    let file = match (&o.connection_file, child.is_none()) {
+        (Some(path), true) => {
+            let (_, secret) = store.issue(&o.principal, &o.scopes, o.grant.clone(), o.file_ttl);
+            let body = serde_json::json!({
+                "url": http.as_ref().map(|h| h.url.clone()),
+                "pipe": pipe.clone(),
+                "token": secret.expose(),
+                "header": "Authorization: Bearer <token>",
+                "note": "pe-app's MCP server, this machine only (127.0.0.1, ::1); the token ends when pe-app quits.",
+            });
+            // A file that can't be written leaves the server up: an agent given the token another way still works
+            // (@design-reviewer's L2).
+            match write_private(path, &serde_json::to_vec_pretty(&body).unwrap_or_default()) {
+                Ok(()) => {
+                    line(&format!("pe-mcp: connection details (endpoint and token) in {}", path.display()));
+                    Some(path.clone())
+                }
+                Err(e) => {
+                    line(&format!("pe-mcp: couldn't write the connection details to {}: {e}", path.display()));
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
+    Ok(Hosted { pipe, http, store, child, file })
 }

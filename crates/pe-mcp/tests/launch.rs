@@ -89,3 +89,26 @@ fn launch_agent() {
     std::io::stdin().read_to_end(&mut got).expect("stdin");
     assert!(got.is_empty(), "the agent read {} bytes", got.len());
 }
+
+/// With no harness to launch, `connection_file` gets the endpoint and a working token for an agent started by hand
+/// (api.md 6; the friend test 11-27), and the file goes when hosting ends; with a harness, none is written.
+#[test]
+fn with_no_harness_the_endpoint_and_a_token_go_to_a_file() {
+    let dir = std::env::temp_dir().join(format!("pe-mcp-conn-{}", std::process::id()));
+    let path = dir.join("friend-test").join("mcp.json");
+    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().expect("a runtime");
+    rt.block_on(async {
+        let mut o = HostOpts::new(grant());
+        o.http = true;
+        o.connection_file = Some(path.clone());
+        let hosted = start(Arc::new(MockWorld::new(1)), &o).await.expect("the transport");
+        let v: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).expect("the file")).expect("its JSON");
+        let url = v["url"].as_str().expect("the url");
+        assert!(url.starts_with("http://127.0.0.1:"), "{url}");
+        let token = v["token"].as_str().expect("the token");
+        assert!(hosted.store.authenticate(token).is_ok(), "the file's token is one the server takes");
+        drop(hosted);
+        assert!(!path.exists(), "the file goes with the server");
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+}

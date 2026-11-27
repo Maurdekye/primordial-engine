@@ -84,8 +84,12 @@ pub struct SessionFacts {
     /// The members connected now (from agreement and pe-net), each at most once.
     pub here: Vec<MemberId>,
     pub link: pe_seams::world_api::Link,
-    /// False while a joiner's import or a catch-up runs: `apply` then refuses live changes with `not_ready`.
+    /// False while a joiner's import or a catch-up runs: `apply` waits for it (`Api::caught_up_by`).
     pub caught_up: bool,
+    /// This machine has been caught up at least once since it started: a lag after that never refuses a change,
+    /// only a joiner still importing is refused `not_ready` (the friend test 11-27; @design-reviewer's Low, since
+    /// each `Api` instance alone would learn it only from its own applies).
+    pub caught_up_once: bool,
     /// The rate pe-app runs at, the world's setting.
     pub tick_hz: u32,
     /// The owning user's local setting, off by default: agents acting for this machine's member may move it
@@ -206,6 +210,10 @@ fn moves_user(
     ops.iter().position(|op| target(op).is_some_and(&is_user))
 }
 
+/// How long a live change waits for this machine to catch up before it is refused `not_ready` (`Api::caught_up_by`):
+/// long enough for a replica a few frames behind, short enough that a joiner still importing the world is told so.
+const CATCH_UP_WAIT: Duration = Duration::from_millis(1_000);
+
 /// How long an accepted change's answer waits for pe-app to publish its frame (`Api::published`): a tick or two.
 const PUBLISH_WAIT: Duration = Duration::from_millis(250);
 
@@ -285,6 +293,8 @@ pub struct Api<S: WorldSource> {
     captures: Option<Arc<dyn crate::capture::Captures>>,
     /// Principals with a capture in flight: one each (api.md 8).
     capturing: Mutex<HashSet<String>>,
+    /// This machine has been caught up at least once (`caught_up_by`): from then on a lag never refuses a change.
+    caught_up_once: std::sync::atomic::AtomicBool,
 }
 
 fn rate_limited(wait: Duration) -> ApiError {
@@ -332,6 +342,7 @@ impl<S: WorldSource + 'static> Api<S> {
             builds: None,
             captures: None,
             capturing: Mutex::new(HashSet::new()),
+            caught_up_once: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -350,6 +361,28 @@ impl<S: WorldSource + 'static> Api<S> {
     /// Forgets a closed connection's table.
     pub fn close(&self, c: ConnectionId) {
         self.versions.lock().unwrap_or_else(|e| e.into_inner()).remove(&c);
+    }
+
+    /// Whether this machine is caught up with the world, waiting until `until` for it. A replica that is a few frames
+    /// behind on one tick catches up within a tick or two: under load pe-app's flag drops many times a second (the
+    /// friend test 11-26's VR run: ~20 holds a second), so a change checked once was refused at random (spec 5.1).
+    ///
+    /// Only a machine that has never caught up (a joiner still importing the world) is refused once `until` passes.
+    /// One that has caught up before and is now behind under load goes ahead after the wait: its change resolves on
+    /// the latest snapshot, and its preconditions catch any race. Under a stress load (the 11-27 kit's 5,000-box
+    /// join measurement) a replica stays behind longer than any short wait.
+    fn caught_up_by(&self, until: Instant) -> bool {
+        use std::sync::atomic::Ordering;
+        loop {
+            if self.src.session().caught_up {
+                self.caught_up_once.store(true, Ordering::Relaxed);
+                return true;
+            }
+            if Instant::now() >= until {
+                return self.caught_up_once.load(Ordering::Relaxed) || self.src.session().caught_up_once;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
     }
 
     /// The latest snapshot, once it reaches `frame` or `until` passes, whichever is first.
@@ -495,7 +528,7 @@ impl<S: WorldSource + 'static> Api<S> {
                 "Confirmation isn't available yet; ask the owner to issue a token without it.",
                 None,
             ))
-        } else if !self.src.session().caught_up {
+        } else if !self.caught_up_by(Instant::now() + CATCH_UP_WAIT.min(timeout(opts))) {
             Some((
                 RefusalCode::NotReady,
                 "This machine is still catching up with the world; it can change it once caught up.",
@@ -1523,7 +1556,9 @@ mod tests {
                 line: LineId(Hash([0; 32])),
                 here: vec![ALICE.into(), CAROL.into()],
                 link: pe_seams::world_api::Link::Fine,
-                caught_up: !CATCHING_UP.with(|c| c.get()),
+                caught_up: !CATCHING_UP.with(|c| c.get())
+                    && LAGGING.with(|c| c.replace(c.get().saturating_sub(1))) == 0,
+                caught_up_once: CAUGHT_UP_ONCE.with(|c| c.get()),
                 tick_hz: 60,
                 agents_move_user: MOVE_OK.with(|c| c.get()),
                 scripts_not_running: NOT_RUNNING.with(|c| c.borrow().clone()),
@@ -1537,6 +1572,10 @@ mod tests {
         static EDITS: std::cell::RefCell<HashMap<EntryRef, pe_world::edit::Transaction>> = Default::default();
         /// Whether the test's machine is catching up.
         static CATCHING_UP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        /// What the test's pe-app says of having caught up before (`SessionFacts::caught_up_once`).
+        static CAUGHT_UP_ONCE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        /// How many more session reads say the test's machine is behind, as a replica a few frames behind does.
+        static LAGGING: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
         /// The caller's head (an object number), if it has one.
         static HEAD: std::cell::Cell<Option<u128>> = const { std::cell::Cell::new(None) };
         /// The owning user's "agents may move me" setting.
@@ -1670,6 +1709,46 @@ mod tests {
         assert!(a.queue.is_empty());
         let dry = ApplyOpts { mode: Mode::DryRun, ..Default::default() };
         assert_eq!(w.apply(&held, t(), &dry).unwrap().status, Status::Accepted);
+    }
+
+    #[test]
+    fn a_change_made_while_the_replica_is_a_moment_behind_waits_for_it_rather_than_being_refused() {
+        let a = api();
+        let c = caller(&[Scope::Read, Scope::Edit]);
+        // A few reads behind, then caught up: what pe-app's flag does many times a second under load.
+        LAGGING.with(|x| x.set(5));
+        let o = a
+            .apply(
+                &c,
+                tx(json!([{"op": "create", "parent": "/Table", "name": "Cup"}])),
+                &ApplyOpts { wait: Wait::None, ..Default::default() },
+            )
+            .unwrap();
+        assert_eq!((o.status, o.refusal.map(|f| f.code)), (Status::Queued, None));
+        assert_eq!(LAGGING.with(|x| x.get()), 0);
+    }
+
+    #[test]
+    fn a_machine_that_has_caught_up_before_is_never_refused_for_lagging() {
+        let a = api();
+        let c = caller(&[Scope::Read, Scope::Edit]);
+        let none = ApplyOpts { wait: Wait::None, ..Default::default() };
+        let t = || tx(json!([{"op": "create", "parent": "/Table", "name": "Cup"}]));
+        assert_eq!(a.apply(&c, t(), &none).unwrap().status, Status::Queued);
+        // Behind for longer than the wait, as a replica under a stress load is: the change still goes ahead.
+        CATCHING_UP.with(|x| x.set(true));
+        let o = a.apply(&c, t(), &none).unwrap();
+        assert_eq!((o.status, o.refusal.map(|f| f.code)), (Status::Queued, None));
+        // A second Api over the same machine (pe-app makes one per caller) that has never applied: pe-app's own
+        // "caught up once" lets it go ahead too (@design-reviewer's Low).
+        let other = api();
+        let refused = other.apply(&c, t(), &none).unwrap();
+        assert_eq!(refused.refusal.map(|f| f.code), Some(RefusalCode::NotReady), "pe-app hasn't said so");
+        CAUGHT_UP_ONCE.with(|x| x.set(true));
+        let o = other.apply(&c, t(), &none).unwrap();
+        CAUGHT_UP_ONCE.with(|x| x.set(false));
+        CATCHING_UP.with(|x| x.set(false));
+        assert_eq!((o.status, o.refusal.map(|f| f.code)), (Status::Queued, None));
     }
 
     #[test]
@@ -3128,7 +3207,10 @@ mod tests {
 
     #[test]
     fn the_rate_limit_applies_per_principal() {
-        let a = api();
+        // The bucket at the old default (20 a second, a burst of 40): the friend test's 2,000 a second refills faster
+        // than a test can call. The default itself is rate.rs's.
+        let mut a = api();
+        a.rate = Rate { per_s: 20.0, burst: 40.0 };
         let c = caller(&[Scope::Edit]);
         let dry = ApplyOpts { mode: Mode::DryRun, ..Default::default() };
         let limited = (0..60)

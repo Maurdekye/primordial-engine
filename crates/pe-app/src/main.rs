@@ -329,6 +329,17 @@ fn read_console(replies: Option<std::sync::mpsc::Sender<Reply>>, replay: bool, q
                 }
                 continue;
             }
+            // The world's shape limit (the friend test 11-27): `limit`, or `limit shapes <n>` to change it mid-session.
+            if line == "limit" || line.starts_with("limit ") {
+                match pe_app::spawn::installed() {
+                    Some(s) => match s.on_limit(&line["limit".len()..]) {
+                        Ok(said) => pe_app::out!("{said}"),
+                        Err(e) => pe_app::err!("pe-app: {e}"),
+                    },
+                    None => pe_app::err!("pe-app: `limit` needs a session with a member on the plane (--preset plane)"),
+                }
+                continue;
+            }
             if line == "fault" {
                 match pe_app::fault::on_command(pe_app::fault::armed().as_deref()) {
                     Ok(said) => pe_app::out!("{said}"),
@@ -1031,6 +1042,12 @@ fn mcp_opts(o: &Options, member: MemberKey) -> HostOpts {
     opts.pipe = o.mcp_pipe;
     opts.http = o.mcp_http;
     opts.cmd = o.agent.clone();
+    // With no `--agent`, the endpoint and a token go to a file for an agent started by hand (the friend test 11-27:
+    // the user's own agent drives the running game): `mcp.json` in the menu's folder beside the identity file.
+    if o.agent.is_empty() && o.mcp_http {
+        let identity = o.identity.clone().map_or_else(net::default_identity_path, Ok);
+        opts.connection_file = identity.ok().map(|p| pe_app::menu::files_dir(&p).join("mcp.json"));
+    }
     opts
 }
 

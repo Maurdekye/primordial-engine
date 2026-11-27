@@ -119,6 +119,10 @@ if (-not $Headless -and -not $Window) {
 if ($Headless) { $argv += '--headless' }
 # The friend test's plane, also when joining (pe-app ignores it there), so the menu's relaunches keep it.
 if (-not ($Rest -contains '--preset')) { $argv += @('--preset', 'plane') }
+# pe-app's MCP server, on this machine only (127.0.0.1 and ::1, never the network): an agent here can drive the
+# game. Its endpoint and token go to friend-test\mcp.json beside the identity file, not to the logs (the friend
+# test 11-27, user).
+if (-not ($Rest -contains '--mcp-http' -or $Rest -contains '--mcp-pipe')) { $argv += @('--mcp-http') }
 if ($Join) { $argv += @('--join', $Join) }
 $argv += @('--log', (Join-Path $logs 'pe-app.log'))
 if ($Rest) { $argv += $Rest }

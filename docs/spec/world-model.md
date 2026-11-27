@@ -1722,6 +1722,16 @@ pub enum Precondition {
   time from about 650. The number is a constant of the build, so the build id's source hash covers it (app.md 4) and
   every member of a session runs the same rule. A world stored past one build will need it in a rules version (the
   release-compatibility item).
+  - **x100 for the friend test 11-27** (user, a stress test; @coordinator-opus):
+    `MAX_SHAPES` is 52,000. A world that fills it is expected to crawl on either machine, by design.
+  - **The world's own limit, changeable mid-session.** A world may carry a `Limits { max_shapes }` row (engine
+    component 13, registered only by presets that set it). Its first row in id order is the limit, capped at
+    `SHAPES_CEILING` (2^22 - 4,096, Box3D's shape index); a world without one uses `MAX_SHAPES`. The plane carries
+    it on a root of its own, `World settings`, the last object of its genesis, set to `MAX_SHAPES`. Changing it is an
+    ordinary edit, so every member switches at that edit's frame. Only an admin member may change a `Limits` row
+    (`NoPermission` otherwise), and a value of 0 or past the ceiling is refused `Invalid`. The check reads the limit
+    after the edit, so one edit may raise it and add shapes. A limit lowered below the count removes nothing, and
+    only edits that add shapes are refused.
 - **A copy's size** (@design-reviewer's Low 2 on pe-api, @coordinator-opus). `Copy` carries `size`,
   the number of objects in the source subtree as the author read it. If the subtree has another size at the op,
   its depth-first indices would name other objects than the author meant, so the op is refused as
