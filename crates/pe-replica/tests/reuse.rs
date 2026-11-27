@@ -315,3 +315,76 @@ fn past_the_kept_grid_frames_a_late_vote_re_steps() {
     assert_eq!(pair.on.live_kept(), 16, "nothing more is kept for a vote");
     assert_eq!((pair.on.faults(), pair.off.faults()), (0, 0));
 }
+
+/// A replica on pe-app's grid with `ReplicaConfig::new`'s default for `skip_replay_roots` (E3 on), or with it off.
+fn replica_e3(world: World, default: bool) -> ReplicaImpl<PeWorld> {
+    let mut config = ReplicaConfig::new(pe_seams::SimRate::DEFAULT, Duration::from_millis(133), Arc::new(CLOCK));
+    config.cut_every = K_APP;
+    if !default {
+        config.skip_replay_roots = false;
+    }
+    ReplicaImpl::new(PeWorld::new(world, DomainId(0)), config).expect("a replica")
+}
+
+/// E3 (re-solve step 2; diverge-eng/resolve-e3-design.md): a re-step of an unscripted world leaves its grid roots to
+/// the cuts' votes, which root each cut from the keyframe kept at its frame. A 24-ball pit on pe-app's grid (a cut
+/// every 6 frames); A pushes four balls every 30 frames, and B pushes a fifth 3 frames before every cut frame, which
+/// reaches the replicas 4 frames after its stamp, so every cut frame is re-stepped. Each cut is voted and made final
+/// 12 frames after the live history passes it. With the default (`on`) and with E3 off (`off`): the same root and
+/// physics image at every vote and final cut, and the same live roots after; `on` takes no root in a replay and
+/// re-steps no frame for a vote, where `off` roots every re-stepped cut frame.
+#[test]
+fn replays_take_no_root_and_votes_root_their_cuts_from_the_kept_keyframe() {
+    let (to, lag, late) = (150, 12, 4);
+    let (world, ids) = pit(24);
+    let keys = keys();
+    let (mut a, mut b) = (EntryBuilder::new(&keys, 0), EntryBuilder::new(&keys, 1));
+    let (p_on, p_off) = (pe_replica::costs::probe(), pe_replica::costs::probe());
+    let mut pair = Pair {
+        on: replica_e3(world.clone(), true).with_cost_probe(p_on.clone()),
+        off: replica_e3(world, false).with_cost_probe(p_off.clone()),
+        s_on: Source::default(),
+        s_off: Source::default(),
+    };
+    let mut known = Vec::new();
+    for f in (5..to + 2 * K_APP).step_by(30) {
+        for (i, &object) in ids[..4].iter().enumerate() {
+            let e = push(&mut a, f, object, [0.02 * (i as f32 - 1.5), 0.03, 0.01]);
+            pair.add(&e);
+            known.push(e);
+        }
+    }
+    let remote: Vec<SignedEntry> = (K_APP..=to + lag + K_APP)
+        .step_by(K_APP as usize)
+        .map(|f| push(&mut b, f - 3, ids[4], [0.0, 0.02, 0.0]))
+        .collect();
+    let mut arrived = 0;
+    for (n, f) in (K_APP..=to).step_by(K_APP as usize).enumerate() {
+        while pair.on.frame().0 < f + lag {
+            let present = pair.on.frame().0 + 1;
+            while remote.get(arrived).is_some_and(|e| e.entry.stamp.0 + late <= present) {
+                pair.add(&remote[arrived]);
+                known.push(remote[arrived].clone());
+                arrived += 1;
+            }
+            pair.advance(present);
+        }
+        let cut = cut_at(&known, n as u64 + 1, f);
+        let root = pair.root(&cut, &format!("the vote at {f}"));
+        pair.finalize(&cut, root, &format!("the final cut at {f}"));
+    }
+    let end = pair.on.frame().0 - pair.on.frame().0 % K_APP;
+    // Above the last final cut, whose floor dropped the live roots below it.
+    for f in (to + K_APP..=end).step_by(K_APP as usize) {
+        let (on, off) = (pair.on.grid_root(Frame(f)), pair.off.grid_root(Frame(f)));
+        assert!(on.is_some() && on == off, "the live root at {f}: {on:?} and {off:?}");
+    }
+    assert_eq!((pair.on.faults(), pair.off.faults()), (0, 0));
+    let (c_on, c_off) = (p_on.lock().unwrap().clone(), p_off.lock().unwrap().clone());
+    assert!(c_on.replays > 20 && c_on.replays == c_off.replays, "a replay at every cut: {c_on:?}; {c_off:?}");
+    assert!(c_off.roots_replayed >= 20, "off roots its re-stepped cut frames: {c_off:?}");
+    assert_eq!(c_on.roots_replayed, 0, "on takes no root in a replay: {c_on:?}");
+    let (s_on, s_off) = (pair.on.scratch(), pair.off.scratch());
+    assert_eq!((s_on.frames, s_off.frames), (0, 0), "no vote re-stepped a frame: {s_on:?}; {s_off:?}");
+    assert!(s_on.reused < s_off.reused, "on's votes rooted the replayed cuts from keyframes: {s_on:?}; {s_off:?}");
+}

@@ -610,6 +610,11 @@ fn main() {
         let n = pe_app::genesis::set_physics_workers(n);
         pe_app::out!("physics workers: {n} (PE_PHYSICS_WORKERS)");
     }
+    // `PE_SKIP_REPLAY_ROOTS=0`: re-steps take their grid roots again (E3 off; pe_app::genesis::set_skip_replay_roots).
+    if std::env::var("PE_SKIP_REPLAY_ROOTS").is_ok_and(|v| v.trim() == "0") {
+        pe_app::genesis::set_skip_replay_roots(false);
+        pe_app::out!("roots in replays: taken (PE_SKIP_REPLAY_ROOTS=0)");
+    }
     // A deliberate slowdown on this machine only (K4's R3'), armed before any replica is made, as the fault is. It changes
     // no state, so `--check-replay` may run with it (the replay waits too).
     if let Some(ms) = options.slow_frame {

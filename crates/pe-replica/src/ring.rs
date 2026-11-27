@@ -55,11 +55,17 @@ impl Policy {
 pub struct Ring<K> {
     keys: BTreeMap<Frame, K>,
     pinned: BTreeSet<Frame>,
+    /// Cut frames whose root a re-step left for a vote to take from the keyframe there ([`Ring::owe`]), with that
+    /// keyframe's bytes.
+    owed: BTreeMap<Frame, usize>,
+    /// For a keyframe whose world model lacks a grid frame's rows (E3), that grid frame: its keyframe stays while this
+    /// one does ([`Ring::depend`]).
+    deps: BTreeMap<Frame, Frame>,
 }
 
 impl<K> Default for Ring<K> {
     fn default() -> Self {
-        Ring { keys: BTreeMap::new(), pinned: BTreeSet::new() }
+        Ring { keys: BTreeMap::new(), pinned: BTreeSet::new(), owed: BTreeMap::new(), deps: BTreeMap::new() }
     }
 }
 
@@ -83,6 +89,15 @@ impl<K> Ring<K> {
     /// Keep `key` as the state at the start of `frame`, replacing any older one there.
     pub fn insert(&mut self, frame: Frame, key: K) {
         self.keys.insert(frame, key);
+        self.deps.remove(&frame);
+    }
+
+    /// The keyframe at `frame` needs the one at `on` (`on <= frame`) while it is kept: a re-step left `on`'s rows
+    /// unwritten, and a step from `frame` writes them from `on`'s keyframe before a script reads them (E3).
+    pub fn depend(&mut self, frame: Frame, on: Frame) {
+        if on < frame {
+            self.deps.insert(frame, on);
+        }
     }
 
     pub fn get(&self, frame: Frame) -> Option<&K> {
@@ -104,6 +119,8 @@ impl<K> Ring<K> {
         );
         let pinned = &self.pinned;
         self.keys.retain(|f, _| *f <= frame || pinned.contains(f));
+        self.owed.retain(|f, _| *f <= frame);
+        self.deps.retain(|f, _| *f <= frame);
     }
 
     /// Rung 1 (replica.md 6.1): the history after `frame` is rebuilt from `Cv`, which can be below the floor, so every
@@ -112,6 +129,39 @@ impl<K> Ring<K> {
     pub fn rewind_to(&mut self, frame: Frame) {
         self.keys.retain(|f, _| *f <= frame);
         self.pinned.retain(|f| *f <= frame);
+        self.owed.retain(|f, _| *f <= frame);
+        self.deps.retain(|f, _| *f <= frame);
+    }
+
+    /// Keep the keyframe at cut frame `frame` (of `bytes`) past the policy until [`Ring::settle`], the floor passes
+    /// it, or newer owed frames push it out past `max` frames or `max_bytes` in all: a re-step took no root there, and
+    /// a vote or finalize roots the cut from this keyframe without re-stepping (E3, re-solve step 2). Past either bound
+    /// a vote re-steps from an older keyframe: the same root, at more cost.
+    pub fn owe(&mut self, frame: Frame, bytes: usize, max: usize, max_bytes: usize) {
+        self.owed.insert(frame, bytes);
+        while self.owed.len() > max || (self.owed.len() > 1 && self.owed.values().sum::<usize>() > max_bytes) {
+            self.owed.pop_first();
+        }
+    }
+
+    /// The cut at `frame` has its root: its keyframe goes back to the policy.
+    pub fn settle(&mut self, frame: Frame) {
+        self.owed.remove(&frame);
+    }
+
+    /// Whether a re-step left the root at `frame` to the keyframe there ([`Ring::owe`]).
+    pub fn is_owed(&self, frame: Frame) -> bool {
+        self.owed.contains_key(&frame)
+    }
+
+    /// The owed keyframes' bytes in all ([`Ring::owe`]).
+    pub fn owed_bytes(&self) -> usize {
+        self.owed.values().sum()
+    }
+
+    /// How many cut frames' keyframes are kept for a vote ([`Ring::owe`]).
+    pub fn owed(&self) -> usize {
+        self.owed.len()
     }
 
     /// Never trim these frames' keyframes (the floor and `Cv`, 4.1); the set replaces the previous one.
@@ -124,8 +174,18 @@ impl<K> Ring<K> {
     /// above it.
     pub fn trim(&mut self, policy: Policy, present: Frame, floor: Frame) {
         let base = self.at_or_before(floor).map(|(f, _)| f);
-        let pinned = &self.pinned;
-        self.keys.retain(|&f, _| pinned.contains(&f) || Some(f) == base || (f >= floor && policy.keeps(f, present)));
+        self.owed.retain(|f, _| *f >= floor);
+        let (pinned, owed) = (&self.pinned, &self.owed);
+        let keep = |f: Frame| {
+            pinned.contains(&f) || owed.contains_key(&f) || Some(f) == base || (f >= floor && policy.keeps(f, present))
+        };
+        let mut kept: BTreeSet<Frame> = self.keys.keys().copied().filter(|&f| keep(f)).collect();
+        // A kept keyframe keeps the one it depends on (`depend`): one level, since that one depends on none.
+        let deps: Vec<Frame> = kept.iter().filter_map(|f| self.deps.get(f).copied()).collect();
+        kept.extend(deps);
+        self.keys.retain(|f, _| kept.contains(f));
+        let keys = &self.keys;
+        self.deps.retain(|f, _| keys.contains_key(f));
     }
 }
 

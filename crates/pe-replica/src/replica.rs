@@ -126,6 +126,10 @@ pub struct ReplicaConfig {
     /// snapshot's transfer serialized again, as before: the same roots and transfers, at more cost. On by default;
     /// tests turn it off to compare.
     pub reuse_live: bool,
+    /// Whether a re-step of an unscripted world skips the root at a cut frame and leaves it to the cut's vote or
+    /// finalize, which roots the cut from the keyframe there (E3, re-solve step 2; diverge-eng/resolve-e3-design.md).
+    /// The same roots either way. On by default; tests turn it off to compare.
+    pub skip_replay_roots: bool,
 }
 
 impl ReplicaConfig {
@@ -140,6 +144,7 @@ impl ReplicaConfig {
             clock,
             local: None,
             reuse_live: true,
+            skip_replay_roots: true,
         }
     }
 }
@@ -150,6 +155,10 @@ impl ReplicaConfig {
 struct Key<S> {
     world: S,
     image: Arc<WorldImage>,
+    /// The newest grid frame whose `BodyState` rows this world model lacks: a re-step left that frame's root to the
+    /// cut's vote (E3), so its rows were never written. `None` once a root wrote them. A step from here that finds
+    /// the world scripted writes them first (`catch_up_rows`).
+    stale: Option<Frame>,
 }
 
 /// A held root: the state at a cut with exactly its entries, kept apart from the ring.
@@ -201,6 +210,16 @@ type PhysicsRows = (Vec<(ObjectId, BodyStateRow)>, Bytes, Hash);
 /// more. That covers a vote or `finalize` 16 cut intervals late: 1.6 s on pe-app's grid (a cut every 6 frames at
 /// 60 Hz).
 const LIVE_KEPT: usize = 16;
+
+/// At most this many cut frames keep their keyframe for a vote after a re-step left their root to it (E3,
+/// [`Ring::owe`]): 3.2 s of cuts at 0.1 s, 51 MB at 500 balls (1.6 MB a keyframe). A healthy session votes each cut
+/// well within that; a longer stall votes at every cut, which settles them, and past the bound a vote re-steps from an
+/// older keyframe.
+const OWED_KEPT: usize = 32;
+
+/// And at most this many bytes of them in all (@design-reviewer's L2 on 096fc0f2): at the 11-27 limits a keyframe can
+/// be ~160 MB, so 32 of them would pin ~5 GB in a stall. The newest is always kept.
+const OWED_BYTES: usize = 128 << 20;
 
 /// The digest of a cut's entries from the base up to a frame: for each frame in order, the count of the entries it
 /// steps, then their ids in apply order.
@@ -260,6 +279,8 @@ pub struct ReplicaImpl<W: WorldModel> {
     /// The transfers the live history's take_roots serialized at its grid frames from the floor, each with the keyframe
     /// taken there, for at most [`LIVE_KEPT`] frames (5.4).
     live_transfers: BTreeMap<Frame, Taken<W::Saved>>,
+    /// The newest grid frame whose `BodyState` rows the world model lacks, as [`Key::stale`] (E3).
+    stale_rows: Option<Frame>,
     /// The transfer the last take_root serialized, until the live history or a snapshot of that state takes it.
     taken: Option<Taken<W::Saved>>,
     /// The ids of the entries each live frame stepped, in apply order, from the floor.
@@ -510,6 +531,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
             ring: Ring::new(),
             live: BTreeMap::new(),
             live_transfers: BTreeMap::new(),
+            stale_rows: None,
             taken: None,
             stepped: BTreeMap::new(),
             outcomes: BTreeMap::new(),
@@ -662,9 +684,39 @@ impl<W: WorldModel> ReplicaImpl<W> {
         self.live_transfers.len()
     }
 
-    /// The live root at a cut-grid frame, if it has been taken and is still kept.
+    /// The live root at a cut-grid frame, if it has been taken and is still kept. A re-step of an unscripted world
+    /// leaves it to the cut's vote (E3, `ReplicaConfig::skip_replay_roots`); [`Self::grid_root`] takes it then.
     pub fn live_root(&self, frame: Frame) -> Option<Hash> {
         self.live.get(&frame).copied()
+    }
+
+    /// The live history's root at grid frame `frame`: the live root if one was taken, or else, where a re-step left it
+    /// to the cut's vote (E3), the root of the keyframe saved there, taken now as a vote would (from that keyframe,
+    /// re-stepping nothing; `scratch_to`). `None` if neither is kept. The live state is unchanged. For drivers and
+    /// tests that compare a history's roots frame by frame.
+    pub fn grid_root(&mut self, frame: Frame) -> Option<Hash> {
+        if let Some(&root) = self.live.get(&frame) {
+            return Some(root);
+        }
+        if frame > self.frame || !self.ring.is_owed(frame) {
+            return None;
+        }
+        let key = self.ring.get(frame)?.clone();
+        let live = (self.world.save(), self.physics.save_image().ok()?, self.frame, self.taken.take(), self.stale_rows);
+        self.world.restore(&key.world);
+        let restored = self.physics.restore_image(&key.image).is_ok();
+        self.frame = frame;
+        let root = restored.then(|| self.take_root());
+        self.world.restore(&live.0);
+        // The live image goes back whatever the keyframe's restore did (@design-reviewer's L1 on 096fc0f2).
+        let back = self.physics.restore_image(&live.1).is_ok();
+        if !restored || !back {
+            self.faults += 1;
+        }
+        self.frame = live.2;
+        self.taken = live.3;
+        self.stale_rows = live.4;
+        root
     }
 
     /// The frame below which nothing changes again (rung 1 aside).
@@ -789,6 +841,12 @@ impl<W: WorldModel> ReplicaImpl<W> {
             }
         }
         let mut events = Vec::new();
+        // E3: a scripted world's scripts may read `BodyState` rows. Where a re-step left the newest grid frame's rows
+        // unwritten (the world was unscripted then; a code commit can make it scripted since), write them now, as an
+        // in-order history has them, before any script runs (@design-reviewer's M1 on 096fc0f2).
+        if self.stale_rows.is_some() && self.world.scripted() {
+            self.catch_up_rows();
+        }
         self.logic(f, Stage::LogicPrePhysics, live, &mut events);
         // The player bodies (world-model.md 8.2): each walked by the mover before the hands are driven, so a hand's
         // target is where its moved body puts it.
@@ -830,7 +888,21 @@ impl<W: WorldModel> ReplicaImpl<W> {
         let acts = self.world.end_frame(f);
         let next = Frame(f.0 + 1);
         self.frame = next;
-        let root = self.is_cut_frame(next).then(|| {
+        // E3 (re-solve step 2; diverge-eng/resolve-e3-design.md): a re-step of an unscripted world takes no root on the
+        // grid. A later rewind would likely replace it, and only a vote or finalize asks for it (`my_root`), which then
+        // roots the cut from the keyframe saved here, kept until then (`Ring::owe`). A root's row write is a function
+        // of the rows it is given, so a skipped one changes no later root. Scripts may read those `BodyState` rows
+        // between cuts, so a scripted world keeps the root, as does a rung-1 replay, whose root at its cut is the point.
+        let owed = live
+            && resimulated
+            && self.config.skip_replay_roots
+            && self.replay.is_none()
+            && !self.world.scripted()
+            && self.is_cut_frame(next);
+        if owed {
+            self.stale_rows = Some(next);
+        }
+        let root = (self.is_cut_frame(next) && !owed).then(|| {
             let t = probe.then(std::time::Instant::now);
             let root = self.take_root();
             root_ns = t.map_or(0, costs::since);
@@ -851,6 +923,10 @@ impl<W: WorldModel> ReplicaImpl<W> {
                 let t = probe.then(std::time::Instant::now);
                 self.keyframe(next);
                 keyframe_ns += t.map_or(0, costs::since);
+            }
+            if owed {
+                let bytes = self.ring.get(next).map_or(0, |k| k.image.world_bytes().len());
+                self.ring.owe(next, bytes, OWED_KEPT, OWED_BYTES);
             }
             if let Some(root) = root {
                 self.live.insert(next, root);
@@ -1149,7 +1225,33 @@ impl<W: WorldModel> ReplicaImpl<W> {
         };
         let root = self.world.root();
         self.taken = taken.map(|(transfer, global)| Taken { frame: self.frame, root, transfer, global, key: None });
+        self.stale_rows = None;
         root
+    }
+
+    /// Write grid frame `stale_rows`'s `BodyState` rows and `physics_global` into the world model, from the keyframe
+    /// saved there (E3): the rows an in-order history's root wrote at that frame. Everything else is put back. A
+    /// keyframe that is gone, or a refused restore, is a fault: the ring keeps it while anything depends on it.
+    fn catch_up_rows(&mut self) {
+        let Some(c) = self.stale_rows.take() else { return };
+        let Some(key) = self.ring.get(c).cloned() else {
+            self.faults += 1;
+            return;
+        };
+        let Ok(image) = self.physics.save_image() else {
+            self.faults += 1;
+            return;
+        };
+        let world = self.world.save();
+        self.world.restore(&key.world);
+        let restored = self.physics.restore_image(&key.image).is_ok();
+        let rows = if restored { self.physics_rows().ok() } else { None };
+        let back = self.physics.restore_image(&image).is_ok();
+        self.world.restore(&world);
+        match rows {
+            Some((rows, _, global)) if back => self.world.write_physics(&rows, global),
+            _ => self.faults += 1,
+        }
     }
 
     /// The live history just took its root and then its keyframe at a grid frame: the transfer its take_root
@@ -1194,7 +1296,13 @@ impl<W: WorldModel> ReplicaImpl<W> {
 
     fn keyframe(&mut self, at: Frame) {
         match self.physics.save_image() {
-            Ok(image) => self.ring.insert(at, Key { world: self.world.save(), image: Arc::new(image) }),
+            Ok(image) => {
+                let stale = self.stale_rows;
+                self.ring.insert(at, Key { world: self.world.save(), image: Arc::new(image), stale });
+                if let Some(on) = stale {
+                    self.ring.depend(at, on);
+                }
+            }
             Err(_) => self.faults += 1,
         }
     }
@@ -1210,7 +1318,9 @@ impl<W: WorldModel> ReplicaImpl<W> {
             return None;
         }
         world.restore(&key.world);
+        let stale = key.stale;
         self.frame = k;
+        self.stale_rows = stale;
         self.ring.truncate_after(k);
         self.forget_after(k);
         Some(k)
@@ -1225,7 +1335,9 @@ impl<W: WorldModel> ReplicaImpl<W> {
     /// (a fault): the live state is then unchanged, and the caller stops instead.
     fn abandon_replay(&mut self) -> bool {
         let Some((at, root)) = self.floor.as_ref().map(|f| (f.cut.at.frame, f.root)) else { return false };
-        let Some(key) = self.held_here(&root).map(|h| Key { world: h.world.clone(), image: h.image.clone() }) else {
+        let Some(key) =
+            self.held_here(&root).map(|h| Key { world: h.world.clone(), image: h.image.clone(), stale: None })
+        else {
             return false;
         };
         // `replay_to` dropped the floor's keyframe with the history it was replacing.
@@ -1453,6 +1565,10 @@ impl<W: WorldModel> ReplicaImpl<W> {
         if from == at && !self.preview_at_or_below(at) {
             // The live history stepped exactly the cut's entries, through the same frame function.
             debug_assert!(self.live.get(&at).is_none_or(|&live| live == root), "the live root at {at:?} is the cut's");
+            // So this is the live root there, which a re-step left to this vote (E3): kept as the live one.
+            if at <= self.frame && self.ring.is_owed(at) {
+                self.live.insert(at, root);
+            }
         }
         held.mark = history.map(|history| Mark { lineage: self.lineage, history });
         match self.held.get_mut(&root).filter(|h| h.epoch == self.epoch) {
@@ -1547,6 +1663,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
         source: &dyn EntrySource,
     ) -> Result<(Hash, Held<W::Saved>), RootError> {
         let live = (self.world.save(), self.physics.save_image().map_err(|_| RootError::Damaged)?, self.frame);
+        let stale = self.stale_rows;
         let tally = (self.faults, self.stopped, self.counters.fp_resets);
         self.scratch_records.clear();
         self.scratch_checks.clear();
@@ -1572,6 +1689,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
             self.faults += 1;
         }
         self.frame = live.2;
+        self.stale_rows = stale;
         result
     }
 
@@ -1583,9 +1701,9 @@ impl<W: WorldModel> ReplicaImpl<W> {
     ) -> Result<(Hash, Held<W::Saved>), RootError> {
         let at = cut.at.frame;
         let ReplicaImpl { ring, held, world, physics, faults, .. } = self;
-        let (k, saved, image) = match start {
-            Start::Ring(from) => ring.at_or_before(from).map(|(k, key)| (k, &key.world, &key.image)),
-            Start::Held(root) => held.get(&root).map(|h| (h.frame, &h.world, &h.image)),
+        let (k, saved, image, stale) = match start {
+            Start::Ring(from) => ring.at_or_before(from).map(|(k, key)| (k, &key.world, &key.image, key.stale)),
+            Start::Held(root) => held.get(&root).map(|h| (h.frame, &h.world, &h.image, None)),
         }
         .ok_or(RootError::NotKept)?;
         world.restore(saved);
@@ -1595,6 +1713,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
             return Err(RootError::Damaged);
         }
         self.frame = k;
+        self.stale_rows = stale;
         let mut root = None;
         while self.frame < at {
             let entries = source.entries_for_cut(cut, self.frame).ok_or(RootError::NotKept)?;
@@ -1680,7 +1799,9 @@ impl<W: WorldModel> ReplicaImpl<W> {
         let preview = live_exact && self.world.predicted_from().is_some_and(|p| p <= at);
         let live = || self.ring.get(at).cloned().or_else(|| self.live_transfers.get(&at).and_then(|t| t.key.clone()));
         let key = preview.then(live).flatten();
-        let key = key.or_else(|| self.held_here(&root).map(|h| Key { world: h.world.clone(), image: h.image.clone() }));
+        let key = key.or_else(|| {
+            self.held_here(&root).map(|h| Key { world: h.world.clone(), image: h.image.clone(), stale: None })
+        });
         if let Some(key) = key {
             self.ring.insert(at, key);
         }
@@ -1705,7 +1826,9 @@ impl<W: WorldModel> ReplicaImpl<W> {
             return false;
         }
         let Some(root) = self.base_root() else { return false };
-        let Some(key) = self.held_here(&root).map(|h| Key { world: h.world.clone(), image: h.image.clone() }) else {
+        let Some(key) =
+            self.held_here(&root).map(|h| Key { world: h.world.clone(), image: h.image.clone(), stale: None })
+        else {
             return false;
         };
         self.ring.insert(base, key);
@@ -2169,6 +2292,10 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         }
         let root = self.my_root(cut, &*source, true)?;
         self.voted.insert(cut.at, root);
+        // The live world's stale rows still need that keyframe (`catch_up_rows`).
+        if self.stale_rows != Some(cut.at.frame) {
+            self.ring.settle(cut.at.frame);
+        }
         // A long stall votes at every cut and finalizes none: the snapshots are thinned at each vote (4.1).
         self.release();
         Ok(root)
@@ -2288,7 +2415,7 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         self.ring.rewind_to(cv_frame);
         // `Cv`'s keyframe is its held snapshot, the state just restored: under my own prediction it could be the live
         // preview's (C4's (c), `move_floor`), which a replay with exactly the cut's entries never starts from.
-        let key = Key { world: held_world, image: held_image };
+        let key = Key { world: held_world, image: held_image, stale: None };
         self.ring.insert(cv_frame, key);
         self.forget_after(cv_frame);
         self.voted.clear();
@@ -2416,7 +2543,7 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         self.reached = self.reached.max(c);
         self.ring = Ring::new();
         let image = Arc::new(image);
-        self.ring.insert(c, Key { world: self.world.save(), image: image.clone() });
+        self.ring.insert(c, Key { world: self.world.save(), image: image.clone(), stale: None });
         self.ring.pin([c]);
         self.forget_after(c);
         self.live.retain(|f, _| *f < floor);

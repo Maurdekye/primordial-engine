@@ -97,8 +97,9 @@ impl EntrySource for Source {
     }
 }
 
-fn roots(r: &ReplicaImpl<PeWorld>, to: u64) -> Vec<(u64, Hash)> {
-    (0..=to).step_by(K as usize).filter_map(|f| r.live_root(Frame(f)).map(|h| (f, h))).collect()
+/// The live history's root at every grid frame to `to` (`grid_root`: a re-step's left to the keyframe, E3).
+fn roots(r: &mut ReplicaImpl<PeWorld>, to: u64) -> Vec<(u64, Hash)> {
+    (0..=to).step_by(K as usize).filter_map(|f| r.grid_root(Frame(f)).map(|h| (f, h))).collect()
 }
 
 fn input(b: &mut EntryBuilder, at: u64, i: &Input) -> SignedEntry {
@@ -305,7 +306,7 @@ fn late_moves_roll_back_to_the_same_roots() {
     two.advance(Frame(100), &mut late);
     c.iter().cloned().for_each(|e| late.add(e));
     two.advance(Frame(TO + 1), &mut late);
-    assert_eq!(roots(&two, TO), roots(&one, TO));
+    assert_eq!(roots(&mut two, TO), roots(&mut one, TO));
     let (w1, w2) = (one.world().world(), two.world().world());
     assert_eq!(feet(w1, b0), feet(w2, b0));
     assert_eq!(feet(w1, b1), feet(w2, b1));
@@ -434,7 +435,7 @@ fn a_late_crate_where_i_stand_pushes_me_out_and_my_view_snaps() {
     let pushed = (after - before).0;
     assert!(pushed[0] < -0.08, "my rig moved with the push, at once: {pushed:?}");
     one.advance(Frame(120), &mut late);
-    assert_eq!(roots(&one, 112), roots(&two, 112), "both machines agree");
+    assert_eq!(roots(&mut one, 112), roots(&mut two, 112), "both machines agree");
     let end = feet(one.world().world(), me);
     assert!(crate_at[0] - 0.5 - end[0] > 0.2, "out of the crate: feet {end:?}, crate at {crate_at:?}");
     assert_eq!(end, feet(two.world().world(), me));
@@ -465,7 +466,7 @@ fn a_voided_move_rolls_my_walk_back_to_the_other_machine_s() {
     two.advance(Frame(60), &mut other);
     assert_eq!(feet(one.world().world(), me), feet(two.world().world(), me), "back where the other has me");
     assert_eq!(feet(one.world().world(), me), feet(&world, me), "which is where I stood");
-    assert_eq!(roots(&one, 56), roots(&two, 56));
+    assert_eq!(roots(&mut one, 56), roots(&mut two, 56));
     let heading = |r: &ReplicaImpl<PeWorld>| r.view().heads.iter().find(|h| h.body == me).map(|h| h.rotation);
     assert_eq!(heading(&one), heading(&two), "the next Move's heading on both");
 }
@@ -561,7 +562,7 @@ fn bumping_under_lag(late: u64) -> ([f64; 2], [u32; 2]) {
     let w = r.world().world();
     let (a, b) = (feet(w, b0), feet(w, b1));
     assert!(b[0] - a[0] > 2.0 * f64::from(pe_physics::PLAYER.radius) - 0.01, "never through each other: {a:?} {b:?}");
-    assert_eq!(roots(&r, TO), roots(&truth, TO), "the late machine ends where the on-time one does");
+    assert_eq!(roots(&mut r, TO), roots(&mut truth, TO), "the late machine ends where the on-time one does");
     (worst, off)
 }
 
@@ -648,7 +649,7 @@ fn a_body_that_falls_into_the_void_is_put_back_at_the_spawn_at_rest() {
     two.advance(Frame(200), &mut t);
     t.add(late);
     two.advance(Frame(241), &mut t);
-    assert_eq!(roots(&two, 240), roots(&one, 240));
+    assert_eq!(roots(&mut two, 240), roots(&mut one, 240));
     assert_eq!(feet(two.world().world(), body), feet(one.world().world(), body));
     assert_eq!((one.faults(), two.faults()), (0, 0));
 }

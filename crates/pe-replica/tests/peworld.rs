@@ -248,8 +248,9 @@ fn replica() -> ReplicaImpl<PeWorld> {
     ReplicaImpl::new(PeWorld::new(genesis(), DomainId(0)), config).expect("a replica")
 }
 
-fn roots(r: &ReplicaImpl<PeWorld>, to: u64) -> Vec<(u64, Hash)> {
-    (0..=to).step_by(K as usize).filter_map(|f| r.live_root(Frame(f)).map(|h| (f, h))).collect()
+/// The live history's root at every grid frame to `to` (`grid_root`: a re-step's left to the keyframe, E3).
+fn roots(r: &mut ReplicaImpl<PeWorld>, to: u64) -> Vec<(u64, Hash)> {
+    (0..=to).step_by(K as usize).filter_map(|f| r.grid_root(Frame(f)).map(|h| (f, h))).collect()
 }
 
 #[test]
@@ -258,7 +259,7 @@ fn the_replica_steps_the_real_world_and_rolls_back_to_the_same_roots() {
     scene().into_iter().for_each(|e| s.add(e));
     let mut a = replica();
     a.advance(Frame(64), &mut s);
-    let ra = roots(&a, 64);
+    let ra = roots(&mut a, 64);
     assert_eq!(ra.len(), 9);
     assert!(ra.windows(2).all(|w| w[0].1 != w[1].1), "the roots move: {ra:?}");
     assert_eq!(a.faults(), 0);
@@ -281,7 +282,7 @@ fn the_replica_steps_the_real_world_and_rolls_back_to_the_same_roots() {
     late.add(second);
     let adv = b.advance(Frame(64), &mut late);
     assert!(adv.rolled_back_to.is_some_and(|f| f.0 <= 5), "rolled back: {adv:?}");
-    assert_eq!(roots(&b, 64), ra);
+    assert_eq!(roots(&mut b, 64), ra);
     assert_eq!(b.faults(), 0);
 }
 
@@ -537,8 +538,8 @@ fn an_edit_past_the_shape_limit_is_refused_by_every_replica() {
         assert!(matches!(r.outcome(&fits.id()), Some((Frame(4), Outcome::Applied { .. }))));
         assert_eq!(r.world().world().store().count(pe_world::components::ids::SHAPE), max);
     }
-    assert_eq!(roots(&one, 16), roots(&each, 16));
-    assert_eq!(roots(&one, 16).len(), 3, "roots at 0, 8 and 16");
+    assert_eq!(roots(&mut one, 16), roots(&mut each, 16));
+    assert_eq!(roots(&mut one, 16).len(), 3, "roots at 0, 8 and 16");
 }
 
 // ---- inputs (pe-world's slice B) ------------------------------------------------------------------------------------
@@ -692,11 +693,11 @@ fn two_members_pushing_one_ball_within_a_network_delay_both_take_effect() {
         let ball = (r.world().body(oid(BALL)).unwrap().expect("the ball").pos - Pos::ORIGIN).0;
         (r, adv.rolled_back_to, ball)
     };
-    let (reference, _, both) = run(&[&along_x, &along_z], 0, &[]);
+    let (mut reference, _, both) = run(&[&along_x, &along_z], 0, &[]);
     // A sends its push at 10 and steps to 15 before B's, stamped 12, arrives (a delay of 3 frames, 50 ms).
-    let (at_a, a_back, a_ball) = run(&[&along_x], 15, &[&along_z]);
+    let (mut at_a, a_back, a_ball) = run(&[&along_x], 15, &[&along_z]);
     // B sends its push at 12 and steps to 14 before A's, stamped 10, arrives.
-    let (at_b, b_back, b_ball) = run(&[&along_z], 14, &[&along_x]);
+    let (mut at_b, b_back, b_ball) = run(&[&along_z], 14, &[&along_x]);
     assert!(a_back.is_some_and(|f| f.0 <= 12), "A rolled back for B's push: {a_back:?}");
     assert!(b_back.is_some_and(|f| f.0 <= 10), "B rolled back for A's push: {b_back:?}");
     for (r, who) in [(&reference, "the reference"), (&at_a, "A"), (&at_b, "B")] {
@@ -705,10 +706,10 @@ fn two_members_pushing_one_ball_within_a_network_delay_both_take_effect() {
             assert!(matches!(o, Some(Outcome::Applied { .. })), "{who}: {o:?}");
         }
     }
-    let want = roots(&reference, END);
+    let want = roots(&mut reference, END);
     assert_eq!(want.len(), 9);
-    assert_eq!(roots(&at_a, END), want, "A's roots");
-    assert_eq!(roots(&at_b, END), want, "B's roots");
+    assert_eq!(roots(&mut at_a, END), want, "A's roots");
+    assert_eq!(roots(&mut at_b, END), want, "B's roots");
     assert_eq!((a_ball, b_ball), (both, both));
     // Each push alone moves the ball along its own direction only; together, along both.
     let (_, _, only_x) = run(&[&along_x], 0, &[]);
@@ -751,8 +752,8 @@ fn an_author_s_check_counts_a_late_earlier_push_as_a_correction() {
         w.set_member(keys.key(1), perm::EDIT);
         w
     };
-    let (reference, _) = reference_of(world(), &entries, 32);
-    let run = |late: bool| {
+    let (mut reference, _) = reference_of(world(), &entries, 32);
+    let mut run = |late: bool| {
         let mut r = replica_for(world(), 0);
         let mut s = Source::default();
         s.add(mine.clone());
@@ -767,8 +768,9 @@ fn an_author_s_check_counts_a_late_earlier_push_as_a_correction() {
         assert_eq!(r.interaction_checks().judged, 0, "nothing is judged before its frame is final");
         finalize_at(&mut r, &mut s, &entries, 16);
         r.advance(Frame(32), &mut s);
-        let above = |r: &ReplicaImpl<PeWorld>| roots(r, 32).into_iter().filter(|(f, _)| *f >= 16).collect::<Vec<_>>();
-        assert_eq!(above(&r), above(&reference), "the check changes no state");
+        let above =
+            |r: &mut ReplicaImpl<PeWorld>| roots(r, 32).into_iter().filter(|(f, _)| *f >= 16).collect::<Vec<_>>();
+        assert_eq!(above(&mut r), above(&mut reference), "the check changes no state");
         assert_eq!(r.faults(), 0);
         (r.interaction_checks().clone(), r.view().counters.interactions_corrected)
     };
@@ -796,7 +798,7 @@ fn an_author_s_check_takes_the_cut_exact_re_step_when_finalize_re_bases() {
         w.set_member(keys.key(1), perm::EDIT);
         w
     };
-    let (reference, _) = reference_of(world(), std::slice::from_ref(&mine), 32);
+    let (mut reference, _) = reference_of(world(), std::slice::from_ref(&mine), 32);
     let mut r = replica_for(world(), 0);
     let mut s = Source::default();
     s.add(mine.clone());
@@ -814,8 +816,8 @@ fn an_author_s_check_takes_the_cut_exact_re_step_when_finalize_re_bases() {
     let want = CorrectedInteraction { frame: Frame(12), object: oid(BALL) };
     assert_eq!(checks.recent.iter().copied().collect::<Vec<_>>(), [want]);
     r.advance(Frame(32), &mut s);
-    let above = |r: &ReplicaImpl<PeWorld>| roots(r, 32).into_iter().filter(|(f, _)| *f >= 16).collect::<Vec<_>>();
-    assert_eq!(above(&r), above(&reference));
+    let above = |r: &mut ReplicaImpl<PeWorld>| roots(r, 32).into_iter().filter(|(f, _)| *f >= 16).collect::<Vec<_>>();
+    assert_eq!(above(&mut r), above(&mut reference));
     assert_eq!(r.faults(), 0, "S3's report inside [10, 16) is excused");
 }
 
@@ -956,7 +958,7 @@ fn a_replay_that_drops_a_voided_admit_leaves_no_trace_of_it() {
     s.entries.get_mut(&Frame(10)).expect("its frame").retain(|e| e.id() != admit.id());
     s.changed = Some(Frame(10));
     a.advance(Frame(48), &mut s);
-    assert_eq!(roots(&a, 48), roots(&clean, 48), "the same roots as a run without it");
+    assert_eq!(roots(&mut a, 48), roots(&mut clean, 48), "the same roots as a run without it");
     assert_eq!(hands_of(&a), 0, "and no hands for the key");
     assert_eq!(a.faults(), 0);
 }
@@ -1031,7 +1033,7 @@ fn full_import(donor: &mut ReplicaImpl<PeWorld>, s: &mut Source, cut: &Cut) -> C
     }
 }
 
-fn from(r: &ReplicaImpl<PeWorld>, at: u64, to: u64) -> Vec<(u64, Hash)> {
+fn from(r: &mut ReplicaImpl<PeWorld>, at: u64, to: u64) -> Vec<(u64, Hash)> {
     roots(r, to).into_iter().filter(|r| r.0 >= at).collect()
 }
 
@@ -1084,7 +1086,7 @@ fn a_joiner_imports_the_real_world_through_pe_world_s_tree() {
     assert_eq!(joiner.finalize(&fc32, &mut s), Finalized::Agreed);
     host.advance(Frame(64), &mut hs);
     joiner.advance(Frame(64), &mut s);
-    assert_eq!(from(&joiner, 32, 64), from(&host, 32, 64));
+    assert_eq!(from(&mut joiner, 32, 64), from(&mut host, 32, 64));
     assert_eq!(joiner.faults(), 0);
 }
 
@@ -1116,7 +1118,7 @@ fn a_joiner_takes_gravity_and_origin_from_the_real_world_it_imports() {
     let adv = joiner.advance(Frame(64), &mut s);
     assert!(adv.rolled_back_to.is_some_and(|f| f.0 <= 40), "the late drop rolls back: {adv:?}");
     host.advance(Frame(64), &mut hs);
-    assert_eq!(from(&joiner, 32, 64), from(&host, 32, 64), "the host's roots, the late drop included");
+    assert_eq!(from(&mut joiner, 32, 64), from(&mut host, 32, 64), "the host's roots, the late drop included");
     assert_eq!(joiner.faults(), 0);
 }
 
@@ -1206,7 +1208,11 @@ fn a_joiner_takes_every_world_setting_from_the_real_world_it_imports() {
     assert_eq!(joiner.finalize(&fc32, &mut s), Finalized::Agreed);
     host.advance(Frame(64), &mut hs);
     joiner.advance(Frame(64), &mut s);
-    assert_eq!(from(&joiner, 32, 64), from(&host, 32, 64), "the host's roots through the grab, push and release");
+    assert_eq!(
+        from(&mut joiner, 32, 64),
+        from(&mut host, 32, 64),
+        "the host's roots through the grab, push and release"
+    );
     assert_eq!((joiner.faults(), host.faults()), (0, 0));
 }
 
@@ -1378,7 +1384,7 @@ fn a_mode_flip_that_arrives_late_rolls_back_to_the_same_roots() {
     late.add(flip);
     let adv = c.advance(Frame(64), &mut late);
     assert!(adv.rolled_back_to.is_some_and(|f| f.0 <= 12), "the late flip rolls back: {adv:?}");
-    assert_eq!(roots(&c, 64), roots(&a, 64));
+    assert_eq!(roots(&mut c, 64), roots(&mut a, 64));
     assert!(at(&a, BALL)[0] > 2.5, "the flip made the open hand push the ball");
     assert_eq!((a.faults(), c.faults()), (0, 0));
 }
@@ -1495,7 +1501,7 @@ fn a_grab_that_arrives_late_rolls_back_to_the_same_roots() {
     late.add(grab);
     let adv = c.advance(Frame(48), &mut late);
     assert!(adv.rolled_back_to.is_some_and(|f| f.0 <= 6), "the late grab rolls back: {adv:?}");
-    assert_eq!(roots(&c, 48), roots(&a, 48));
+    assert_eq!(roots(&mut c, 48), roots(&mut a, 48));
     assert!(at(&a, BALL)[1] > 0.5, "the grab lifted the ball: {:?}", at(&a, BALL));
     assert_eq!((a.faults(), c.faults()), (0, 0));
 }
@@ -1684,7 +1690,7 @@ fn a_late_handoff_and_a_late_jump_roll_back_to_the_same_roots() {
         some.add(entries[late].clone());
         let adv = c.advance(Frame(56), &mut some);
         assert!(adv.rolled_back_to.is_some_and(|f| f <= entries[late].entry.stamp), "rolled back: {adv:?}");
-        assert_eq!(roots(&c, 56), roots(&a, 56));
+        assert_eq!(roots(&mut c, 56), roots(&mut a, 56));
         assert_eq!((a.faults(), c.faults()), (0, 0));
     };
     run(handoff, 3);
@@ -1988,7 +1994,7 @@ fn a_throw_that_arrives_late_rolls_back_to_the_same_roots() {
     late.add(last[0].clone());
     let adv = c.advance(Frame(70), &mut late);
     assert!(adv.rolled_back_to.is_some_and(|f| f.0 <= 40), "the late throw rolls back: {adv:?}");
-    assert_eq!(roots(&c, 70), roots(&a, 70));
+    assert_eq!(roots(&mut c, 70), roots(&mut a, 70));
     assert!(at(&a, BALL)[0] > 2.5, "the throw moved the ball: {:?}", at(&a, BALL));
     assert_eq!((a.faults(), c.faults()), (0, 0));
 }
@@ -2289,7 +2295,7 @@ fn a_rollback_across_frames_where_a_hold_is_bounded_replays_the_same_roots() {
         some.add(entries[late].clone());
         let adv = c.advance(Frame(96), &mut some);
         assert!(adv.rolled_back_to.is_some_and(|f| f <= entries[late].entry.stamp), "rolled back: {adv:?}");
-        assert_eq!(roots(&c, 96), roots(&a, 96));
+        assert_eq!(roots(&mut c, 96), roots(&mut a, 96));
         assert_eq!((a.faults(), c.faults()), (0, 0));
     }
 }
@@ -2536,7 +2542,7 @@ fn a_ball_held_into_a_stack_pushes_it_gently_and_a_late_input_replays_the_same_r
     early.add(entries[late].clone());
     let adv = l.advance(Frame(end), &mut early);
     assert!(adv.rolled_back_to.is_some_and(|f| f <= entries[late].entry.stamp), "rolled back: {adv:?}");
-    assert_eq!(roots(&l, end), roots(&r, end), "the same roots");
+    assert_eq!(roots(&mut l, end), roots(&mut r, end), "the same roots");
     assert_eq!(l.faults(), 0);
 }
 
@@ -2719,8 +2725,8 @@ fn a_late_leave_reaches_the_in_order_roots() {
     let adv = late.advance(Frame(32), &mut s);
     assert!(adv.rolled_back_to.is_some_and(|f| f.0 <= 10), "{adv:?}");
     assert_eq!((in_order.faults(), late.faults()), (0, 0));
-    assert_eq!(roots(&late, 32), roots(&in_order, 32));
-    assert_eq!(roots(&late, 32).len(), 5);
+    assert_eq!(roots(&mut late, 32), roots(&mut in_order, 32));
+    assert_eq!(roots(&mut late, 32).len(), 5);
     assert!(!late.world().world().store().exists(oid(B_HAND)) && late.physics().joint_count() == 0);
 }
 
@@ -2871,8 +2877,8 @@ fn an_edit_that_makes_a_body_unbuildable_takes_its_body_away_and_counts_a_fault(
     late.add(edits[0].clone());
     let adv = l.advance(Frame(40), &mut late);
     assert!(adv.rolled_back_to.is_some_and(|f| f.0 <= 4), "{adv:?}");
-    assert_eq!(roots(&l, 40), roots(&r, 40));
-    assert_eq!(roots(&r, 40).len(), 6);
+    assert_eq!(roots(&mut l, 40), roots(&mut r, 40));
+    assert_eq!(roots(&mut r, 40).len(), 6);
     assert_eq!(l.faults() - start, 3, "the first history's fault, then the edits at 4 and 16");
 }
 
@@ -3424,7 +3430,7 @@ fn a_joiner_with_the_switch_off_imports_meshes_and_rebuilds_one_after_a_scale_ed
     assert!(
         matches!(&host.world().body(oid(3)).unwrap().unwrap().shapes[0].shape, ShapeRow::Mesh { scale, .. } if *scale == [1.5; 3])
     );
-    assert_eq!(from(&joiner, 32, 64), from(&host, 32, 64));
+    assert_eq!(from(&mut joiner, 32, 64), from(&mut host, 32, 64));
     assert_eq!((joiner.faults(), host.faults()), (0, 0));
     assert_eq!((joiner.absent_blobs().count, host.absent_blobs().count), (0, 0));
 }
@@ -3845,7 +3851,7 @@ fn fast_throw_both_ways(
     late.add(last[0].clone());
     let adv = c.advance(Frame(end), &mut late);
     assert!(adv.rolled_back_to.is_some_and(|f| f.0 <= open), "the late throw rolls back: {adv:?}");
-    assert_eq!(roots(&c, end), roots(&a, end), "both machines agree after the rollback");
+    assert_eq!(roots(&mut c, end), roots(&mut a, end), "both machines agree after the rollback");
     assert_eq!((a.faults(), c.faults()), (0, 0));
     (a, c)
 }

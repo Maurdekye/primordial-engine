@@ -45,7 +45,7 @@
 
 use std::fmt;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::time::Duration;
 
 use pe_agree::NodeConfig;
@@ -694,6 +694,7 @@ pub(crate) fn replica_config(node: &NodeConfig, rate: SimRate, clock: Arc<dyn Fr
     let mut config = ReplicaConfig::new(rate, Duration::from_secs_f64(node.cut_interval_s), clock);
     config.cut_every = node.cut_every(rate.hz());
     config.physics = config.physics.with_workers(physics_workers());
+    config.skip_replay_roots = skip_replay_roots();
     config
 }
 
@@ -713,6 +714,21 @@ pub fn set_physics_workers(n: i32) -> i32 {
 /// The physics worker threads new replicas step with ([`set_physics_workers`]).
 pub fn physics_workers() -> i32 {
     PHYSICS_WORKERS.load(Ordering::Relaxed)
+}
+
+/// Whether replicas opened from now on leave a re-step's grid roots to the cuts' votes (pe-replica's
+/// `ReplicaConfig::skip_replay_roots`, E3): on unless main reads `PE_SKIP_REPLAY_ROOTS=0`, a switch for trouble and for
+/// measuring E3 against its absence. Local: it changes no root.
+static SKIP_REPLAY_ROOTS: AtomicBool = AtomicBool::new(true);
+
+/// Set [`skip_replay_roots`].
+pub fn set_skip_replay_roots(on: bool) {
+    SKIP_REPLAY_ROOTS.store(on, Ordering::Relaxed);
+}
+
+/// Whether new replicas leave re-steps' grid roots to votes ([`set_skip_replay_roots`]).
+pub fn skip_replay_roots() -> bool {
+    SKIP_REPLAY_ROOTS.load(Ordering::Relaxed)
 }
 
 /// A configuration's cut interval in whole milliseconds, as a record carries it: at least 1 and within `u32`.

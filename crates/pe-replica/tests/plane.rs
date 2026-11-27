@@ -45,8 +45,15 @@ fn plane() -> World {
 }
 
 fn replica_of(world: World) -> ReplicaImpl<PeWorld> {
+    replica_with(world, true)
+}
+
+/// `skip_replay_roots` off keeps a root at every re-stepped grid frame, for a replica that re-steps more cuts than
+/// the ring keeps for votes (E3's bound, 32) and is then compared at every frame, with no vote in between.
+fn replica_with(world: World, skip_replay_roots: bool) -> ReplicaImpl<PeWorld> {
     let mut config = ReplicaConfig::new(pe_seams::SimRate::DEFAULT, Duration::from_millis(133), Arc::new(CLOCK));
     config.cut_every = K;
+    config.skip_replay_roots = skip_replay_roots;
     ReplicaImpl::new(PeWorld::new(world, DomainId(0)), config).expect("a replica")
 }
 
@@ -87,8 +94,9 @@ impl EntrySource for Source {
     }
 }
 
-fn roots(r: &ReplicaImpl<PeWorld>, to: u64) -> Vec<(u64, Hash)> {
-    (0..=to).step_by(K as usize).filter_map(|f| r.live_root(Frame(f)).map(|h| (f, h))).collect()
+/// The live history's root at every grid frame to `to` (`grid_root`: a re-step's left to the keyframe, E3).
+fn roots(r: &mut ReplicaImpl<PeWorld>, to: u64) -> Vec<(u64, Hash)> {
+    (0..=to).step_by(K as usize).filter_map(|f| r.grid_root(Frame(f)).map(|h| (f, h))).collect()
 }
 
 /// One member's entries, built in stamp order. A scratch copy of the world applies each edit, so the ids a copy
@@ -216,7 +224,7 @@ fn a_folder_renamed_away_and_back_agrees_on_two_replicas_and_its_bodies_come_bac
     two.advance(Frame(120), &mut late);
     entries[1..].iter().cloned().for_each(|e| late.add(e));
     two.advance(Frame(160), &mut late);
-    assert_eq!(roots(&two, 160), roots(&one, 160));
+    assert_eq!(roots(&mut two, 160), roots(&mut one, 160));
     assert_eq!(two.faults(), 0);
 }
 
@@ -265,7 +273,7 @@ fn two_members_mixed_shapes_agree_whatever_the_arrival_order_and_equal_a_replay(
     assert!(live.world().world().claims().any(|(o, _)| o == the_box), "member 1's hand holds the box");
     let settled = at(live.world().world(), the_box);
     live.advance(Frame(TO), &mut s);
-    let want = roots(&live, TO);
+    let want = roots(&mut live, TO);
     assert_eq!(want.len() as u64, TO / K + 1);
     // For the cross-machine check (Windows against Linux, `--nocapture`): the same line on both, or they diverge.
     let (f, root) = want.last().expect("a root");
@@ -281,17 +289,18 @@ fn two_members_mixed_shapes_agree_whatever_the_arrival_order_and_equal_a_replay(
     // Member 1's entries arrive late, after member 0's have been stepped far past them: a rollback, the same roots.
     let mut late = Source::default();
     ea.iter().cloned().for_each(|e| late.add(e));
-    let mut b = replica_of(world.clone());
+    // It re-steps 480 frames, 60 cuts, with no vote: past the 32 a re-step leaves to votes (E3), so it keeps its roots.
+    let mut b = replica_with(world.clone(), false);
     b.advance(Frame(300), &mut late);
     eb.iter().cloned().for_each(|e| late.add(e));
     let adv = b.advance(Frame(TO), &mut late);
     assert!(adv.rolled_back_to.is_some_and(|f| f.0 <= 14), "rolled back: {adv:?}");
-    assert_eq!(roots(&b, TO), want, "the late replica agrees");
+    assert_eq!(roots(&mut b, TO), want, "the late replica agrees");
     assert_eq!(b.faults(), 0);
     // A replay: a fresh replica with every entry from the start, stepped in one go.
     let mut replay = replica_of(world);
     let mut all = Source::default();
     eb.iter().chain(&ea).cloned().for_each(|e| all.add(e));
     replay.advance(Frame(TO), &mut all);
-    assert_eq!(roots(&replay, TO), want, "live = replay");
+    assert_eq!(roots(&mut replay, TO), want, "live = replay");
 }

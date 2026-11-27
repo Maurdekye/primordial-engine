@@ -17,7 +17,7 @@ use pe_seams::{
     VoidedWhy,
 };
 use pe_sim::{Component, ComponentId, SimStore, Transform};
-use pe_world::components::{Body, Shape, body_kind, shape_kind};
+use pe_world::components::{Body, BodyState, Shape, body_kind, shape_kind};
 use pe_world::edit::{Actor, AssetTarget, Op, Row, Target, Transaction};
 use pe_world::script::tag_desc;
 use pe_world::{BlobRef, BlobStore, Claim, GENESIS, World, perm};
@@ -135,6 +135,8 @@ fn scripted() -> World {
 /// call faults and writes nothing), and emits a `ping` from each after it, with the frame's number. Stateless.
 struct Mover {
     holds: Hash,
+    /// Each move also adds the object's `BodyState` vertical speed, so the script reads the rows a root writes.
+    reads_state: bool,
 }
 
 impl ScriptRunner for Mover {
@@ -180,7 +182,9 @@ impl ScriptRunner for Mover {
             let mut moved = Vec::new();
             for &id in &tagged {
                 let Some(mut t) = store.get::<Transform>(id).copied() else { continue };
-                t.pos[0] += 0.01;
+                let speed =
+                    store.get::<BodyState>(id).filter(|_| self.reads_state).map_or(0.0, |b| f64::from(b.linear[1]));
+                t.pos[0] += 0.01 + 0.001 * speed;
                 moved.push((id, t));
             }
             if moved.iter().any(|(id, t)| (w.check)(ComponentId::TRANSFORM, *id, bytemuck::bytes_of(t)).is_err()) {
@@ -197,7 +201,7 @@ impl ScriptRunner for Mover {
 }
 
 fn mover() -> Box<dyn ScriptRunner> {
-    Box::new(Mover { holds: MODULE })
+    Box::new(Mover { holds: MODULE, reads_state: false })
 }
 
 #[derive(Default)]
@@ -240,8 +244,9 @@ fn replica_of(world: World) -> ReplicaImpl<PeWorld> {
     ReplicaImpl::new(PeWorld::new(world, DomainId(0)), config).expect("a replica")
 }
 
-fn roots(r: &ReplicaImpl<PeWorld>, to: u64) -> Vec<(u64, Hash)> {
-    (0..=to).step_by(K as usize).filter_map(|f| r.live_root(Frame(f)).map(|h| (f, h))).collect()
+/// The live history's root at every grid frame to `to` (`grid_root`: a re-step's left to the keyframe, E3).
+fn roots(r: &mut ReplicaImpl<PeWorld>, to: u64) -> Vec<(u64, Hash)> {
+    (0..=to).step_by(K as usize).filter_map(|f| r.grid_root(Frame(f)).map(|h| (f, h))).collect()
 }
 
 fn ball_x(r: &ReplicaImpl<PeWorld>) -> f64 {
@@ -316,7 +321,7 @@ fn a_rollback_replays_the_scripts_to_the_same_roots_and_carries_each_effect_once
     s.add(late);
     let adv = r.advance(Frame(40), &mut s);
     assert!(adv.rolled_back_to.is_some_and(|f| f.0 <= 12), "rolled back: {adv:?}");
-    assert_eq!(roots(&r, 40), roots(&a, 40));
+    assert_eq!(roots(&mut r, 40), roots(&mut a, 40));
     assert_eq!(r.faults(), 0);
     let second = keys_of(&r.view());
     assert_eq!(first, (1..30).map(ping).collect::<Vec<_>>());
@@ -521,7 +526,7 @@ fn event_kind_has_its_known_answer() {
 #[test]
 fn a_script_whose_module_is_missing_does_not_run_and_is_counted() {
     let mut s = Source::default();
-    let mut r = replica_of(scripted()).with_runner(Box::new(Mover { holds: Hash([4; 32]) }));
+    let mut r = replica_of(scripted()).with_runner(Box::new(Mover { holds: Hash([4; 32]), reads_state: false }));
     r.advance(Frame(10), &mut s);
     assert_eq!((r.frame(), r.faults()), (Frame(10), 0));
     assert!(ball_x(&r).abs() < 1e-9, "never moved");
@@ -548,7 +553,7 @@ fn a_script_fault_is_world_state_and_stops_the_script() {
 
     let mut again = replica_of(world).with_runner(mover());
     again.advance(Frame(16), &mut Source::default());
-    assert_eq!(roots(&again, 16), roots(&r, 16));
+    assert_eq!(roots(&mut again, 16), roots(&mut r, 16));
 }
 
 /// A replay that adds an event carries it, marked re-simulated and with no trigger time, so the view never plays it
@@ -707,8 +712,8 @@ fn rung_one_carries_each_effect_once_and_retracts_what_a_glitch_emitted() {
     let mut s = Source::default();
     let mut good = replica_of(scripted()).with_runner(mover());
     good.advance(Frame(50), &mut s);
-    let mut bad =
-        replica_of(scripted()).with_runner(Box::new(Glitching { inner: Mover { holds: MODULE }, glitched: false }));
+    let mut bad = replica_of(scripted())
+        .with_runner(Box::new(Glitching { inner: Mover { holds: MODULE, reads_state: false }, glitched: false }));
     bad.advance(Frame(48), &mut s);
     let kind = EffectKind::Script(event_kind(&asset(), "glitch"));
     let glitch = EffectKey { frame: Frame(20), cause: EffectCause::Logic, object: oid(BALL), kind, ordinal: 0 };
@@ -728,8 +733,8 @@ fn rung_one_carries_each_effect_once_and_retracts_what_a_glitch_emitted() {
     let after = bad.view();
     assert_eq!(keys_of(&after), [ping(49)], "every replayed ping was carried already");
     assert_eq!(after.retracted, [glitch]);
-    let from_32 = |r: &ReplicaImpl<PeWorld>| roots(r, 48).into_iter().filter(|x| x.0 >= 32).collect::<Vec<_>>();
-    assert_eq!(from_32(&bad), from_32(&good));
+    let from_32 = |r: &mut ReplicaImpl<PeWorld>| roots(r, 48).into_iter().filter(|x| x.0 >= 32).collect::<Vec<_>>();
+    assert_eq!(from_32(&mut bad), from_32(&mut good));
 }
 
 /// A late entry the final cut leaves out was stepped live: as the cut goes final, `finalize` re-bases the live state on
@@ -759,8 +764,8 @@ fn a_floor_re_based_over_a_late_entry_carries_the_effects_of_the_frames_it_re_ba
     assert_eq!(keys_of(&view), (20..48).map(ping).collect::<Vec<_>>(), "the re-based frames' pings, then the rest");
     assert!(view.effects.iter().all(|e| e.resimulated), "every frame from 20 was stepped before");
     assert!(view.retracted.is_empty());
-    let from_24 = |r: &ReplicaImpl<PeWorld>| roots(r, 48).into_iter().filter(|x| x.0 >= 24).collect::<Vec<_>>();
-    assert_eq!(from_24(&a), from_24(&clean));
+    let from_24 = |r: &mut ReplicaImpl<PeWorld>| roots(r, 48).into_iter().filter(|x| x.0 >= 24).collect::<Vec<_>>();
+    assert_eq!(from_24(&mut a), from_24(&mut clean));
     assert_eq!(a.faults(), 0, "S3's report inside [20, 24) is excused");
 }
 
@@ -793,8 +798,8 @@ fn a_rung_two_import_retracts_what_the_views_carried_below_its_cut() {
     good.advance(Frame(32), &mut s);
     let import = full_import(&mut good, &mut s, &cut_at(&[], 4, 32));
     good.advance(Frame(49), &mut s);
-    let mut bad =
-        replica_of(scripted()).with_runner(Box::new(Glitching { inner: Mover { holds: MODULE }, glitched: false }));
+    let mut bad = replica_of(scripted())
+        .with_runner(Box::new(Glitching { inner: Mover { holds: MODULE, reads_state: false }, glitched: false }));
     bad.advance(Frame(48), &mut s);
     assert_eq!(keys_of(&bad.view()).len(), 48, "47 pings, from frame 1, and the glitch");
     assert_eq!(bad.import_at_cut(&GroupSel::Domain, import.clone(), &mut s), Ok(import.target_root));
@@ -806,8 +811,8 @@ fn a_rung_two_import_retracts_what_the_views_carried_below_its_cut() {
     let below: BTreeSet<EffectKey> = (1..32).map(ping).chain([glitch]).collect();
     assert_eq!(after.retracted.iter().copied().collect::<BTreeSet<_>>(), below);
     assert_eq!(after.retracted.len(), below.len(), "each once");
-    let from_32 = |r: &ReplicaImpl<PeWorld>| roots(r, 48).into_iter().filter(|x| x.0 >= 32).collect::<Vec<_>>();
-    assert_eq!(from_32(&bad), from_32(&good));
+    let from_32 = |r: &mut ReplicaImpl<PeWorld>| roots(r, 48).into_iter().filter(|x| x.0 >= 32).collect::<Vec<_>>();
+    assert_eq!(from_32(&mut bad), from_32(&mut good));
 }
 
 fn rows_of(w: &World) -> Vec<ScriptRow> {
@@ -866,7 +871,9 @@ fn a_runner_that_remembers_fails_the_conformance_check() {
             out
         }
     }
-    let make = || Box::new(Remembering { inner: Mover { holds: MODULE }, stages: 0 }) as Box<dyn ScriptRunner>;
+    let make = || {
+        Box::new(Remembering { inner: Mover { holds: MODULE, reads_state: false }, stages: 0 }) as Box<dyn ScriptRunner>
+    };
     let err = conformance(&make, &fixture_of(&scripted())).expect_err("it remembers");
     assert!(err.contains("replay"), "{err}");
 }
@@ -875,9 +882,16 @@ fn a_runner_that_remembers_fails_the_conformance_check() {
 
 /// A replica with the mover, whose local member is `local`: the author whose own commits it predicts.
 fn replica_for(world: World, local: Option<MemberKey>) -> ReplicaImpl<PeWorld> {
+    replica_keeping(world, local, true)
+}
+
+/// `skip_replay_roots` off keeps a root at every re-stepped grid frame, for a replica that re-steps more cuts than
+/// the ring keeps for votes (E3's bound, 32) and is then compared at every frame, with no vote in between.
+fn replica_keeping(world: World, local: Option<MemberKey>, skip_replay_roots: bool) -> ReplicaImpl<PeWorld> {
     let mut config = ReplicaConfig::new(pe_seams::SimRate::DEFAULT, Duration::from_millis(133), Arc::new(CLOCK));
     config.cut_every = K;
     config.local = local;
+    config.skip_replay_roots = skip_replay_roots;
     ReplicaImpl::new(PeWorld::new(world, DomainId(0)), config).expect("a replica").with_runner(mover())
 }
 
@@ -931,7 +945,7 @@ fn the_author_predicts_its_commit_and_steps_again_from_c_when_it_is_decided() {
     assert_eq!((author.predicted_from(), author.vote_holds()), (None, vec![]));
     assert_eq!(author.world().world().modules()[&asset()].activate_at, Frame(13));
     assert_eq!((author.faults(), plain.faults()), (0, 0));
-    assert_eq!(roots(&author, 24), roots(&plain, 24));
+    assert_eq!(roots(&mut author, 24), roots(&mut plain, 24));
     assert!((ball_x(&author) - ball_x(&plain)).abs() < 1e-9);
 }
 
@@ -961,7 +975,7 @@ fn a_prediction_voided_before_d_steps_again_with_the_old_code_throughout() {
     assert_eq!(author.view().activations, [Activation { key, frame: Frame(12), outcome: voided }], "superseded");
     assert!(author.view().activations_retracted.is_empty());
     assert_eq!((author.faults(), plain.faults()), (0, 0));
-    assert_eq!(roots(&author, 24), roots(&plain, 24));
+    assert_eq!(roots(&mut author, 24), roots(&mut plain, 24));
 }
 
 /// The mover's tag on the ball.
@@ -1102,7 +1116,7 @@ fn rollbacks_while_a_prediction_stands_keep_it_and_the_roots_agree() {
     assert_eq!((author.predicted_from(), author.vote_holds()), (None, vec![]));
     assert_eq!(author.world().world().modules()[&asset()].activate_at, Frame(13));
     assert_eq!((author.faults(), plain.faults()), (0, 0));
-    assert_eq!(roots(&author, 24), roots(&plain, 24));
+    assert_eq!(roots(&mut author, 24), roots(&mut plain, 24));
 }
 
 /// A prediction that nothing decides ends at D: A steps again from 5, the commit is voided `Unattested` at D, the old
@@ -1122,7 +1136,8 @@ fn a_prediction_that_reaches_d_steps_again_with_the_old_code_throughout() {
     let end = deadline.0 + K;
     plain.advance(Frame(end), &mut s);
 
-    let mut author = replica_for(world, Some(keys.key(0)));
+    // It steps again from c over hundreds of cuts with no vote: past the 32 a re-step leaves to votes (E3).
+    let mut author = replica_keeping(world, Some(keys.key(0)), false);
     author.advance(deadline, &mut s);
     assert_eq!((author.predicted_from(), author.vote_holds()), (Some(Frame(6)), vec![]), "predicting until D");
     let adv = author.advance(Frame(end), &mut s);
@@ -1136,7 +1151,7 @@ fn a_prediction_that_reaches_d_steps_again_with_the_old_code_throughout() {
     assert!(author.view().activations_retracted.is_empty());
     assert!(ball_x(&author).abs() < 1e-9, "the old code throughout: {}", ball_x(&author));
     assert_eq!((author.faults(), plain.faults()), (0, 0));
-    assert_eq!(roots(&author, end), roots(&plain, end));
+    assert_eq!(roots(&mut author, end), roots(&mut plain, end));
 }
 
 /// B's `BuildFailed` at 12 decides the commit as a `Leave` would: the quorum can't be reached, the shared void rule
@@ -1168,7 +1183,7 @@ fn a_build_failure_ends_the_prediction_and_the_commit_voids() {
     assert!(author.view().activations_retracted.is_empty());
     assert!(ball_x(&author).abs() < 1e-9, "the old code throughout: {}", ball_x(&author));
     assert_eq!((author.faults(), plain.faults()), (0, 0));
-    assert_eq!(roots(&author, 24), roots(&plain, 24));
+    assert_eq!(roots(&mut author, 24), roots(&mut plain, 24));
 }
 
 /// Only entries at or after c end a prediction (@engine-architect's Low 1 on 29b02af0): B's `Leave` at 3 arrives after
@@ -1209,7 +1224,7 @@ fn a_late_leave_before_c_does_not_end_the_prediction() {
     assert_eq!((author.predicted_from(), author.vote_holds()), (None, vec![]));
     assert_eq!(author.world().world().modules()[&asset()].activate_at, Frame(13));
     assert_eq!((author.faults(), plain.faults()), (0, 0));
-    assert_eq!(roots(&author, 24), roots(&plain, 24));
+    assert_eq!(roots(&mut author, 24), roots(&mut plain, 24));
 }
 
 /// The code commit among `s`'s entries: the first, at frame 5.
@@ -1526,8 +1541,8 @@ mod lamp {
             let adv = r.advance(Frame(40), &mut s);
             assert!(adv.rolled_back_to.is_some_and(|f| f.0 <= 12), "rolled back: {adv:?}");
             assert_eq!((a.faults(), r.faults()), (0, 0));
-            assert_eq!(roots(&r, 40), roots(&a, 40));
-            assert_eq!(roots(&r, 40).len(), 6);
+            assert_eq!(roots(&mut r, 40), roots(&mut a, 40));
+            assert_eq!(roots(&mut r, 40).len(), 6);
             assert_eq!(LAMPS.map(|n| intensity(&r, n)), LAMPS.map(|n| intensity(&a, n)));
         });
     }
@@ -1780,8 +1795,8 @@ mod lamp {
                 assert_eq!(r.world().world().modules()[&asset()].activate_at, Frame(7));
                 assert_eq!(LAMPS.map(|n| intensity(r, n)), [1.0, 0.0, 0.0]);
             }
-            assert_eq!(roots(&voter, 30), roots(&author, 30));
-            assert_eq!(roots(&author, 30).len(), 4);
+            assert_eq!(roots(&mut voter, 30), roots(&mut author, 30));
+            assert_eq!(roots(&mut author, 30).len(), 4);
 
             let mut s = source_of(false);
             let mut later = replica_of(world).with_runner(Box::new(built()));
@@ -1790,7 +1805,7 @@ mod lamp {
             let adv = later.advance(Frame(30), &mut s);
             assert!(adv.rolled_back_to.is_some_and(|f| f.0 <= 4), "rolled back across F: {adv:?}");
             assert_eq!((later.frame(), later.faults(), later.script_counts().missing), (Frame(30), 0, 0));
-            assert_eq!(roots(&later, 30), roots(&author, 30));
+            assert_eq!(roots(&mut later, 30), roots(&mut author, 30));
             assert_eq!(LAMPS.map(|n| intensity(&later, n)), [1.0, 0.0, 0.0]);
         });
     }
@@ -1956,7 +1971,7 @@ fn under_a_long_build_the_author_votes_the_old_code_on_time_and_keeps_its_previe
     assert_eq!(author.predicted_from(), None, "decided");
     println!("MEASURED the jump at the prediction's end: the ball's x {preview:.4} -> {:.4}", ball_x(&author));
     assert!((ball_x(&author) - ball_x(&plain)).abs() < 1e-9);
-    assert_eq!(roots(&author, 120), roots(&plain, 120));
+    assert_eq!(roots(&mut author, 120), roots(&mut plain, 120));
     assert_eq!((author.faults(), plain.faults()), (0, 0));
 }
 
@@ -2042,7 +2057,7 @@ fn at_one_member_a_commit_is_its_own_attestation_and_nothing_is_predicted() {
         assert!((ball_x(&author) - ball_x(&plain)).abs() < 1e-9, "at {f}");
     }
     assert!(ball_x(&author) > 0.1, "the mover ran from 6 under the rule: {}", ball_x(&author));
-    assert_eq!(roots(&author, 24), roots(&plain, 24));
+    assert_eq!(roots(&mut author, 24), roots(&mut plain, 24));
 }
 
 /// C4's cost (@coordinator-opus: "measure the author's tick time while it predicts"): the M1 ball pit of
@@ -2133,4 +2148,67 @@ fn under_a_prediction_the_author_s_check_compares_with_the_old_code_s_history() 
     assert_eq!((checks.judged, checks.corrected), (1, 1), "the push at 20, judged against the old code: {checks:?}");
     assert_eq!(checks.recent.iter().map(|c| c.frame).collect::<Vec<_>>(), [Frame(20)]);
     assert_eq!(plain.interaction_checks().judged, 0, "not the plain replica's interaction");
+}
+
+/// E3 leaves a scripted world as it was: its scripts may read the `BodyState` rows a root writes between cuts, so a
+/// re-step of a world with modules still takes its grid roots (diverge-eng/resolve-e3-design.md, option (ii)).
+#[test]
+fn a_scripted_world_s_re_steps_still_take_their_roots() {
+    let keys = keys();
+    let (mut a, mut b) = (EntryBuilder::new(&keys, 0), EntryBuilder::new(&keys, 1));
+    let mut world = floor_and_ball();
+    world.set_member(keys.key(1), perm::EDIT);
+    let mut s = Source::default();
+    s.add(commit(&mut a, 5));
+    s.add(edit(&mut a, 6, tag_ball()));
+    s.add(edit(&mut b, 12, vec![Op::AttestBuild { script: asset(), version: v1(), module: MODULE }]));
+    let probe = pe_replica::costs::probe();
+    let mut r = replica_for(world, None).with_cost_probe(probe.clone());
+    r.advance(Frame(40), &mut s);
+    assert!(r.world().world().modules().contains_key(&asset()), "a scripted world");
+    let input = pe_world::Input::Push { object: oid(BALL), impulse: [0.0, 0.2, 0.0], at: None };
+    s.add(b.next(Class::Input, Frame(30), Bytes::from(input.encode())));
+    let adv = r.advance(Frame(41), &mut s);
+    assert!(adv.rolled_back_to.is_some_and(|f| f.0 <= 30), "a rollback over the cut at 32: {adv:?}");
+    let c = probe.lock().unwrap().clone();
+    assert!(c.roots_replayed >= 1, "the re-step took the root at 32 and 40: {c:?}");
+    assert!(r.live_root(Frame(32)).is_some() && r.live_root(Frame(40)).is_some());
+    assert_eq!(r.faults(), 0);
+}
+
+/// E3 with a world that becomes scripted inside a replay (@design-reviewer's M1 on 096fc0f2). B's push at 20, A's code
+/// commit at 25, B's attest at 27 (the module is in from 28) and A's tag on the ball at 29 all arrive late, at 40. So the replay re-steps the
+/// cut frame 24 while the world is still unscripted, and leaves its root (and its `BodyState` rows) to the cut's vote;
+/// the commit then makes the world scripted, and the script, once active, moves the ball by its `BodyState` vertical
+/// speed every frame. It reads the rows of the cut at 24, as a replica given every entry on time does: the same roots.
+#[test]
+fn a_script_activated_after_a_cut_a_replay_left_to_its_vote_reads_that_cut_s_rows() {
+    let keys = keys();
+    let (mut a, mut b) = (EntryBuilder::new(&keys, 0), EntryBuilder::new(&keys, 1));
+    let mut world = floor_and_ball();
+    world.set_member(keys.key(1), perm::EDIT);
+    let input = pe_world::Input::Push { object: oid(BALL), impulse: [0.0, 0.5, 0.0], at: None };
+    let late = [
+        b.next(Class::Input, Frame(20), Bytes::from(input.encode())),
+        commit(&mut a, 25),
+        edit(&mut b, 27, vec![Op::AttestBuild { script: asset(), version: v1(), module: MODULE }]),
+        edit(&mut a, 29, tag_ball()),
+    ];
+    let reader = || Box::new(Mover { holds: MODULE, reads_state: true }) as Box<dyn ScriptRunner>;
+    let mut on_time = Source::default();
+    late.iter().for_each(|e| on_time.add(e.clone()));
+    let mut plain = replica_keeping(world.clone(), None, false).with_runner(reader());
+    plain.advance(Frame(56), &mut on_time);
+    let active = plain.world().world().modules()[&asset()].activate_at;
+    assert!((Frame(25)..Frame(32)).contains(&active), "the script runs before the cut at 32: {active:?}");
+    let mut s = Source::default();
+    let mut r = replica_for(world, None).with_runner(reader());
+    r.advance(Frame(40), &mut s);
+    late.iter().for_each(|e| s.add(e.clone()));
+    let adv = r.advance(Frame(56), &mut s);
+    assert!(adv.rolled_back_to.is_some_and(|f| f.0 <= 20), "a replay over the cut at 24: {adv:?}");
+    assert_eq!(r.live_root(Frame(24)), None, "the replay left the root at 24 to its vote");
+    assert_eq!(roots(&mut r, 56), roots(&mut plain, 56));
+    assert!((ball_x(&r) - ball_x(&plain)).abs() < 1e-12);
+    assert_eq!((r.faults(), plain.faults()), (0, 0));
 }

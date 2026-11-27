@@ -139,9 +139,9 @@ fn cut(entries: &[SignedEntry], height: u64, frame: u64) -> Cut {
     Cut { at: CutRef { line: LineId::origin(), height, frame: Frame(frame) }, heads: heads.into_values().collect() }
 }
 
-/// The live roots at every cut frame up to `to`.
-fn roots(r: &ReplicaImpl<MockWorld>, to: u64) -> Vec<(u64, Hash)> {
-    (0..=to).step_by(K as usize).filter_map(|f| r.live_root(Frame(f)).map(|h| (f, h))).collect()
+/// The live history's roots at every cut frame up to `to` (`grid_root`: a re-step's left to the keyframe, E3).
+fn roots(r: &mut ReplicaImpl<MockWorld>, to: u64) -> Vec<(u64, Hash)> {
+    (0..=to).step_by(K as usize).filter_map(|f| r.grid_root(Frame(f)).map(|h| (f, h))).collect()
 }
 
 /// A replica that had every entry from the start, run to `to`.
@@ -156,11 +156,11 @@ fn reference(to: u64) -> (ReplicaImpl<MockWorld>, Source) {
 /// P1: equal entries give equal roots, and the scene moves (the roots change between cuts).
 #[test]
 fn equal_entries_give_equal_roots() {
-    let (a, _) = reference(64);
-    let (b, _) = reference(64);
-    let ra = roots(&a, 64);
+    let (mut a, _) = reference(64);
+    let (mut b, _) = reference(64);
+    let ra = roots(&mut a, 64);
     assert_eq!(ra.len(), 9);
-    assert_eq!(ra, roots(&b, 64));
+    assert_eq!(ra, roots(&mut b, 64));
     assert!(ra.windows(2).all(|w| w[0].1 != w[1].1), "every cut's root differs: {ra:?}");
     assert_eq!(a.faults(), 0);
     let ball = a.world().position(id(10)).expect("ball 10");
@@ -170,7 +170,7 @@ fn equal_entries_give_equal_roots() {
 /// P2: entries that arrive late roll the replica back, and it reaches the same roots.
 #[test]
 fn late_entries_roll_back_to_the_same_roots() {
-    let (a, _) = reference(64);
+    let (mut a, _) = reference(64);
     let mut s = Source::default();
     let mut b = replica();
     let mut late = scene();
@@ -186,13 +186,13 @@ fn late_entries_roll_back_to_the_same_roots() {
     assert_eq!((adv.changed_from, adv.replay_from), (Some(Frame(9)), None), "{adv:?}");
     assert_eq!((adv.resimulated, adv.stepped), (40 - k, 24));
     assert!(adv.caught_up);
-    assert_eq!(roots(&b, 64), roots(&a, 64));
+    assert_eq!(roots(&mut b, 64), roots(&mut a, 64));
 }
 
 /// S2 v1.1: the work split by the budget never changes what is computed.
 #[test]
 fn the_budget_never_changes_the_result() {
-    let (a, _) = reference(64);
+    let (mut a, _) = reference(64);
     let mut s = Source::default();
     let mut c = replica();
     c.set_budget(Duration::from_millis(1)); // below two frames: raised to two
@@ -219,7 +219,7 @@ fn the_budget_never_changes_the_result() {
     while c.frame() < Frame(64) {
         c.advance(Frame(64), &mut s);
     }
-    assert_eq!(roots(&c, 64), roots(&a, 64));
+    assert_eq!(roots(&mut c, 64), roots(&mut a, 64));
 }
 
 /// A cut's root has exactly the cut's entries, even when the prediction holds more; the live state is untouched.
@@ -234,19 +234,19 @@ fn a_cuts_root_takes_exactly_its_entries() {
         h.seq = all[4].entry.seq;
         h.entry = all[4].id();
     });
-    let live_48 = a.live_root(Frame(48));
+    let live_48 = a.grid_root(Frame(48));
     let root = a.root_at_cut(&c32, &mut s).expect("a root");
-    assert_ne!(Some(root), a.live_root(Frame(32)), "the live history has the teleport");
+    assert_ne!(Some(root), a.grid_root(Frame(32)), "the live history has the teleport");
     let mut without = Source::default();
     all.iter().filter(|e| e.id() != all[5].id()).cloned().for_each(|e| without.add(e));
     let mut w = replica();
     w.advance(Frame(48), &mut without);
-    assert_eq!(Some(root), w.live_root(Frame(32)));
-    assert_eq!(a.live_root(Frame(48)), live_48, "the live state is unchanged");
+    assert_eq!(Some(root), w.grid_root(Frame(32)));
+    assert_eq!(a.grid_root(Frame(48)), live_48, "the live state is unchanged");
     assert_eq!(a.frame(), Frame(48));
     // A cut whose entries the live history stepped exactly: the live root. Not yet simulated: no root.
     let c40 = cut(&all, 5, 40);
-    assert_eq!(a.root_at_cut(&c40, &mut s), Ok(a.live_root(Frame(40)).expect("live")));
+    assert_eq!(a.root_at_cut(&c40, &mut s), Ok(a.grid_root(Frame(40)).expect("live")));
     assert_eq!(a.root_at_cut(&cut(&all, 9, 56), &mut s), Err(RootError::NotYetSimulated));
     // A cut that covers an entry the source leaves out (void, @harness-eng's) has a root, without it:
     // that of a replica that never had the entry. The d1 rule is S3's, so the replica never refuses for this.
@@ -254,7 +254,7 @@ fn a_cuts_root_takes_exactly_its_entries() {
     all.iter().filter(|e| e.id() != all[3].id()).cloned().for_each(|e| voided.add(e));
     let mut v = replica();
     v.advance(Frame(48), &mut voided);
-    assert_eq!(a.root_at_cut(&cut(&all, 6, 48), &mut voided), Ok(v.live_root(Frame(48)).expect("live")));
+    assert_eq!(a.root_at_cut(&cut(&all, 6, 48), &mut voided), Ok(v.grid_root(Frame(48)).expect("live")));
     // The roots given out are held: the tree and the physics image serve them.
     assert_eq!(a.tree(&root).map(|t| t.root()), Some(root));
     let image = a.physics_image(&root).expect("an image");
@@ -267,16 +267,16 @@ fn finalize_moves_the_floor_and_nothing_below_it_changes() {
     let (mut a, mut s) = reference(48);
     let all = scene();
     let c16 = cut(&all, 2, 16);
-    let quorum = a.live_root(Frame(16)).expect("live");
+    let quorum = a.grid_root(Frame(16)).expect("live");
     assert_eq!(a.finalize(&FinalCut { cut: c16.clone(), root: quorum, voters: vec![] }, &mut s), Finalized::Agreed);
     assert_eq!(a.floor_frame(), Frame(16));
     assert_eq!(a.finalize(&FinalCut { cut: c16, root: quorum, voters: vec![] }, &mut s), Finalized::Agreed);
-    let before = roots(&a, 48);
+    let before = roots(&mut a, 48);
     s.changed = Some(Frame(5));
     let adv = a.advance(Frame(48), &mut s);
     assert_eq!(adv.rolled_back_to, Some(Frame(16)), "clamped to the floor");
     assert_eq!(a.faults(), 1);
-    assert_eq!(roots(&a, 48), before);
+    assert_eq!(roots(&mut a, 48), before);
     // Not yet simulated: not ready, and the floor stays.
     let c56 = cut(&all, 7, 56);
     assert_eq!(a.finalize(&FinalCut { cut: c56, root: quorum, voters: vec![] }, &mut s), Finalized::NotReady);
@@ -288,7 +288,7 @@ fn finalize_moves_the_floor_and_nothing_below_it_changes() {
 #[test]
 fn rung_one_repairs_a_transient_fault() {
     let all = scene();
-    let (good, _) = reference(48);
+    let (mut good, _) = reference(48);
     let mut s = Source::default();
     all.iter().cloned().for_each(|e| s.add(e));
     let world = MockWorld::new(DomainId(0), SimRate::DEFAULT);
@@ -299,10 +299,10 @@ fn rung_one_repairs_a_transient_fault() {
     let mut bad = ReplicaImpl::new(world, config).expect("a replica");
     bad.advance(Frame(48), &mut s);
     let c16 = cut(&all, 2, 16);
-    let r16 = good.live_root(Frame(16)).expect("live");
+    let r16 = good.grid_root(Frame(16)).expect("live");
     assert_eq!(bad.finalize(&FinalCut { cut: c16, root: r16, voters: vec![] }, &mut s), Finalized::Agreed);
     let c32 = cut(&all, 4, 32);
-    let r32 = good.live_root(Frame(32)).expect("live");
+    let r32 = good.grid_root(Frame(32)).expect("live");
     let fc32 = FinalCut { cut: c32.clone(), root: r32, voters: vec![] };
     let Finalized::Diverged { mine } = bad.finalize(&fc32, &mut s) else { panic!("the glitch shows at 32") };
     assert_ne!(mine, r32);
@@ -311,8 +311,8 @@ fn rung_one_repairs_a_transient_fault() {
     assert_eq!(bad.replay_to(&c32, &mut s), Ok(r32), "asked again, at once");
     assert_eq!(bad.frame(), Frame(48));
     assert_eq!(bad.finalize(&fc32, &mut s), Finalized::Agreed);
-    let kept: Vec<_> = roots(&good, 48).into_iter().filter(|r| r.0 >= 32).collect();
-    assert_eq!(roots(&bad, 48), kept, "from the floor on, the roots are the good replica's");
+    let kept: Vec<_> = roots(&mut good, 48).into_iter().filter(|r| r.0 >= 32).collect();
+    assert_eq!(roots(&mut bad, 48), kept, "from the floor on, the roots are the good replica's");
     assert!(bad.tree(&mine).is_none(), "released once agreed");
 }
 
@@ -322,7 +322,7 @@ fn rung_one_repairs_a_transient_fault() {
 fn a_cut_covering_only_void_entries_below_the_floor_has_a_root() {
     let (mut a, mut s) = reference(48);
     let all = scene();
-    let root16 = a.live_root(Frame(16)).expect("live");
+    let root16 = a.grid_root(Frame(16)).expect("live");
     let c16 = cut(&all, 2, 16);
     assert_eq!(a.finalize(&FinalCut { cut: c16, root: root16, voters: vec![] }, &mut s), Finalized::Agreed);
     // A third author's entries stamped at 10 and 12, below the floor: void, so the source leaves them out.
@@ -366,8 +366,8 @@ fn void(s: &mut Source, late: &SignedEntry, reported: Frame) {
 /// @coordinator-opus), and the report inside [g, floor) is excused, once.
 #[test]
 fn a_late_entry_voided_as_the_cut_goes_final_is_no_fault_and_leaves_no_wrong_state() {
-    let (clean, _) = reference(48);
-    let quorum = clean.live_root(Frame(24)).expect("live");
+    let (mut clean, _) = reference(48);
+    let quorum = clean.grid_root(Frame(24)).expect("live");
     let (mut a, mut s, late) = with_late_entry_at_20();
     let f0 = a.faults();
     void(&mut s, &late, Frame(20));
@@ -377,7 +377,7 @@ fn a_late_entry_voided_as_the_cut_goes_final_is_no_fault_and_leaves_no_wrong_sta
     );
     // Straight after finalize the live state is the cut-exact floor: the roots and the outcome that held the void
     // entry are gone, and the cut's entries in [g, floor) have the cut-exact history's outcomes.
-    assert_eq!((a.frame(), a.live_root(Frame(24)), a.live_root(Frame(32))), (Frame(24), Some(quorum), None));
+    assert_eq!((a.frame(), a.grid_root(Frame(24)), a.grid_root(Frame(32))), (Frame(24), Some(quorum), None));
     assert_eq!(a.outcome(&late.id()), None);
     let teleport = scene()[5].id();
     assert_eq!(a.outcome(&teleport).map(|o| o.0), Some(Frame(21)));
@@ -387,7 +387,7 @@ fn a_late_entry_voided_as_the_cut_goes_final_is_no_fault_and_leaves_no_wrong_sta
     assert_eq!(a.faults(), f0, "a report inside [g, floor) is expected");
     assert_eq!((adv.rolled_back_to, adv.resimulated), (None, 24));
     for f in [24, 32, 40, 48] {
-        assert_eq!(a.live_root(Frame(f)), clean.live_root(Frame(f)), "frame {f}");
+        assert_eq!(a.grid_root(Frame(f)), clean.grid_root(Frame(f)), "frame {f}");
     }
     // Once: the same report again is a fault.
     s.changed = Some(Frame(20));
@@ -399,8 +399,8 @@ fn a_late_entry_voided_as_the_cut_goes_final_is_no_fault_and_leaves_no_wrong_sta
 /// still a protocol fault, and is not acted on (@design-reviewer).
 #[test]
 fn a_change_below_the_floor_outside_the_rebased_span_is_still_a_fault() {
-    let (clean, _) = reference(48);
-    let quorum = clean.live_root(Frame(24)).expect("live");
+    let (mut clean, _) = reference(48);
+    let quorum = clean.grid_root(Frame(24)).expect("live");
     let (mut a, mut s, late) = with_late_entry_at_20();
     let f0 = a.faults();
     void(&mut s, &late, Frame(5));
@@ -410,7 +410,7 @@ fn a_change_below_the_floor_outside_the_rebased_span_is_still_a_fault() {
     );
     a.advance(Frame(48), &mut s);
     assert_eq!(a.faults(), f0 + 1);
-    assert_eq!(a.live_root(Frame(48)), clean.live_root(Frame(48)));
+    assert_eq!(a.grid_root(Frame(48)), clean.grid_root(Frame(48)));
 }
 
 /// A fault in a frame that both the live history and a re-step off it step counts once against the live history; the
@@ -440,7 +440,7 @@ fn a_re_step_off_the_live_history_counts_only_against_the_scratch() {
 /// at 32. Returns it, its source, the cut at 32 and the quorum's root there, and its own diverged root.
 fn diverged_at_32() -> (ReplicaImpl<MockWorld>, Source, Cut, Hash, Hash) {
     let all = scene();
-    let (good, _) = reference(48);
+    let (mut good, _) = reference(48);
     let mut s = Source::default();
     all.iter().cloned().for_each(|e| s.add(e));
     let world = MockWorld::new(DomainId(0), SimRate::DEFAULT);
@@ -450,9 +450,9 @@ fn diverged_at_32() -> (ReplicaImpl<MockWorld>, Source, Cut, Hash, Hash) {
     config.cut_every = K;
     let mut bad = ReplicaImpl::new(world, config).expect("a replica");
     bad.advance(Frame(48), &mut s);
-    let r16 = good.live_root(Frame(16)).expect("live");
+    let r16 = good.grid_root(Frame(16)).expect("live");
     assert_eq!(bad.finalize(&FinalCut { cut: cut(&all, 2, 16), root: r16, voters: vec![] }, &mut s), Finalized::Agreed);
-    let (c32, r32) = (cut(&all, 4, 32), good.live_root(Frame(32)).expect("live"));
+    let (c32, r32) = (cut(&all, 4, 32), good.grid_root(Frame(32)).expect("live"));
     let Finalized::Diverged { mine } = bad.finalize(&FinalCut { cut: c32.clone(), root: r32, voters: vec![] }, &mut s)
     else {
         panic!("the glitch shows at 32")
@@ -468,11 +468,11 @@ fn diverged_at_32() -> (ReplicaImpl<MockWorld>, Source, Cut, Hash, Hash) {
 fn a_replay_from_below_what_s3_keeps_is_not_kept_and_leaves_rung_2_its_root() {
     let (mut bad, mut s, c32, _, mine) = diverged_at_32();
     assert_eq!(s.asked, Some((Frame(16), Frame(32))), "Cv's frame, and the floor's, which the divergence moved");
-    let live: Vec<_> = roots(&bad, 48);
+    let live: Vec<_> = roots(&mut bad, 48);
     s.trim_below(Frame(24));
     assert_eq!(bad.replay_to(&c32, &mut s), Err(RootError::NotKept));
     assert_eq!(bad.replay_to(&c32, &mut s), Err(RootError::NotKept), "asked again, still no root");
-    assert_eq!((bad.frame(), roots(&bad, 48)), (Frame(48), live), "the live state is unchanged");
+    assert_eq!((bad.frame(), roots(&mut bad, 48)), (Frame(48), live), "the live state is unchanged");
     assert_eq!(bad.tree(&mine).map(|t| t.root()), Some(mine), "rung 2 diffs against my diverged root");
     assert!(bad.physics_image(&mine).is_some());
     // Control: with the entries since Cv kept, rung 1 cures it (rung_one_repairs_a_transient_fault).
@@ -488,9 +488,9 @@ fn a_replay_from_below_what_s3_keeps_is_not_kept_and_leaves_rung_2_its_root() {
 fn a_frame_at_or_above_the_floor_no_longer_kept_stops_advance() {
     let (mut a, mut s) = reference(48);
     let (c32, c40) = (cut(&scene(), 4, 32), cut(&scene(), 5, 40));
-    let r32 = a.live_root(Frame(32)).expect("live");
+    let r32 = a.grid_root(Frame(32)).expect("live");
     assert!(a.root_at_cut(&c40, &mut s).is_ok(), "a root at 40, before the trim");
-    let root16 = a.live_root(Frame(16)).expect("live");
+    let root16 = a.grid_root(Frame(16)).expect("live");
     let fc16 = FinalCut { cut: cut(&scene(), 2, 16), root: root16, voters: vec![] };
     assert_eq!(a.finalize(&fc16, &mut s), Finalized::Agreed);
     assert_eq!(s.asked, Some((Frame(16), Frame(16))));
@@ -515,7 +515,7 @@ fn a_frame_at_or_above_the_floor_no_longer_kept_stops_advance() {
 /// answers for it again, the replica steps on with no further fault and gives roots past it again.
 #[test]
 fn a_stop_ends_when_s3_answers_for_the_frame_again() {
-    let (clean, _) = reference(48);
+    let (mut clean, _) = reference(48);
     let (mut a, mut s) = reference(48);
     let f0 = a.faults();
     s.withheld = Some(Frame(28));
@@ -526,8 +526,8 @@ fn a_stop_ends_when_s3_answers_for_the_frame_again() {
     assert_eq!(a.root_at_cut(&c32, &mut s), Err(RootError::Damaged));
     s.withheld = None;
     assert!(a.advance(Frame(48), &mut s).caught_up);
-    assert_eq!((roots(&a, 48), a.faults() - f0), (roots(&clean, 48), 1));
-    assert_eq!(a.root_at_cut(&c32, &mut s).ok(), clean.live_root(Frame(32)));
+    assert_eq!((roots(&mut a, 48), a.faults() - f0), (roots(&mut clean, 48), 1));
+    assert_eq!(a.root_at_cut(&c32, &mut s).ok(), clean.grid_root(Frame(32)));
 }
 
 /// A running replay meets a frame below the floor that S3's byte cap trimmed after the replay began (S3 may trim
@@ -537,7 +537,7 @@ fn a_stop_ends_when_s3_answers_for_the_frame_again() {
 #[test]
 fn a_trim_below_the_floor_during_a_replay_abandons_it_and_the_member_simulates_on() {
     let (mut bad, mut s, c32, _, mine) = diverged_at_32();
-    let before = roots(&bad, 48);
+    let before = roots(&mut bad, 48);
     bad.set_budget(Duration::from_millis(1));
     assert_eq!(bad.replay_to(&c32, &mut s), Err(RootError::Pending), "two frames from Cv at 16");
     s.trim_below(Frame(20));
@@ -547,10 +547,10 @@ fn a_trim_below_the_floor_during_a_replay_abandons_it_and_the_member_simulates_o
     assert_eq!(bad.replay_to(&c32, &mut s), Err(RootError::NotKept));
     bad.set_budget(Duration::from_secs(1));
     assert!(bad.advance(Frame(48), &mut s).caught_up);
-    assert_eq!(roots(&bad, 48), before, "re-simulated from the floor: the history it had before the replay");
+    assert_eq!(roots(&mut bad, 48), before, "re-simulated from the floor: the history it had before the replay");
     assert_eq!(bad.faults() - f0, 0);
     assert_eq!(bad.tree(&mine).map(|t| t.root()), Some(mine), "rung 2 still diffs against my diverged root");
-    assert_eq!(bad.root_at_cut(&cut(&scene(), 5, 40), &mut s).ok(), bad.live_root(Frame(40)), "it votes again");
+    assert_eq!(bad.root_at_cut(&cut(&scene(), 5, 40), &mut s).ok(), bad.grid_root(Frame(40)), "it votes again");
 }
 
 /// A replay at a cut above the floor (a root split's, with `Cv` at the floor) meets a frame at or above the floor that
@@ -561,7 +561,7 @@ fn a_trim_below_the_floor_during_a_replay_abandons_it_and_the_member_simulates_o
 fn a_trim_at_or_above_the_floor_during_a_replay_stops_it() {
     let agreed_at_16 = || {
         let (mut a, mut s) = reference(48);
-        let fc16 = FinalCut { cut: cut(&scene(), 2, 16), root: a.live_root(Frame(16)).expect("live"), voters: vec![] };
+        let fc16 = FinalCut { cut: cut(&scene(), 2, 16), root: a.grid_root(Frame(16)).expect("live"), voters: vec![] };
         assert_eq!(a.finalize(&fc16, &mut s), Finalized::Agreed);
         (a, s)
     };
@@ -577,14 +577,14 @@ fn a_trim_at_or_above_the_floor_during_a_replay_stops_it() {
     assert_eq!(a.replay_to(&c32, &mut s), Err(RootError::Damaged));
     assert_eq!(a.root_at_cut(&c24, &mut s), Err(RootError::Damaged));
     // The frame is past the cut's: the replay to 24 took its root there and is at 26 when the cap trims below 30.
-    let (clean, _) = reference(48);
+    let (mut clean, _) = reference(48);
     let (mut b, mut s) = agreed_at_16();
     b.set_budget(Duration::from_millis(167));
-    assert_eq!(b.replay_to(&c24, &mut s).ok(), clean.live_root(Frame(24)), "ten frames from 16, past 24");
+    assert_eq!(b.replay_to(&c24, &mut s).ok(), clean.grid_root(Frame(24)), "ten frames from 16, past 24");
     s.trim_below(Frame(30));
     b.advance(Frame(48), &mut s);
     assert_eq!(b.frame(), Frame(26));
-    assert_eq!(b.replay_to(&c24, &mut s).ok(), clean.live_root(Frame(24)), "the root it took stands");
+    assert_eq!(b.replay_to(&c24, &mut s).ok(), clean.grid_root(Frame(24)), "the root it took stands");
     assert_eq!(b.root_at_cut(&c32, &mut s), Err(RootError::Damaged));
 }
 
@@ -594,8 +594,8 @@ fn a_trim_at_or_above_the_floor_during_a_replay_stops_it() {
 /// probe on 3d8e9442, zz_probe_cap_trim.rs; option (a) by @coordinator-opus).
 #[test]
 fn a_cut_over_frames_trimmed_above_the_floor_is_damaged_not_a_silent_stall() {
-    let (clean, _) = reference(48);
-    let quorum = clean.live_root(Frame(24)).expect("live");
+    let (mut clean, _) = reference(48);
+    let quorum = clean.grid_root(Frame(24)).expect("live");
     let (mut a, mut s) = reference(48);
     s.trim_below(Frame(5));
     let f0 = a.faults();
@@ -658,12 +658,13 @@ fn rung_2_imports_the_quorum_s_state_and_finalize_agrees() {
     assert_eq!(bad.frame(), Frame(48));
     assert_eq!(bad.root_at_cut(&c32, &mut s), Ok(r32));
     assert_eq!(bad.finalize(&FinalCut { cut: c32, root: r32, voters: vec![] }, &mut s), Finalized::Agreed);
-    let from_32 = |r: &ReplicaImpl<MockWorld>, to| roots(r, to).into_iter().filter(|r| r.0 >= 32).collect::<Vec<_>>();
-    assert_eq!(from_32(&bad, 48), from_32(&good, 48));
+    let from_32 =
+        |r: &mut ReplicaImpl<MockWorld>, to| roots(r, to).into_iter().filter(|r| r.0 >= 32).collect::<Vec<_>>();
+    assert_eq!(from_32(&mut bad, 48), from_32(&mut good, 48));
     bad.set_budget(Duration::from_secs(1));
     bad.advance(Frame(64), &mut s);
     good.advance(Frame(64), &mut gs);
-    assert_eq!(from_32(&bad, 64), from_32(&good, 64), "and it goes on with the good replica");
+    assert_eq!(from_32(&mut bad, 64), from_32(&mut good, 64), "and it goes on with the good replica");
 }
 
 /// An import that does not check changes nothing: a wrong target root, and an image whose bytes are not its check
@@ -673,7 +674,7 @@ fn an_import_that_does_not_check_changes_nothing() {
     let (mut bad, mut s, c32, _, _) = diverged_at_32();
     let (mut good, mut gs) = reference(48);
     let import = import_from(&mut good, &mut gs, &c32);
-    let live = (bad.frame(), roots(&bad, 48), bad.world().root());
+    let live = (bad.frame(), roots(&mut bad, 48), bad.world().root());
     let mut wrong_root = import.clone();
     wrong_root.target_root = Hash([7; 32]);
     let got = bad.import_at_cut(&GroupSel::Domain, wrong_root, &mut s);
@@ -685,7 +686,7 @@ fn an_import_that_does_not_check_changes_nothing() {
     bytes[at] ^= 0x5a;
     image.bytes = Bytes::from(bytes);
     assert_eq!(bad.import_at_cut(&GroupSel::Domain, bad_bytes, &mut s), Err(ImportError::PhysicsCheck));
-    assert_eq!((bad.frame(), roots(&bad, 48), bad.world().root()), live, "the live state is unchanged");
+    assert_eq!((bad.frame(), roots(&mut bad, 48), bad.world().root()), live, "the live state is unchanged");
 }
 
 /// An import below my floor is refused before anything changes: nothing there changes again (@chunks-reviewer's L1
@@ -695,9 +696,9 @@ fn an_import_below_the_floor_is_not_kept() {
     let (mut bad, mut s, _, _, _) = diverged_at_32();
     let (mut good, mut gs) = reference(48);
     let import = import_from(&mut good, &mut gs, &cut(&scene(), 2, 16));
-    let live = (bad.frame(), roots(&bad, 48), bad.world().root());
+    let live = (bad.frame(), roots(&mut bad, 48), bad.world().root());
     assert_eq!(bad.import_at_cut(&GroupSel::Domain, import, &mut s), Err(ImportError::NotKept));
-    assert_eq!((bad.frame(), roots(&bad, 48), bad.world().root()), live, "the live state is unchanged");
+    assert_eq!((bad.frame(), roots(&mut bad, 48), bad.world().root()), live, "the live state is unchanged");
 }
 
 /// A snapshot held from before an import has the old physics world's image, which never restores into the new one
@@ -708,7 +709,7 @@ fn an_import_below_the_floor_is_not_kept() {
 fn a_cv_held_from_before_an_import_is_not_kept() {
     let all = scene();
     let (mut r, mut s) = reference(48);
-    let r16 = r.live_root(Frame(16)).expect("live");
+    let r16 = r.grid_root(Frame(16)).expect("live");
     assert_eq!(r.finalize(&FinalCut { cut: cut(&all, 2, 16), root: r16, voters: vec![] }, &mut s), Finalized::Agreed);
     let (mut donor, mut ds) = reference(48);
     let c32 = cut(&all, 4, 32);
@@ -716,9 +717,9 @@ fn a_cv_held_from_before_an_import_is_not_kept() {
     let (mine, _) = import_until_done(&mut r, &mut s, &import, 48);
     let superseding = FinalCut { cut: c32, root: Hash([9; 32]), voters: vec![] };
     assert_eq!(r.finalize(&superseding, &mut s), Finalized::Diverged { mine });
-    let before = (r.faults(), r.frame(), roots(&r, 48), r.world().root());
+    let before = (r.faults(), r.frame(), roots(&mut r, 48), r.world().root());
     assert_eq!(r.replay_to(&cut(&all, 6, 48), &mut s), Err(RootError::NotKept));
-    assert_eq!((r.faults(), r.frame(), roots(&r, 48), r.world().root()), before, "nothing changed or counted");
+    assert_eq!((r.faults(), r.frame(), roots(&mut r, 48), r.world().root()), before, "nothing changed or counted");
 }
 
 /// A root of mine held from before an import, and taken again after it, is held again with the new physics world's
@@ -746,8 +747,8 @@ fn a_root_taken_again_after_an_import_holds_the_new_world_s_image() {
     all.iter().cloned().chain([late]).for_each(|e| ws.add(e));
     let mut w = replica();
     w.advance(Frame(48), &mut ws);
-    assert_eq!(r.live_root(Frame(48)), w.live_root(Frame(48)), "with the late entry");
-    let clean = donor.live_root(Frame(48)).expect("live");
+    assert_eq!(r.grid_root(Frame(48)), w.grid_root(Frame(48)), "with the late entry");
+    let clean = donor.grid_root(Frame(48)).expect("live");
     assert_eq!(r.replay_to(&cut(&all, 6, 48), &mut s), Ok(clean), "rung 1 from Cv at 40, without the late entry");
 }
 
@@ -768,8 +769,8 @@ fn a_joiner_imports_the_whole_state_from_empty() {
     let fc32 = FinalCut { cut: c32, root: import.target_root, voters: vec![] };
     assert_eq!(joiner.finalize(&fc32, &mut s), Finalized::Agreed);
     joiner.advance(Frame(48), &mut s);
-    let from_32 = |r: &ReplicaImpl<MockWorld>| roots(r, 48).into_iter().filter(|r| r.0 >= 32).collect::<Vec<_>>();
-    assert_eq!(from_32(&joiner), from_32(&good));
+    let from_32 = |r: &mut ReplicaImpl<MockWorld>| roots(r, 48).into_iter().filter(|r| r.0 >= 32).collect::<Vec<_>>();
+    assert_eq!(from_32(&mut joiner), from_32(&mut good));
     assert_eq!(joiner.faults(), 0);
 }
 
@@ -817,7 +818,7 @@ fn a_frame_applies_its_inputs_before_its_edits() {
         let mut r = replica();
         r.advance(Frame(16), &mut s);
         let c8 = cut(&entries, 1, 8);
-        let live = r.live_root(Frame(8)).expect("live");
+        let live = r.grid_root(Frame(8)).expect("live");
         assert_eq!(r.root_at_cut(&c8, &mut s), Ok(live));
         assert_eq!(r.finalize(&FinalCut { cut: c8, root: live, voters: vec![] }, &mut s), Finalized::Agreed);
         assert_eq!((r.frame(), r.faults()), (Frame(16), 0), "no re-base on the floor");
@@ -834,11 +835,11 @@ fn a_frame_applies_its_inputs_before_its_edits() {
 #[test]
 fn the_agreed_state_is_cv_s() {
     assert!(replica().agreed_state().is_none());
-    let (good, _) = reference(48);
+    let (mut good, _) = reference(48);
     let (mut bad, mut s, c32, r32, _) = diverged_at_32();
     let (frame, state) = bad.agreed_state().expect("Cv at 16");
     assert_eq!((frame, bad.floor_frame()), (Frame(16), Frame(32)), "not the floor's");
-    assert_eq!(Some(state.root()), good.live_root(Frame(16)));
+    assert_eq!(Some(state.root()), good.grid_root(Frame(16)));
     assert_eq!(bad.replay_to(&c32, &mut s), Ok(r32));
     assert_eq!(bad.finalize(&FinalCut { cut: c32, root: r32, voters: vec![] }, &mut s), Finalized::Agreed);
     let (frame, state) = bad.agreed_state().expect("Cv at 32");
@@ -889,15 +890,15 @@ fn a_joiner_takes_gravity_and_origin_from_the_world_it_imports_and_rung_one_agre
     assert_eq!(joiner.finalize(&fc32, &mut s), Finalized::Agreed);
     joiner.world().glitch_at(Frame(36));
     joiner.advance(Frame(48), &mut s);
-    let (c40, r40) = (cut(&scene(), 5, 40), host.live_root(Frame(40)).expect("live"));
+    let (c40, r40) = (cut(&scene(), 5, 40), host.grid_root(Frame(40)).expect("live"));
     let fc40 = FinalCut { cut: c40.clone(), root: r40, voters: vec![] };
     let Finalized::Diverged { mine } = joiner.finalize(&fc40, &mut s) else { panic!("the glitch shows at 40") };
     assert_ne!(mine, r40);
     assert_eq!(joiner.replay_to(&c40, &mut s), Ok(r40), "rung 1 re-simulates with the imported settings");
     assert_eq!(joiner.finalize(&fc40, &mut s), Finalized::Agreed);
     joiner.advance(Frame(64), &mut s);
-    let from_40 = |r: &ReplicaImpl<MockWorld>| roots(r, 64).into_iter().filter(|r| r.0 >= 40).collect::<Vec<_>>();
-    assert_eq!(from_40(&joiner), from_40(&host), "the host's roots from the repaired cut on");
+    let from_40 = |r: &mut ReplicaImpl<MockWorld>| roots(r, 64).into_iter().filter(|r| r.0 >= 40).collect::<Vec<_>>();
+    assert_eq!(from_40(&mut joiner), from_40(&mut host), "the host's roots from the repaired cut on");
     assert_eq!(joiner.faults(), 0);
 }
 
@@ -913,10 +914,10 @@ fn an_import_of_a_world_at_another_rate_is_refused_and_changes_nothing() {
     scene().into_iter().for_each(|e| s.add(e));
     let mut joiner = replica();
     joiner.advance(Frame(8), &mut s);
-    let live = (joiner.frame(), roots(&joiner, 8), joiner.world().root());
+    let live = (joiner.frame(), roots(&mut joiner, 8), joiner.world().root());
     let got = joiner.import_at_cut(&GroupSel::Domain, import, &mut s);
     assert_eq!(got, Err(ImportError::RateMismatch { world: thirty, mine: SimRate::DEFAULT }));
-    assert_eq!((joiner.frame(), roots(&joiner, 8), joiner.world().root()), live, "the live state is unchanged");
+    assert_eq!((joiner.frame(), roots(&mut joiner, 8), joiner.world().root()), live, "the live state is unchanged");
     assert_eq!(joiner.world().settings().rate, SimRate::DEFAULT);
 }
 
@@ -982,8 +983,8 @@ fn verdict(good: &ReplicaImpl<MockWorld>, e: &SignedEntry) -> Option<Outcome> {
 /// the cut is told the clean replica's verdict, once `final_frame` passes it and not before.
 #[test]
 fn a_late_entry_the_final_cut_leaves_out_reads_dropped_before_final_frame_passes() {
-    let (clean, _) = reference(48);
-    let quorum = clean.live_root(Frame(24)).expect("live");
+    let (mut clean, _) = reference(48);
+    let quorum = clean.grid_root(Frame(24)).expect("live");
     let mut s = Source::default();
     scene().into_iter().for_each(|e| s.add(e));
     let mut a = replica();
@@ -1014,7 +1015,7 @@ fn a_late_entry_the_final_cut_leaves_out_reads_dropped_before_final_frame_passes
 /// A replica whose world glitches at 20, so its root differs from the quorum's at 32, read from its first view.
 fn diverged_at_32_read() -> (ReplicaImpl<MockWorld>, Source, FinalCut, Reader) {
     let all = scene();
-    let (good, _) = reference(48);
+    let (mut good, _) = reference(48);
     let mut s = Source::default();
     all.iter().cloned().for_each(|e| s.add(e));
     let world = MockWorld::new(DomainId(0), SimRate::DEFAULT);
@@ -1027,9 +1028,9 @@ fn diverged_at_32_read() -> (ReplicaImpl<MockWorld>, Source, FinalCut, Reader) {
     let mut reader = Reader::default();
     bad.advance(Frame(48), &mut s);
     reader.read(&bad);
-    let fc16 = FinalCut { cut: cut(&all, 2, 16), root: good.live_root(Frame(16)).expect("live"), voters: vec![] };
+    let fc16 = FinalCut { cut: cut(&all, 2, 16), root: good.grid_root(Frame(16)).expect("live"), voters: vec![] };
     assert_eq!(bad.finalize(&fc16, &mut s), Finalized::Agreed);
-    let fc32 = FinalCut { cut: cut(&all, 4, 32), root: good.live_root(Frame(32)).expect("live"), voters: vec![] };
+    let fc32 = FinalCut { cut: cut(&all, 4, 32), root: good.grid_root(Frame(32)).expect("live"), voters: vec![] };
     assert!(matches!(bad.finalize(&fc32, &mut s), Finalized::Diverged { .. }), "the glitch shows at 32");
     bad.advance(Frame(49), &mut s);
     reader.read(&bad);
@@ -1133,7 +1134,7 @@ fn a_dropped_entry_reads_the_reason_s3_voided_it_for() {
     let mut x = EntryBuilder::new(&keys, 2);
     let first = x.next(Class::Edit, Frame(18), Bytes::from(encode(&[ball(14, 2.0, 1.0)])));
     let back = x.next(Class::Edit, Frame(16), Bytes::from(encode(&[ball(15, -2.0, 1.0)])));
-    let quorum = clean_with(std::slice::from_ref(&first), 48).live_root(Frame(24)).expect("live");
+    let quorum = clean_with(std::slice::from_ref(&first), 48).grid_root(Frame(24)).expect("live");
     let (mut a, mut s, mut reader) = stepped_with(&[first.clone(), back.clone()]);
     assert!(matches!(reader.newest[&back.id()].outcome, Outcome::Applied { .. }), "stepped live");
     let mut all = scene();
@@ -1159,7 +1160,7 @@ fn a_pending_entry_reads_late_whatever_this_replica_saw_of_its_chain() {
     let mut y = EntryBuilder::new(&keys, 2);
     let e1 = y.next(Class::Edit, Frame(28), Bytes::from(encode(&[ball(14, 2.0, 1.0)])));
     let e2 = y.next(Class::Edit, Frame(20), Bytes::from(encode(&[ball(15, -2.0, 1.0)])));
-    let quorum = reference(48).0.live_root(Frame(24)).expect("live");
+    let quorum = reference(48).0.grid_root(Frame(24)).expect("live");
     let (mut a, mut s, mut reader) = stepped_with(&[e1.clone(), e2.clone()]);
     assert!(reader.newest.contains_key(&e1.id()) && reader.newest.contains_key(&e2.id()), "both stepped live");
     let c24 = cut(&scene(), 3, 24);
@@ -1213,8 +1214,8 @@ fn a_root_at_a_cut_steps_exactly_what_s3_answers_for_that_cut() {
     let mut want = Source { entries: answer, ..Source::default() };
     let mut w = replica();
     w.advance(Frame(17), &mut want);
-    assert_eq!(Some(root), w.live_root(Frame(16)), "the root is the answer's");
-    assert_ne!(Some(root), r.live_root(Frame(16)), "the live history, from entries_at, differs");
+    assert_eq!(Some(root), w.grid_root(Frame(16)), "the root is the answer's");
+    assert_ne!(Some(root), r.grid_root(Frame(16)), "the live history, from entries_at, differs");
     // Rung 1 replays from `Cv` with the answer too: the answer's state at 8 becomes `Cv`, then the replay to 16.
     let r8 = r.root_at_cut(&c8, &mut s).expect("a root at 8");
     assert_eq!(r.finalize(&FinalCut { cut: c8, root: r8, voters: vec![] }, &mut s), Finalized::Agreed);
@@ -1251,27 +1252,27 @@ fn vote(r: &mut ReplicaImpl<MockWorld>, s: &mut Source, cut: &Cut) -> (u64, Hash
 /// a vote after it starts from the new floor (5.3).
 #[test]
 fn a_vote_resumes_from_the_root_held_at_the_previous_cut() {
-    let (clean, _) = reference(112);
+    let (mut clean, _) = reference(112);
     let (mut a, mut s, late) = with_push_at_10(112);
-    assert_ne!(a.live_root(Frame(96)), clean.live_root(Frame(96)), "the push moves the scene");
+    assert_ne!(a.grid_root(Frame(96)), clean.grid_root(Frame(96)), "the push moves the scene");
     let all = scene();
     let mut costs = Vec::new();
     for (h, f) in (16..=96).step_by(K as usize).enumerate() {
         let (cost, root) = vote(&mut a, &mut s, &cut(&all, h as u64 + 2, f));
-        assert_eq!(Some(root), clean.live_root(Frame(f)), "the root at {f}");
+        assert_eq!(Some(root), clean.grid_root(Frame(f)), "the root at {f}");
         costs.push(cost);
     }
     assert!((6..=16).contains(&costs[0]), "the first re-steps from a keyframe at or before 10: {costs:?}");
     assert!(costs[1..].iter().all(|&c| c == K), "the others one cut interval each: {costs:?}");
     // S3 voids the push as the cut at 24 goes final: the floor moves there, and the live history is re-based on it.
     void(&mut s, &late, Frame(10));
-    let quorum = clean.live_root(Frame(24)).expect("live");
+    let quorum = clean.grid_root(Frame(24)).expect("live");
     let fin = FinalCut { cut: cut(&all, 3, 24), root: quorum, voters: vec![] };
     assert_eq!(a.finalize(&fin, &mut s), Finalized::Agreed);
     a.advance(Frame(112), &mut s);
     let (_, root) = vote(&mut a, &mut s, &cut(&all, 13, 104));
-    assert_eq!(Some(root), clean.live_root(Frame(104)));
-    assert_eq!(a.live_root(Frame(112)), clean.live_root(Frame(112)));
+    assert_eq!(Some(root), clean.grid_root(Frame(104)));
+    assert_eq!(a.grid_root(Frame(112)), clean.grid_root(Frame(112)));
 }
 
 /// A vote resumes only from a held root whose cut's entries up to its frame are the new cut's (5.3). The cut at 24
@@ -1279,17 +1280,17 @@ fn a_vote_resumes_from_the_root_held_at_the_previous_cut() {
 /// from the newer one at 24, and it is the full re-step's.
 #[test]
 fn a_vote_never_resumes_from_a_held_root_with_other_entries() {
-    let (clean, _) = reference(48);
+    let (mut clean, _) = reference(48);
     let (mut a, mut s, late) = with_push_at_10(48);
     let all = scene();
     let (_, at_16) = vote(&mut a, &mut s, &cut(&all, 2, 16));
-    assert_eq!(Some(at_16), clean.live_root(Frame(16)));
+    assert_eq!(Some(at_16), clean.grid_root(Frame(16)));
     let mut covered = all.clone();
     covered.push(late);
     let (cost, at_24) = vote(&mut a, &mut s, &cut(&covered, 3, 24));
-    assert_eq!((cost, Some(at_24)), (0, a.live_root(Frame(24))), "the live history is exactly the cut at 24's");
+    assert_eq!((cost, Some(at_24)), (0, a.grid_root(Frame(24))), "the live history is exactly the cut at 24's");
     let (cost, at_32) = vote(&mut a, &mut s, &cut(&all, 4, 32));
-    assert_eq!(Some(at_32), clean.live_root(Frame(32)));
+    assert_eq!(Some(at_32), clean.grid_root(Frame(32)));
     assert_eq!(cost, 16, "from the root held at 16");
 }
 
@@ -1298,15 +1299,15 @@ fn a_vote_never_resumes_from_a_held_root_with_other_entries() {
 /// from the root held at 16, not from the newer one at 20, off the grid, and it is the full re-step's.
 #[test]
 fn a_vote_never_resumes_from_a_root_held_off_the_grid() {
-    let (clean, _) = reference(32);
+    let (mut clean, _) = reference(32);
     let (mut a, mut s, _) = with_push_at_10(32);
     let all = scene();
     let (_, at_16) = vote(&mut a, &mut s, &cut(&all, 2, 16));
-    assert_eq!(Some(at_16), clean.live_root(Frame(16)));
+    assert_eq!(Some(at_16), clean.grid_root(Frame(16)));
     let (cost, _) = vote(&mut a, &mut s, &cut(&all, 3, 20));
     assert_eq!(cost, 4, "the vote off the grid resumes from the root held at 16");
     let (cost, at_24) = vote(&mut a, &mut s, &cut(&all, 4, 24));
-    assert_eq!(Some(at_24), clean.live_root(Frame(24)));
+    assert_eq!(Some(at_24), clean.grid_root(Frame(24)));
     assert_eq!(cost, K, "from the root held at 16, not the one at 20");
 }
 
@@ -1317,14 +1318,14 @@ fn a_vote_never_resumes_from_a_root_held_off_the_grid() {
 #[test]
 fn a_long_stall_holds_logarithmically_many_snapshots() {
     let to = 1000;
-    let (clean, _) = reference(to);
+    let (mut clean, _) = reference(to);
     let (mut a, mut s, _) = with_push_at_10(to);
     let all = scene();
     let before = a.held_count();
     let young = 4 * K;
     for (h, f) in (16..=to).step_by(K as usize).enumerate() {
         let (cost, root) = vote(&mut a, &mut s, &cut(&all, h as u64 + 2, f));
-        assert_eq!(Some(root), clean.live_root(Frame(f)), "the root at {f}");
+        assert_eq!(Some(root), clean.grid_root(Frame(f)), "the root at {f}");
         if h > 0 {
             assert_eq!(cost, K, "the vote at {f} resumes from the previous one");
         }
@@ -1385,19 +1386,19 @@ fn an_import_at_a_cut_whose_snapshot_was_thinned_takes_the_full_transfer() {
 /// replay at 40 runs from `Cv` at 8 and repairs the live history, and the votes go on to 112.
 #[test]
 fn a_root_split_s_cut_keeps_its_snapshot_while_the_stall_thins_the_rest() {
-    let (clean, _) = reference(112);
+    let (mut clean, _) = reference(112);
     let (mut a, mut s, _) = with_push_at_10(112);
     let all = scene();
-    let at_8 = clean.live_root(Frame(8)).expect("live");
+    let at_8 = clean.grid_root(Frame(8)).expect("live");
     assert_eq!(a.finalize(&FinalCut { cut: cut(&all, 1, 8), root: at_8, voters: vec![] }, &mut s), Finalized::Agreed);
     let mut roots = BTreeMap::new();
     for (h, f) in (16..=112).step_by(K as usize).enumerate() {
         let c = cut(&all, h as u64 + 2, f);
         if f == 40 {
-            assert_eq!(a.replay_to(&c, &mut s), clean.live_root(Frame(40)).ok_or(RootError::NotKept), "rung 1");
+            assert_eq!(a.replay_to(&c, &mut s), clean.grid_root(Frame(40)).ok_or(RootError::NotKept), "rung 1");
         }
         let (_, root) = vote(&mut a, &mut s, &c);
-        assert_eq!(Some(root), clean.live_root(Frame(f)), "the root at {f}");
+        assert_eq!(Some(root), clean.grid_root(Frame(f)), "the root at {f}");
         roots.insert(f, root);
     }
     assert!(a.tree(&roots[&40]).is_some() && a.physics_image(&roots[&40]).is_some(), "the split's cut is served");
@@ -1407,7 +1408,7 @@ fn a_root_split_s_cut_keeps_its_snapshot_while_the_stall_thins_the_rest() {
 /// Finalize the cut at `f` with my live root there, which is the cut's when every entry is in: the verdict and the
 /// root.
 fn finalize_live(r: &mut ReplicaImpl<MockWorld>, s: &mut Source, f: u64) -> (Finalized, Hash) {
-    let root = r.live_root(Frame(f)).expect("live");
+    let root = r.grid_root(Frame(f)).expect("live");
     (r.finalize(&FinalCut { cut: cut(&scene(), f / K, f), root, voters: vec![] }, s), root)
 }
 
@@ -1451,7 +1452,7 @@ fn a_served_final_root_stays_held_past_t_keep_until_it_is_left_out() {
 /// that serves nothing.
 #[test]
 fn a_served_root_at_a_cut_not_final_keeps_its_snapshot_through_a_stall() {
-    let (clean, _) = reference(128);
+    let (mut clean, _) = reference(128);
     let (mut a, mut s, _) = with_push_at_10(128);
     let (mut b, mut bs, _) = with_push_at_10(128);
     let all = scene();
@@ -1459,7 +1460,7 @@ fn a_served_root_at_a_cut_not_final_keeps_its_snapshot_through_a_stall() {
     for (h, f) in (16..=112).step_by(K as usize).enumerate() {
         let c = cut(&all, h as u64 + 2, f);
         let (_, root) = vote(&mut a, &mut s, &c);
-        assert_eq!(Some(root), clean.live_root(Frame(f)), "the root at {f}");
+        assert_eq!(Some(root), clean.grid_root(Frame(f)), "the root at {f}");
         assert_eq!(vote(&mut b, &mut bs, &c).1, root, "the twin's root at {f}");
         if f == 24 {
             a.set_served(&[root]);

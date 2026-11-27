@@ -4403,7 +4403,10 @@ pub(crate) mod tests {
                 };
                 assert!(c.replays > 0 && c.replays <= st.phases.rollbacks, "member {i}: {c:?}; {:?}", st.phases);
                 assert_eq!(c.frames_replayed, st.phases.resimulated, "member {i}: every re-step is a replay's: {c:?}");
-                assert!(c.frames_before_change < c.frames_replayed && c.roots_replayed > 0, "member {i}: {c:?}");
+                assert!(c.frames_before_change < c.frames_replayed, "member {i}: {c:?}");
+                // E3 (pe-replica's skip_replay_roots): no root in a replay of this unscripted world; the votes root
+                // those cuts from their keyframes instead.
+                assert!(c.roots_replayed == 0 && c.root_scratch_us > 0, "member {i}: {c:?}");
                 assert!(c.root_live_us > 0 && c.scan_live_us >= c.scan_replayed_us, "member {i}: {c:?}");
                 assert!(c.replays_compared > 0 && c.replays_compared <= c.replays, "member {i}: {c:?}");
             }
@@ -4459,7 +4462,8 @@ pub(crate) mod tests {
     /// time, so they don't compete for cores) and the ticks over 11.1 ms (90 Hz) and 16.7 ms (60 Hz); asserts the roots
     /// are equal at every count. A tick over budget here is CPU per tick, not a missed compositor frame: the headset
     /// half measures those. `PE_TRIAL_BALLS` (default 500, at most the preset's 500), `PE_TRIAL_WORKERS` (default
-    /// "1,2,4,8") and `PE_TRIAL_SECS` (default 20) set the run. Physics workers starve at idle priority
+    /// "1,2,4,8"), `PE_TRIAL_E3` ("1", "0" or "1,0": E3 on, off, or each in turn; default "1") and `PE_TRIAL_SECS`
+    /// (default 20) set the run. Physics workers starve at idle priority
     /// (docs/parallel-physics.md 7.1): run it at normal priority for figures.
     #[test]
     #[ignore = "a timing trial: run alone, release, normal priority"]
@@ -4477,6 +4481,16 @@ pub(crate) mod tests {
             .split(',')
             .filter_map(|c| c.trim().parse().ok())
             .collect();
+        let e3s: Vec<bool> = var("PE_TRIAL_E3")
+            .unwrap_or_else(|| "1".into())
+            .split(',')
+            .filter_map(|c| match c.trim() {
+                "1" => Some(true),
+                "0" => Some(false),
+                _ => None,
+            })
+            .collect();
+        let runs: Vec<(bool, i32)> = e3s.iter().flat_map(|&e| counts.iter().map(move |&w| (e, w))).collect();
         let frames = secs * u64::from(RATE.hz());
         let warm = 2 * u64::from(RATE.hz());
         let q = |v: &mut Vec<u64>, p: f64| -> f64 {
@@ -4484,8 +4498,10 @@ pub(crate) mod tests {
             let i = ((p * v.len() as f64).ceil() as usize).clamp(1, v.len().max(1)) - 1;
             v.get(i).copied().unwrap_or(0) as f64 / 1e6
         };
-        let mut all_roots: Vec<(i32, BTreeMap<u64, pe_seams::Hash>)> = Vec::new();
-        for &workers in &counts {
+        let mut all_roots: Vec<(String, BTreeMap<u64, pe_seams::Hash>)> = Vec::new();
+        for &(e3, workers) in &runs {
+            crate::genesis::set_skip_replay_roots(e3);
+            let e3_name = if e3 { "on" } else { "off" };
             assert_eq!(crate::genesis::set_physics_workers(workers), workers, "a count within 1..=32");
             let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
             let keys = TestKeys::new(11, 2);
@@ -4569,7 +4585,10 @@ pub(crate) mod tests {
             }
             for (i, (s, ..)) in sims.iter().enumerate() {
                 let st = s.stats();
-                assert!(st.finalized > secs && st.root_splits == 0, "workers {workers}, member {i}: {st:?}");
+                assert!(
+                    st.finalized > secs && st.root_splits == 0,
+                    "e3 {e3_name}, workers {workers}, member {i}: {st:?}"
+                );
                 let v = &mut ticks[i];
                 let n = v.len();
                 let over = |v: &[u64], ms: f64| v.iter().filter(|&&t| t as f64 / 1e6 > ms).count();
@@ -4577,7 +4596,7 @@ pub(crate) mod tests {
                 let mean = v.iter().sum::<u64>() as f64 / n.max(1) as f64 / 1e6;
                 let (p50, p95, p99, max) = (q(v, 0.5), q(v, 0.95), q(v, 0.99), q(v, 1.0));
                 println!(
-                    "trial balls {balls} workers {workers} member {i}: ticks {n}, mean {mean:.2} ms, p50 {p50:.2}, \
+                    "trial balls {balls} e3 {e3_name} workers {workers} member {i}: ticks {n}, mean {mean:.2} ms, p50 {p50:.2}, \
                      p95 {p95:.2}, p99 {p99:.2}, max {max:.2}; over 11.1 ms {o90}, over 16.7 ms {o60}; rollbacks {}, \
                      re-simulated {} for {} stepped, deepest {}; replay costs {:?}",
                     st.phases.rollbacks,
@@ -4587,16 +4606,18 @@ pub(crate) mod tests {
                     s.replay_costs(),
                 );
             }
-            println!("trial balls {balls} workers {workers}: {frames} frames in {:.1} s wall", wall.as_secs_f64());
-            all_roots.push((workers, roots));
+            let w = wall.as_secs_f64();
+            println!("trial balls {balls} e3 {e3_name} workers {workers}: {frames} frames in {w:.1} s wall");
+            all_roots.push((format!("e3 {e3_name}, {workers} workers"), roots));
         }
         crate::genesis::set_physics_workers(1);
+        crate::genesis::set_skip_replay_roots(true);
         let (w0, first) = &all_roots[0];
         for (w, roots) in &all_roots[1..] {
             let shared: Vec<&u64> = first.keys().filter(|h| roots.contains_key(h)).collect();
-            assert!(shared.len() as u64 > secs, "workers {w0} and {w}: {} heights in common", shared.len());
+            assert!(shared.len() as u64 > secs, "{w0} and {w}: {} heights in common", shared.len());
             for h in shared {
-                assert_eq!(first[h], roots[h], "the root at height {h} at {w0} and {w} workers");
+                assert_eq!(first[h], roots[h], "the root at height {h} with {w0} and {w}");
             }
         }
     }
