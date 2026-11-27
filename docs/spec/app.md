@@ -191,6 +191,26 @@ At host time `now`, with `p = clock.frame_at(now)` (no tick before frame 0):
    first. Before frame 0 the wait is at least one frame period, since `host_time_of` means nothing while the clock
    converges; the network thread wakes the simulation thread when it converges.
 
+**Coalesced pose rollbacks** (`pe_app::coalesce`; @item:primordial-engine/friend-test-re-simulation-load-under-constant-co,
+@coordinator-opus with @astra-deliberator's and @fable-reviewer's conditions). [V, the friend test's 18:01Z
+VR-to-VR run] The other player's hand poses reached each machine about a frame behind its present, while B had each
+replica four frames ahead of it. So 56 times a second a pose rolled the replica back 5-9 frames, and re-simulation ran at
+5.6 times real time on both machines. Agreement's change report is now held while every entry in the span to re-step
+is a pose that changes no grip (engaged flag) and no jump. Held changes are let go together, from the earliest frame
+held, at the third tick counted from the first held one. Anything else rolls back at once, with whatever is held: an
+edit (this member's own included), a grab, release, throw, push or hand mode, a grip or jump edge, a pose with none
+before it within 8 frames, and this member's own close or open in the tick. Only re-simulation waits: frames stepped for
+the first time have every entry, and a vote or finalize re-steps the cut's exact entries from a keyframe wherever the
+live history differs, so batching changes no root and machines may batch differently. A held frame below the final
+cut's is let go at the cut's frame, where finalize rebased the live history, never below the replica's floor.
+`PE_COALESCE_TICKS=<n>` sets the window (1 turns it off); `SimStats::coalesce` counts what it did. The budget's
+keep-up floor covers the window: it takes the largest of the last `n` calls' needs, each plus the frames the present
+advanced since its tick. A tick's need is a frame or two and then, at the release, the whole held span, so the last
+call's need alone left the release tick short of the present (`late_entries_on_every_frame_no_longer_hold_a_two_member_view`,
+135 of 180 ticks at the present). *Residual*
+(@design-reviewer's L2 on daf1e85f): a throw's spin term takes the object's offset from the previous view, which with
+poses held can be up to two ticks staler than without; a throw whose spin looks wrong in a test points here.
+
 **Bounded work per tick.** A deep rollback, or a repair's replay of up to `W_fg` (2 s, 120-240 frames), done in one tick
 would stall the simulation for hundreds of milliseconds, and with it agreement's votes and messages for every other
 member. So the replica re-simulates at most a budget of frames per call, expressed as simulated time (a local setting,

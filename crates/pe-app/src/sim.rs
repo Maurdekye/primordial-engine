@@ -47,7 +47,10 @@ use crate::phases::{self, PhaseTimes, Timed};
 ///   @engine-architect's measurement, <notes>). The keep-up floor is capped at
 ///   [`Budget::KEEP_UP_CAP`] of stepping at the measured cost of a frame, and at [`Budget::MAX`]: a machine that
 ///   steps slower than real time, one back from a long stall, or one re-stepping more than that every tick, holds
-///   and reports it, rather than making each tick longer than the last;
+///   and reports it, rather than making each tick longer than the last. With coalesced pose rollbacks
+///   ([`crate::coalesce`]) the need is the largest of the last window's calls ([`Budget::set_need_window`]): held
+///   changes go together every `window` ticks, so a tick's need is a frame or two and then the whole held span, and
+///   the last call's alone would leave the release tick short of the present (`late_entries_on_every_frame_...`);
 /// - what the measured cost of a frame fits into a share of a frame period ([`Budget::observe`]), up to `MAX`.
 #[derive(Clone, Debug)]
 pub struct Budget {
@@ -65,6 +68,9 @@ pub struct Budget {
     /// What the last call needed to reach its present, rollback included: the frames it stepped and re-stepped plus
     /// those it left short ([`Budget::called`]); 0 before any call.
     need: u64,
+    /// The last `need_window` calls' needs, newest last, each with the present of its tick.
+    needs: std::collections::VecDeque<(u64, Option<Frame>)>,
+    need_window: usize,
     frames: u64,
 }
 
@@ -85,7 +91,27 @@ impl Budget {
     pub fn with_share(rate: SimRate, share: f64) -> Budget {
         let floor = Budget::FLOOR_FRAMES;
         let share = share.max(0.0);
-        Budget { rate, share, cost_ns: None, fit: floor, present: None, keep_up: 0, need: 0, frames: floor }
+        Budget {
+            rate,
+            share,
+            cost_ns: None,
+            fit: floor,
+            present: None,
+            keep_up: 0,
+            need: 0,
+            needs: std::collections::VecDeque::new(),
+            need_window: 1,
+            frames: floor,
+        }
+    }
+
+    /// The keep-up floor takes the largest need of the last `calls` calls (at least 1, the last call's alone): the
+    /// coalescer's window ([`crate::coalesce`]), whose held rollbacks come due together every `calls` ticks.
+    pub fn set_need_window(&mut self, calls: u64) {
+        self.need_window = usize::try_from(calls.max(1)).unwrap_or(usize::MAX);
+        while self.needs.len() > self.need_window {
+            self.needs.pop_front();
+        }
     }
 
     /// The budget in frames.
@@ -129,9 +155,13 @@ impl Budget {
     /// reaching the present takes, and the replica stops there. The first tick, and a present that moved backwards,
     /// count as no advance. Returns the new budget when it changed.
     pub fn at_present(&mut self, present: Frame) -> Option<Duration> {
-        let advanced = self.present.map_or(0, |last| present.0.saturating_sub(last.0));
+        let advanced = |at: Option<Frame>| at.map_or(0, |last| present.0.saturating_sub(last.0));
+        // Each call of the window with the frames present advanced since its tick: a release a whole window ago has
+        // a window's frames more to re-step now. With a window of one, the last call's need and the advance since.
+        let window = self.needs.iter().map(|&(need, at)| need.saturating_add(advanced(at))).max();
+        let need = window.unwrap_or(0).max(self.need.saturating_add(advanced(self.present)));
         self.present = Some(self.present.map_or(present, |last| last.max(present)));
-        self.keep_up = self.need.saturating_add(advanced).saturating_add(1);
+        self.keep_up = need.saturating_add(1);
         self.settle()
     }
 
@@ -140,6 +170,10 @@ impl Budget {
     /// what is left of it). The next tick's keep-up floor asks for at least their sum again ([`Budget::at_present`]).
     pub fn called(&mut self, frames: u64, short: u64) {
         self.need = frames.saturating_add(short);
+        self.needs.push_back((self.need, self.present));
+        while self.needs.len() > self.need_window {
+            self.needs.pop_front();
+        }
     }
 
     /// The keep-up floor's cap in frames: [`Budget::KEEP_UP_CAP`] of stepping at the measured cost, between S2's floor
@@ -304,6 +338,9 @@ pub struct SimStats {
     pub ticks_shown_ahead: u64,
     /// Where the thread's time went, step by step ([`crate::phases`]): wall time on this machine.
     pub phases: PhaseTimes,
+    /// The coalesced pose rollbacks ([`crate::coalesce`]): changes held, let go together, rolled back at once, and
+    /// raised to a final cut.
+    pub coalesce: crate::coalesce::CoalesceStats,
     /// The local player's grasps, left hand then right (app.md 3.1 step 2).
     pub hands: [HandStats; 2],
     /// Rollbacks whose cause step 5 noted ([`Sim::note_rollback`]): one line each in the cut log (1.11).
@@ -479,6 +516,8 @@ pub struct Sim {
     clock: Arc<dyn FrameClock>,
     slot: Arc<FrameSlot>,
     driver: Driver,
+    /// The coalesced pose rollbacks ([`crate::coalesce`]).
+    coalesce: crate::coalesce::Coalesce,
     budget: Budget,
     /// The verdict this tick's votes carry: `NotRun` until pe-diverge asks for a self-test.
     self_test: SelfTest,
@@ -857,7 +896,12 @@ impl Sim {
             clock,
             slot,
             driver: Driver::new(),
-            budget,
+            coalesce: crate::coalesce::Coalesce::default(),
+            budget: {
+                let mut budget = budget;
+                budget.set_need_window(crate::coalesce::Coalesce::default().window());
+                budget
+            },
             self_test: SelfTest::NotRun,
             diverge: None,
             published: None,
@@ -1130,6 +1174,14 @@ impl Sim {
     /// lead ([`crate::stamp::StampLead::fixed`]).
     pub fn with_stamp_lead(mut self, lead: Option<crate::stamp::StampLead>) -> Sim {
         self.lead = lead;
+        self
+    }
+
+    /// The coalesced pose rollbacks' window in ticks ([`crate::coalesce`]; default [`crate::coalesce::WINDOW_TICKS`]):
+    /// 1 rolls back for every change at once, as before.
+    pub fn with_coalesce_window(mut self, ticks: u64) -> Sim {
+        self.coalesce = crate::coalesce::Coalesce::new(ticks);
+        self.budget.set_need_window(ticks);
         self
     }
 
@@ -1919,6 +1971,11 @@ impl Sim {
                 self.stats.inputs_refused += u64::from(sent.refused);
                 self.stats.poses_thinned += u64::from(sent.thinned);
                 self.stats.hands_out_of_reach += u64::from(sent.out_of_reach);
+                // A grasp's edge of this member's own lets the held pose changes go in this tick's advance, so its
+                // grab, release or throw is stepped on the corrected world (@astra-deliberator).
+                if sent.closes.iter().chain(&sent.opens).any(|&n| n > 0) {
+                    self.coalesce.flush();
+                }
                 for (i, h) in self.stats.hands.iter_mut().enumerate() {
                     h.closes += u64::from(sent.closes[i]);
                     h.opens += u64::from(sent.opens[i]);
@@ -2206,9 +2263,11 @@ impl Sim {
         let report = {
             // Times the replica's calls into `phases`, and passes each through unchanged.
             let log = self.replay.as_mut();
-            let mut timed = Timed { inner: &mut *self.replica, times: &mut self.stats.phases, log };
+            let coalesce = Some(&mut self.coalesce);
+            let mut timed = Timed { inner: &mut *self.replica, times: &mut self.stats.phases, log, coalesce };
             self.driver.drive(&mut timed, &mut *self.agree, Frame(p.0 + 1), self.self_test)
         };
+        self.stats.coalesce = self.coalesce.stats;
         let frames = report.advance.resimulated + report.advance.stepped;
         if let Some(b) = self.budget.observe(frames, started.elapsed()) {
             self.replica.set_budget(b);
@@ -4189,6 +4248,139 @@ pub(crate) mod tests {
                 sims[1].0.stats().largest_shown_ahead
             );
         }
+    }
+
+    /// The coalesced pose rollbacks on the friend test's 18:01Z pattern
+    /// (@item:primordial-engine/friend-test-re-simulation-load-under-constant-co): two members on a 90 ms one-way link,
+    /// both running the shown present 46 ms ahead (B), each moving a hand every frame. Member 0 grabs the top ball,
+    /// member 1's hand sweeps through it, and member 0 throws it. Run with the window off (1) and on (3). Both runs
+    /// must finalize with no split and agree on the root at every final height they share: batching only changes when
+    /// a prediction is redone, never a cut's root (votes and finalize re-step the cut's exact entries from a keyframe
+    /// where the live history differs). Printed per run: rollbacks, frames re-simulated, the coalescer's counts and the
+    /// replica's advance time.
+    #[test]
+    fn coalesced_pose_rollbacks_re_simulate_less_and_change_no_root() {
+        use pe_agree::{Node, NodeConfig};
+        use pe_seams::agree::{Cut, CutRef};
+        use pe_seams::test_util::TestKeys;
+        type Run = (Vec<SimStats>, BTreeMap<u64, pe_seams::Hash>);
+        type Events = Arc<std::sync::Mutex<Vec<AgreeEvent>>>;
+        type Member = (Sim, Arc<FrameSlot>, Puppet, Arc<crate::shown::DisplayLead>, Events);
+        let run = |window: u64| -> Run {
+            let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+            let keys = TestKeys::new(11, 2);
+            let members = keys.sorted_keys();
+            let line = pe_world::preset::m1_line();
+            let hub = Hub::default();
+            {
+                let mut d = hub.delay.lock().expect("the delays");
+                d.insert((keys.key(0), keys.key(1)), 90_000_000);
+                d.insert((keys.key(1), keys.key(0)), 90_000_000);
+            }
+            let mut sims: Vec<Member> = Vec::new();
+            for i in 0..2 {
+                let me = keys.key(i);
+                let genesis = Cut { at: CutRef { line, height: 0, frame: Frame(0) }, heads: Vec::new() };
+                let config = NodeConfig::new(line, members.clone(), genesis);
+                let node = Node::new(config, Box::new(keys.signer(i)), Box::new(keys.clone()), HostTime(0));
+                let world = pe_world::preset::ball_pit_with(5, pe_world::BlobStore::default(), Pos::ORIGIN, 8);
+                let replica =
+                    crate::world::ball_pit(world, &members, me, RATE, clock.clone(), runner()).expect("a replica");
+                let slot = Arc::new(FrameSlot::new());
+                let puppet = Puppet::default();
+                puppet.set([0.0, 3.0, 0.4 * i as f32], false);
+                let feed: Arc<dyn pe_seams::HandFeed> = Arc::new(Moving(puppet.clone(), [2.0, 0.0, 0.0]));
+                let lead = Arc::new(crate::shown::DisplayLead::default());
+                let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+                let sim = Sim::new(Box::new(node), replica, clock.clone(), slot.clone(), Budget::new(RATE))
+                    .with_local(me, keys.nonce(i, 0), feed)
+                    .with_transport(Box::new(Port::new(me, hub.clone())), None)
+                    .with_shown(lead.clone())
+                    .with_event_log(events.clone())
+                    .with_coalesce_window(window);
+                sims.push((sim, slot, puppet, lead, events));
+            }
+            let mut f = 0u64;
+            // Each frame: both leads recorded, each hand where `at` puts it, then both ticks.
+            let mut step = |sims: &mut Vec<Member>, n: u64, at: &dyn Fn(usize, u64) -> Option<([f32; 3], bool)>| {
+                for _ in 0..n {
+                    f += 1;
+                    let now = clock.host_time_of(Frame(f));
+                    hub.now.store(now.0, Ordering::SeqCst);
+                    for (k, (s, _, puppet, lead, _)) in sims.iter_mut().enumerate() {
+                        lead.record(now, 46_000_000);
+                        if let Some((p, closed)) = at(k, f) {
+                            puppet.set(p, closed);
+                        }
+                        s.tick(now).expect("ticked");
+                    }
+                }
+            };
+            // A hand that sways 10 cm about `c`, a frame at a time: a pose that changes every frame.
+            let sway = |c: [f32; 3], f: u64, k: usize| {
+                let a = (f as f32 + 17.0 * k as f32) * 0.21;
+                [c[0] + 0.1 * a.sin(), c[1] + 0.05 * a.cos(), c[2]]
+            };
+            step(&mut sims, 120, &|k, f| Some((sway([0.0, 3.0, 0.4 * k as f32], f, k), false)));
+            let v = sims[0].1.newest().expect("published");
+            let ball = top_ball(&v);
+            let at = rig_at(&v, ball);
+            // Member 0 closes on the ball and holds it; member 1 keeps swaying.
+            step(&mut sims, 3, &|k, f| (k == 1).then(|| (sway([0.0, 3.0, 0.4], f, 1), false)).or(Some((at, false))));
+            step(&mut sims, 60, &|k, f| Some(if k == 0 { (at, true) } else { (sway([0.0, 3.0, 0.4], f, 1), false) }));
+            // Member 1's hand sweeps through the held ball over a second; member 0 then opens: a throw at 2 m/s.
+            step(&mut sims, 60, &|k, f| {
+                Some(if k == 0 { (at, true) } else { ([at[0] - 0.5 + (f % 60) as f32 / 60.0, at[1], at[2]], false) })
+            });
+            step(&mut sims, 1, &|k, f| Some(if k == 0 { (at, false) } else { (sway([0.0, 3.0, 0.4], f, 1), false) }));
+            step(&mut sims, 360, &|k, f| Some((sway([0.0, 3.0, 0.4 * k as f32], f, k), false)));
+            let stats: Vec<SimStats> = sims.iter().map(|(s, ..)| s.stats().clone()).collect();
+            let mut roots = BTreeMap::new();
+            for (i, (.., events)) in sims.iter().enumerate() {
+                for e in events.lock().expect("the events").iter() {
+                    if let AgreeEvent::CutFinal { cut, root, .. } = e {
+                        let was = roots.insert(cut.height, *root);
+                        assert!(was.is_none_or(|r| r == *root), "window {window}: member {i}'s root at {}", cut.height);
+                    }
+                }
+            }
+            for (i, st) in stats.iter().enumerate() {
+                assert!(st.finalized > 30 && st.root_splits == 0, "window {window}, member {i}: {st:?}");
+                assert_eq!(st.diverge.diverged, 0, "window {window}, member {i}");
+                assert!(st.hands[1].throws + st.hands[1].releases >= u64::from(i == 0), "member {i}: {:?}", st.hands);
+            }
+            (stats, roots)
+        };
+        let (off, off_roots) = run(1);
+        let (on, on_roots) = run(3);
+        let shared: Vec<u64> = off_roots.keys().filter(|h| on_roots.contains_key(h)).copied().collect();
+        assert!(shared.len() > 30, "{} heights in common", shared.len());
+        for h in &shared {
+            assert_eq!(off_roots[h], on_roots[h], "the root at height {h} with the window off and on");
+        }
+        for (name, st) in [("off", &off), ("on", &on)] {
+            for (i, s) in st.iter().enumerate() {
+                println!(
+                    "window {name}, member {i}: rollbacks {}, re-simulated {} for {} stepped ({:.2}x), deepest {}, \
+                     advance {:.0} ms; coalesce {:?}",
+                    s.phases.rollbacks,
+                    s.phases.resimulated,
+                    s.phases.stepped,
+                    s.phases.resimulated as f64 / s.phases.stepped.max(1) as f64,
+                    s.deepest_rollback,
+                    s.phases.advance_ns as f64 / 1e6,
+                    s.coalesce
+                );
+            }
+        }
+        let resim = |st: &[SimStats]| st.iter().map(|s| s.phases.resimulated).sum::<u64>() as f64;
+        let ratio = resim(&off) / resim(&on).max(1.0);
+        println!("re-simulated frames, window off over on: {ratio:.2}x over {} shared final heights", shared.len());
+        assert!(ratio >= 1.5, "coalescing saved only {ratio:.2}x");
+        // The conditions' own case (@design-reviewer's L1 on daf1e85f): member 0's close or open came while member 1's
+        // poses were held, and let them go in that tick's advance. After the ratio, so a run without the coalescer
+        // fails on the saving.
+        assert!(on[0].coalesce.flushed >= 1, "member 0's grasp edges found nothing held: {:?}", on[0].coalesce);
     }
 
     /// A puppet hand that also reports a velocity, the same at every moment: a hand moving steadily, for a throw.
@@ -6216,6 +6408,35 @@ pub(crate) mod tests {
         // The cost is smoothed: one slow call moves it only part of the way.
         b.observe(1, Duration::from_millis(9));
         assert!(b.frames() < 8 && b.frames() >= Budget::FLOOR_FRAMES, "{}", b.frames());
+    }
+
+    #[test]
+    fn the_keep_up_floor_covers_the_largest_need_of_the_coalescing_window() {
+        // Cheap frames and no share: the keep-up floor alone sizes the budget.
+        let mut b = Budget::with_share(RATE, 0.0);
+        b.observe(100, Duration::from_micros(10));
+        b.at_present(Frame(0));
+        // Held pose rollbacks come due every third tick: needs of 2, 2 and then the whole held span, 21.
+        let needs = [2, 2, 21, 2, 2, 21, 2];
+        let mut floors = Vec::new();
+        for (i, n) in needs.into_iter().enumerate() {
+            b.called(n, 0);
+            b.at_present(Frame(i as u64 + 1));
+            floors.push(b.frames());
+        }
+        assert_eq!(floors, [4, 4, 23, 4, 4, 23, 4], "the last call's need alone: the release tick gets 4");
+        let mut b3 = Budget::with_share(RATE, 0.0);
+        b3.observe(100, Duration::from_micros(10));
+        b3.set_need_window(3);
+        b3.at_present(Frame(0));
+        let mut floors = Vec::new();
+        for (i, n) in needs.into_iter().enumerate() {
+            b3.called(n, 0);
+            b3.at_present(Frame(i as u64 + 1));
+            floors.push(b3.frames());
+        }
+        // 21 at the third call, then 21 plus the frames since, until the next release: the release ticks get 24.
+        assert_eq!(floors, [4, 5, 23, 24, 25, 23, 24], "every tick, the release tick included, covers 21");
     }
 
     #[test]

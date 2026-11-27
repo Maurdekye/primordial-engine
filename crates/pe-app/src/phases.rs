@@ -1,6 +1,7 @@
 //! Where the simulation thread's time goes (@coordinator-opus, after the first two-machine run): totals
 //! for each step of the tick (app.md 3) and, inside step 4, for each call pe-replica's driver makes, through
-//! [`Timed`], a replica wrapper that only times. It changes nothing the replica or agreement does. The numbers are wall
+//! [`Timed`], a replica wrapper that times. Apart from the coalesced pose rollbacks it carries ([`crate::coalesce`]),
+//! it changes nothing the replica or agreement does. The numbers are wall
 //! time on this machine, so they compare phases with each other, never one machine's run with another's.
 
 use std::any::Any;
@@ -69,6 +70,9 @@ pub struct Timed<'a> {
     pub inner: &'a mut dyn Replica,
     pub times: &'a mut PhaseTimes,
     pub log: Option<&'a mut crate::replay::ReplayLog>,
+    /// The coalesced pose rollbacks ([`crate::coalesce`]): `advance` reads its source through them. The one place
+    /// `Timed` changes what the replica sees: when it re-simulates, never what it steps.
+    pub coalesce: Option<&'a mut crate::coalesce::Coalesce>,
 }
 
 impl Replica for Timed<'_> {
@@ -86,7 +90,14 @@ impl Replica for Timed<'_> {
 
     fn advance(&mut self, present: Frame, source: &mut dyn EntrySource) -> Advance {
         let start = Instant::now();
-        let a = self.inner.advance(present, source);
+        let a = match &mut self.coalesce {
+            Some(coalesce) => {
+                let stepped = self.inner.frame();
+                let mut source = crate::coalesce::Coalesced { inner: source, coalesce, stepped };
+                self.inner.advance(present, &mut source)
+            }
+            None => self.inner.advance(present, source),
+        };
         self.times.advance_ns += since(start);
         self.times.stepped += a.stepped;
         self.times.resimulated += a.resimulated;
@@ -182,7 +193,7 @@ mod tests {
         let mut inner = ReplicaImpl::new(MockWorld::new(DomainId(0), rate), config).expect("a replica");
         let mut times = PhaseTimes::default();
         let served = [Hash::of("pe-app.test", b"served")];
-        Timed { inner: &mut inner, times: &mut times, log: None }.set_served(&served);
+        Timed { inner: &mut inner, times: &mut times, log: None, coalesce: None }.set_served(&served);
         assert_eq!(inner.served(), served);
         assert_eq!(times, PhaseTimes::default(), "nothing to time");
     }

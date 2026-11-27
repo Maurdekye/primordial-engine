@@ -680,6 +680,14 @@ fn main() {
     let sim = sim.with_link_notes(link_notes.clone(), opener);
     // `--slow-frame` (pe_app::slowframe): the status line and the end line say so while the replica waits.
     let sim = sim.with_slow_frame(pe_app::slowframe::armed());
+    // `PE_COALESCE_TICKS=<n>`: the coalesced pose rollbacks' window (pe_app::coalesce), 1 for none; default 3.
+    let sim = match std::env::var("PE_COALESCE_TICKS").ok().and_then(|v| v.trim().parse::<u64>().ok()) {
+        Some(n) => {
+            pe_app::out!("coalesced pose rollbacks: every {n} ticks (PE_COALESCE_TICKS)");
+            sim.with_coalesce_window(n)
+        }
+        None => sim,
+    };
     // `PE_TICK_TRACE=<file>`: a line a second and one per long tick, for a stall's phase (crate::trace). Off by default.
     let sim = match pe_app::trace::TickTrace::from_env(rate.hz()) {
         Some(Ok((trace, path))) => {

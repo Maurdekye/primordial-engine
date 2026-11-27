@@ -24,6 +24,7 @@ pub mod api;
 pub mod builds;
 pub mod capture;
 pub mod clock;
+pub mod coalesce;
 pub mod console;
 pub mod cutlog;
 pub mod diverge;
