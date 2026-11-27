@@ -399,7 +399,11 @@ pub fn submit_hands(
                                 out.handovers[i] += 1;
                                 continue;
                             }
-                            // Refused: it leaves as a release would, below.
+                            // Refused here (agreement didn't take the entry): it leaves as a release would, below.
+                            // A grab agreement takes but the world later refuses (out of reach at the agreed frame)
+                            // sends nothing more: the claim stays on the open hand until its lease lapses, and the
+                            // object then drops with no throw's velocity (@design-reviewer's L2 on adac6a4d; a throw
+                            // on that refusal is for after the 11-27 kit).
                             None => out.refused += 1,
                         }
                     }
