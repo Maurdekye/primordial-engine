@@ -391,8 +391,20 @@ which fixes the origin's role deliberately.
   interface with @xr-eng). `preset::plane_on(line, seed, blobs,
   origin)` builds, like the pit, one genesis transaction by world logic with the M1 marker, its ids on a chain from
   `pe.m1.plane.chain` and the seed. Its roots (`preset::plane_names`):
-  - `Plane`, at `origin`, holding `Floor` (a static box 20 m square and 1 m thick, its top at `origin`) and `Lamp`
-    (a point light 3 m up).
+  - `Plane`, at `origin`, holding `Floor` (a static box 64 m square and 1 m thick, its top at `origin`), `Lamp`
+    (a point light 3 m up) and `Course`.
+  - `Course` (`preset::course`; the user's for the 11-27 friend test,
+    @item:primordial-engine/friend-test-11-27-the-plane-preset-as-a-movement): a movement and physics test course of
+    static pieces, one plain frame per station: `Slopes` (10, 20, 30, 40, 45, 55 and 70° up to a 1.5 m plateau; the
+    mover holds a player up to about 50°), `Stairs` (steps of 0.1, 0.2, 0.3 and 0.4 m up to a 1.2 m landing; the
+    mover steps 0.3 m), `Ledges` (0.5 to 1.5 m), `Halfpipe` (radius 2.5 m), `Basin` (a round bowl 16 m across),
+    `Walls` (a corner, one at 45°, a doorway, a corridor half under a 2 m ceiling), `Beams and gaps` (beams 1, 0.5 and
+    0.25 m wide, gaps of 1-3 m, a winding path) and `Rough ground` (half-buried spheres and tilted slabs). Every piece
+    is a static box or sphere: meshes and hulls stay off in every preset (config item 8), so curves are arcs of
+    overlapping box segments. The layout is a constant built from `+ - * /` and `sqrt` only, never from `sin` or
+    `cos`, so every machine builds the same root. It keeps clear the ground at the spawn row (x ±7 m, z -10..4 m;
+    `course::SPAWN_CLEAR`) and ahead of it for the spawn grid (x -4.5..7 m, z -30..-3 m; `course::GRID_CLEAR`)
+    [V `crates/pe-world/tests/plane.rs`; walked on the mover, `crates/pe-replica/tests/players.rs`].
   - `Spawned`, at `origin` and empty: spawned objects go under it, and "clear" deletes its children.
   - `Templates`, a template folder (7.1) parked 50 m below the floor, holding `Box` (a 0.2 m cube), `Sphere`
     (radius 0.1 m), `Capsule` (radius 0.07 m, segment 0.2 m) and `Box stack` (a plain parent over `Box 1` ..
@@ -400,8 +412,10 @@ which fixes the origin's role deliberately.
     300 kg/m³.
 
   A spawn is pe-api's `create` with `template`, under `/Spawned` (api.md 5.3.1), so a `Copy` (7.1). The stack comes
-  over whole, and `components` apply to the copy's root. The templates take 8 of the 520 shapes (7.1), the floor 1.
-  Members are admitted at the pit's spots. pe-app's genesis record names the plane `"plane"` v1, its ball count 0,
+  over whole, and `components` apply to the copy's root. The templates take 11 of the world's shapes (7.1; the 3 heavy ones, `preset::HEAVY`), the floor 1
+  and the course `course::piece_count()` (141).
+  Members are admitted at the pit's spots. pe-app's genesis record names the plane `"plane"` v4 (v2 the player
+  bodies, v3 the `World settings` root, v4 the course and the 64 m floor), its ball count 0,
   beside `"m1-ball-pit"` v1, and pe-app opens a session on it with `--preset plane`. Its root is deterministic and
   differs from the pit's [V `crates/pe-world/tests/plane.rs`].
 - **No dependence on the preset's ids.** Tests, the harness and API examples find the pit's objects by name
@@ -2809,6 +2823,14 @@ its input; pe-physics moves it (L1's `move_player`, @vdw-physics); pe-replica's 
   `move_player` in id order, then the hand targets from the returned pose times each hand's local transform, then the
   step. The body's pose is written back to its `Transform` like any bound body's. `World::players()` gives the rows
   in id order; `World::body_of(member)` the body.
+- **The void** (the user's): a body whose feet the move leaves more than `players::VOID_DEPTH` (30 m)
+  below the domain's origin, the plane's floor top, is put back at the world's respawn point
+  (`WorldModel::respawn_point`: pe-world's `World::join_spawn`, the lowest free spawn slot), at rest: pe-replica
+  removes the player and adds it again there, so its velocity, ground and jump timers start over, and writes that
+  pose. It happens inside the step and reads only hashed state, so every replica respawns the body at the same frame
+  and place, and a rollback or a replay repeats it. The hands follow as from any teleport (8.1). A world model without
+  a respawn point (the default) lets the body fall on. Other bodies that fall are not put back [V
+  `crates/pe-replica/tests/players.rs`].
 - **Reach** (7.2, @engine-architect): a grab by a body's hand is judged before this frame's step moves
   the body, so its reach adds the body's `moved`, about |v|·dt (7 cm at 4 m/s), at most `MAX_MOVED`. A known
   looseness that a later reorder of the input phase around the mover could remove. Every other reach path

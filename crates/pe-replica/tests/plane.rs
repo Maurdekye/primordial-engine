@@ -272,10 +272,10 @@ fn two_members_mixed_shapes_agree_whatever_the_arrival_order_and_equal_a_replay(
     println!("MIXED-SHAPE ROOT frame {f} {root}");
     assert_eq!(live.faults(), 0);
     let w = live.world().world();
-    // Everything spawned is in play under Spawned: 1 + 1 + 1 + 3 x 5 + 1 bodies, plus the floor.
+    // Everything spawned is in play under Spawned: 1 + 1 + 1 + 3 x 5 + 1 bodies, plus the floor and the course.
     let spawned = find(w, n::SPAWNED).unwrap();
     assert_eq!(w.snapshot(w.frame()).children(spawned).len(), 7);
-    assert_eq!(w.physical().len(), 1 + 4 + 3 * n::STACK_BOXES);
+    assert_eq!(w.physical().len(), 1 + pe_world::preset::course::piece_count() + 4 + 3 * n::STACK_BOXES);
     let moved = at(w, the_box) - settled;
     assert!(moved.0[2] < -0.5, "the throw carried the box away: {moved:?}");
     // Member 1's entries arrive late, after member 0's have been stepped far past them: a rollback, the same roots.

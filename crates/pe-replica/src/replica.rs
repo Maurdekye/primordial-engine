@@ -1023,6 +1023,8 @@ impl<W: WorldModel> ReplicaImpl<W> {
     /// hands: the players brought in line with the world model's rows, then each body walked by the mover in id order,
     /// and its moved feet written into the world model, so each of its hands' targets is the moved body's pose times
     /// the hand's place in the body. The step then carries each body to that pose, and the write-back writes it again.
+    /// A body whose feet the move leaves more than [`players::VOID_DEPTH`] below the origin has fallen into the void:
+    /// it is put back at the world's respawn point, at rest ([`players::respawn`]), in the same step on every replica.
     /// Returns the faults: refused physics calls and poses out of range.
     fn move_players(&mut self) -> u64 {
         let rows = self.world.players();
@@ -1038,7 +1040,19 @@ impl<W: WorldModel> ReplicaImpl<W> {
                 ..players::input(row, &pe_physics::PLAYER)
             };
             let ignore = players::ignored(row, &hands, &claims);
-            match self.physics.move_player(row.body, &input, &ignore, &pe_physics::PLAYER, self.dt) {
+            let moved = self.physics.move_player(row.body, &input, &ignore, &pe_physics::PLAYER, self.dt);
+            let back = match &moved {
+                Ok(pose) if pose.position[1] < -players::VOID_DEPTH => self.world.respawn_point(),
+                _ => None,
+            };
+            if let Some(at) = back {
+                match players::respawn(&mut self.physics, row.body, (at - self.origin).0) {
+                    Ok(()) => poses.push((row.body, at, [0.0, 0.0, 0.0, 1.0])),
+                    Err(_) => faults += 1,
+                }
+                continue;
+            }
+            match moved {
                 Ok(pose) => match self.origin.checked_add(Offset(pose.position)) {
                     Ok(pos) => poses.push((row.body, pos, pose.rotation)),
                     Err(_) => faults += 1,
