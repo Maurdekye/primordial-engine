@@ -361,17 +361,19 @@ pub enum VoidReason {
     /// Stamped below an earlier stamp in its author's chain.
     BackStamped,
     /// (S3 v1.7; agreement.md 8.) An entry of a leaver's key that comes after its `Leave` in the final log's order, in
-    /// the epoch of that `Leave`, on any chain. Only that epoch: a member admitted again in a later epoch starts a new
+    /// the epoch of that `Leave`, on any chain. (S3 v1.13) Likewise a removed key's entries after the `Remove`. Only that epoch: a member admitted again in a later epoch starts a new
     /// chain, whose entries this never voids.
     AfterLeave,
     /// (S3 v1.7; agreement.md 8, @design-reviewer's L1 on e3597563.) A `Leave` that would leave its epoch with no
-    /// members: the line keeps its last member, which stays a member.
+    /// members: the line keeps its last member, which stays a member. (S3 v1.13) Also a `Remove` that would.
     LastMember,
     /// (S3 v1.10; agreement.md 8.) A membership change its author may not make: an `Admit` by a key that isn't one of
-    /// the line's admitters, or by a key that isn't a member.
+    /// the line's admitters, or by a key that isn't a member. (S3 v1.13) A `Remove` the governance fold denies (by a
+    /// non-admin, of the signer's own key, malformed, or for silence, not built), or by a key that isn't a member.
     NotAuthorized,
     /// (S3 v1.10; agreement.md 8.) A membership change that changes nothing: an `Admit` of a key that is a member
-    /// already, or that an earlier `Admit` in the same epoch admits.
+    /// already, or that an earlier `Admit` in the same epoch admits. (S3 v1.13) A `Remove` of a key that isn't a
+    /// member, or that has left or been removed earlier in the epoch.
     NoChange,
 }
 

@@ -723,8 +723,8 @@ Named as the model's controls: `VoteWithoutChainValidation` (d1), `AcceptProposa
 
 ## 8. Membership change: epochs (model v1)
 
-Ruled by the coordinator (epochs, as DiemBFT v4 reconfigures), with @design-reviewer's gaps and wording. Built in pe-agree for `Leave` and `Admit` (below); `Remove` and
-`Rechain` are not built yet.
+Ruled by the coordinator (epochs, as DiemBFT v4 reconfigures), with @design-reviewer's gaps and wording. Built in pe-agree for `Leave`, `Admit` and an admin's `Remove` (below);
+the automatic `Remove` of a silent member and `Rechain` are not built yet.
 
 - **Build order: `Leave` first** (coordinator; @item:primordial-engine/m1-leave-a-member-leaves-gracefully-and-the-rest).
   M1's demo has a member leave and the other carry on alone, and at n = 2 that is impossible without epochs: q = 2,
@@ -888,7 +888,20 @@ Ruled by the coordinator (epochs, as DiemBFT v4 reconfigures), with @design-revi
     anyway. Both names are S3 changes, to confirm
     with @engine-architect when the seam's version is bumped.
   - `Remove{key}`, by an authorized member other than the one removed, so a crashed, departed or Byzantine member
-    can be removed. Who is authorized, for `Admit` too, is governance's (admins, the user's ruling); in the model it
+    can be removed. **Built for an admin (S3 v1.13, M2 S3,
+    @item:primordial-engine/m2-s1-s3-agreement-at-3-8-players-open-internet-h):** the payload is pe-seams'
+    `Remove { key, reason }` (tag `pe.agree.remove/`, version 1, the key, a reason byte). The governance fold allows
+    `RemoveReason::Admin` by an admin of the epoch for a key other than its own (`GovVerdict::Remove`), and denies the
+    rest: a non-admin, its own key (that is a `Leave`), a malformed payload, and `RemoveReason::Silent`, whose rule
+    isn't built (the user's automatic removal after 30 s of total silence). The rules run beside the
+    `Leave` rules in the final log's order: void as `NotAuthorized` if denied or the author isn't a member, `NoChange`
+    if the key isn't a member or has left or been removed earlier in the epoch, `LastMember` if it would leave no
+    member. Otherwise the key departs as a leaver does, from the `Remove`'s place: its later entries are void as
+    `AfterLeave`, and the next epoch starts without it, t and q recomputed. Its world side is the leave's: pe-replica
+    calls `World::leave` for the key at the `Remove`'s stamp (its hands, body, claims and permissions go). A crashed
+    member's vote isn't needed: at n >= 3 the rest are a quorum while at most n - q are down (removing two down at
+    n = 7 in one cut, the five carry on at once). At n = 2 a crashed member still can't be removed (its vote is part
+    of q = 2). Tests: pe-agree node_tests/remove.rs, pe-replica tests/peworld.rs. The consensus hash is v11. Who is authorized, for `Admit` too, is governance's (admins, the user's ruling); in the model it
     is abstract, and the Byzantine member runs both authorized (it may sign `Remove{honest}` and `Admit{sybil}`) and
     not (@design-reviewer, Low 4).
   - **Assumption: governance never authorizes a Byzantine member.** The authorized run breaks agreement, as

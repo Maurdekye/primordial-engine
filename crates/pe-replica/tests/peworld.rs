@@ -2706,6 +2706,38 @@ fn a_leave_removes_the_leavers_hand_and_its_grab_and_keeps_what_it_held() {
     assert!(!r.physics().has_body(oid(B_HAND)) && r.physics().joint_count() == 0, "no hand body, no grab");
 }
 
+/// An admin's `Remove` of B (S3 v1.13; agreement.md 8) at frame 10 does what B's own leave does: B's hand and its
+/// grab go, the claim ends, the toy stays as a root, A's hand stays. A malformed `Remove` is refused and changes
+/// nothing.
+#[test]
+fn a_remove_takes_the_removed_members_hand_and_grab_as_its_leave_would() {
+    let (grab, _) = grab_then_leave();
+    let keys = keys();
+    let mut a = EntryBuilder::new(&keys, 0);
+    let bad = a.next(Class::Protocol, Frame(8), Bytes::from_static(b"pe.agree.remove/short"));
+    let payload = pe_seams::Remove { key: keys.key(1), reason: pe_seams::RemoveReason::Admin }.encode();
+    let remove = a.next(Class::Protocol, Frame(10), payload);
+    let mut s = Source::default();
+    s.add(grab);
+    s.add(bad.clone());
+    s.add(remove.clone());
+    let mut r = replica_of(with_bs_hand());
+    r.advance(Frame(9), &mut s);
+    assert!(matches!(r.outcome(&bad.id()).map(|o| o.1), Some(Outcome::Refused { .. })), "the malformed Remove");
+    assert!(r.world().world().store().exists(oid(B_HAND)) && r.physics().joint_count() == 1, "holding before");
+    let toy = r.world().world().store().world_transform(oid(TOY)).expect("the toy");
+    r.advance(Frame(20), &mut s);
+    assert_eq!(r.faults(), 0);
+    assert!(matches!(r.outcome(&remove.id()).map(|o| o.1), Some(Outcome::Applied { .. })));
+    let store = r.world().world().store();
+    assert!(!store.exists(oid(B_HAND)), "B's hand is gone");
+    assert!(store.exists(oid(HAND)), "A's stays");
+    assert_eq!(store.parent(oid(TOY)), None, "the toy is a root");
+    assert_eq!(store.world_transform(oid(TOY)).expect("the toy"), toy, "at the world pose it had");
+    assert!(r.world().claims().is_empty());
+    assert!(!r.physics().has_body(oid(B_HAND)) && r.physics().joint_count() == 0, "no hand body, no grab");
+}
+
 /// A leave that arrives late rolls the replica back to its stamp and reaches the roots of a replica that had it in
 /// order. Until then the hand and the grab stay.
 #[test]

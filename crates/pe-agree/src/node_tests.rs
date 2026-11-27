@@ -4178,3 +4178,6 @@ fn receive_cost_by_finality_lag() {
 
 /// Agreement at 3 to 8 members (M2 S1/S3).
 mod scale;
+
+/// `Remove` (S3 v1.13).
+mod remove;

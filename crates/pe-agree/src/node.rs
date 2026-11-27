@@ -215,7 +215,9 @@ impl NodeConfig {
         // v9: no new setting, but members send `Progress` (Wire::Progress, F3 S2), a wire change.
         // v10: no new setting, but the leader rule changes at n >= 6: the reputation window holds n - quorum(n)
         // leaders (agreement.md 3), and a voter refuses a proposal from any other leader.
-        let mut h = Hasher::new("pe.agree.consensus.v10");
+        // v11: membership by epochs (Remove, S3 v1.13): an admin's Remove takes a member out; its NotAuthorized,
+        // NoChange and LastMember voids.
+        let mut h = Hasher::new("pe.agree.consensus.v11");
         h.write_u64(frame_tolerance_s.to_bits());
         h.write_u64(*entries_per_frame as u64).write_u64(*extra_per_s as u64);
         h.write_u64(budget_slack.to_bits()).write_u64(burst_s.to_bits()).write_u64(pending_s.to_bits());
@@ -484,13 +486,19 @@ const LATENESS_MIN: usize = 32;
 /// pe-seams, so that S2's replica reads a `Leave` without depending on S3's implementation.
 pub use pe_seams::{ADMIT, Admit, GovState, GovVerdict, LEAVE, ROLE_ADMIN, is_leave};
 
+/// An entry's place in the final log's order: stamp, tie rank, author, chain, seq (the membership rules' sort key).
+/// A removed key's entries are compared with its `Remove`'s place by the whole key, so "after the `Remove`" is after
+/// it in the log (@chunks-reviewer's Low on b5343f29); for a `Leave` the author is the leaver, and it orders as
+/// (stamp, chain, seq) did.
+type Place = (Frame, u64, MemberKey, pe_seams::ChainId, u64);
+
 /// The membership changes made effective in an epoch so far (agreement.md 8), each key to its change's place in the
-/// final log's order (stamp, chain, seq).
+/// final log's order ([`Place`]).
 #[derive(Default)]
 struct Changes {
-    leaves: BTreeMap<MemberKey, (Frame, pe_seams::ChainId, u64)>,
+    leaves: BTreeMap<MemberKey, Place>,
     /// Each admitted key's place and the role its verdict names.
-    admits: BTreeMap<MemberKey, ((Frame, pe_seams::ChainId, u64), u32)>,
+    admits: BTreeMap<MemberKey, (Place, u32)>,
 }
 
 impl Changes {
@@ -1570,6 +1578,12 @@ impl Node {
                 }
                 self.voided(&e, reason, at);
             }
+            if changes.leaves.contains_key(&self.me) {
+                // This member departs at this cut: its own Leave, or another's Remove of it (@chunks-reviewer's
+                // Medium on b5343f29). From here `submit` refuses as after a Leave, and `leave_settled` waits for the
+                // remaining members' word that E is final, as a leaver's does. Its app sees `members()` without it.
+                self.left = true;
+            }
             self.final_heads = block.cut.clone();
             let own_final = self.my_head.map_or(0, |(key, _, _)| {
                 let i = self.final_heads.heads.binary_search_by(|h| h.chain.cmp(&key.chain)).ok();
@@ -1609,7 +1623,11 @@ impl Node {
     ///   @design-reviewer's L1), counting the admits made effective before it;
     /// - an `Admit` takes effect if its author is a member and the epoch's governance fold allows it
     ///   ([`GovState::step`]; else void as `NotAuthorized`), and its key is neither a member nor admitted earlier in the
-    ///   epoch (else void as `NoChange`).
+    ///   epoch (else void as `NoChange`);
+    /// - a `Remove` (S3 v1.13) takes effect if its author is a member and the fold allows it (else `NotAuthorized`), its
+    ///   key is a member that hasn't left or been removed earlier in the epoch (else `NoChange`), and it wouldn't leave
+    ///   the epoch with no members (else `LastMember`). The key then departs as a leaver does, from the `Remove`'s place:
+    ///   its later entries are void as `AfterLeave`, and the next epoch starts without it.
     ///
     /// Returns the effective entries and the voided ones with their reasons.
     fn membership_rules(
@@ -1617,7 +1635,9 @@ impl Node {
         mut es: Vec<SignedEntry>,
         changes: &mut Changes,
     ) -> (Vec<SignedEntry>, Vec<(SignedEntry, pe_seams::agree::VoidReason)>) {
-        if changes.leaves.is_empty() && !es.iter().any(|e| is_leave(e) || Admit::of(e).is_some()) {
+        if changes.leaves.is_empty()
+            && !es.iter().any(|e| is_leave(e) || Admit::of(e).is_some() || pe_seams::Remove::of(e).is_some())
+        {
             return (es, Vec::new());
         }
         let line = self.cfg.line;
@@ -1627,7 +1647,7 @@ impl Node {
         let (mut eff, mut after) = (Vec::new(), Vec::new());
         for e in es {
             let author = e.entry.author;
-            let place = (e.entry.stamp, e.entry.chain, e.entry.seq);
+            let place = (e.entry.stamp, tie_rank(line, e.entry.stamp, &author), author, e.entry.chain, e.entry.seq);
             if changes.leaves.get(&author).is_some_and(|l| place > *l) {
                 after.push((e, pe_seams::agree::VoidReason::AfterLeave));
                 continue;
@@ -1647,6 +1667,17 @@ impl Node {
                         continue;
                     }
                     changes.admits.insert(key, (place, role));
+                }
+                Some(GovVerdict::Remove { key }) if self.cfg.members.contains(&author) => {
+                    if !self.cfg.members.contains(&key) || changes.leaves.contains_key(&key) {
+                        after.push((e, pe_seams::agree::VoidReason::NoChange));
+                        continue;
+                    }
+                    if changes.leaves.len() + 1 >= self.cfg.members.len() + changes.admits.len() {
+                        after.push((e, pe_seams::agree::VoidReason::LastMember));
+                        continue;
+                    }
+                    changes.leaves.insert(key, place);
                 }
                 Some(_) => {
                     after.push((e, pe_seams::agree::VoidReason::NotAuthorized));

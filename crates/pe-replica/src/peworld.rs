@@ -156,9 +156,17 @@ impl PeWorld {
     /// children's bodies through the effects, and the hands' bodies and grab joints at the frame's hand sync, which
     /// builds both from the world's hands and claims. A `Leave` that S3 voids (`LastMember`, or one stepped before
     /// its void is known) is dropped like any voided entry, and the re-simulation brings the hands back.
+    ///
+    /// A `Remove` (S3 v1.13) is the same for the key it removes, at the `Remove`'s stamp: [`Self::leave_of`]. Who may
+    /// remove is S3's fold; a `Remove` S3 voids is dropped like any voided entry.
     fn leave(&mut self, entry: &SignedEntry) -> (Outcome, Effects) {
+        self.leave_of(entry.entry.author, entry)
+    }
+
+    /// `member` leaves at `entry` (its own `Leave`, or a `Remove` of it).
+    fn leave_of(&mut self, member: MemberKey, entry: &SignedEntry) -> (Outcome, Effects) {
         let before = self.world.clone();
-        match self.world.leave(entry.entry.author, entry.id()) {
+        match self.world.leave(member, entry.id()) {
             Ok(report) => {
                 // The leaver's player body goes after its hands (world-model.md 8.2): the replica's player for it goes
                 // at the next frame's player sync, as a hand's body does at the hand sync.
@@ -191,6 +199,10 @@ impl PeWorld {
                 (outcome, effects)
             }
             Class::Protocol if pe_seams::is_leave(entry) => self.leave(entry),
+            Class::Protocol if pe_seams::Remove::of(entry).is_some() => match pe_seams::Remove::of(entry).flatten() {
+                Some(r) => self.leave_of(r.key, entry),
+                None => (Outcome::Refused { op: None, reason: Reason::Malformed }, Effects::default()),
+            },
             Class::Protocol => match pe_seams::Admit::of(entry) {
                 Some(admit) => self.admit(frame, entry, admit),
                 None => (applied(), Effects::default()),
@@ -230,7 +242,8 @@ impl PeWorld {
         }
         if let Some(p) = self.predict.now {
             // Only from c on: a rollback past an earlier entry, a third member's `Leave` say, applies it again.
-            if frame >= p.c && (pe_seams::is_leave(entry) || decides(entry, &p, self.predict.local)) {
+            let departs = pe_seams::is_leave(entry) || pe_seams::Remove::of(entry).is_some();
+            if frame >= p.c && (departs || decides(entry, &p, self.predict.local)) {
                 self.end_prediction();
             }
             return;

@@ -218,6 +218,8 @@ the live history and once for a re-step off it); it never steps such a world as 
        conflict rules;
      - inputs through `World::apply_input`: the `Hand` rows, grabs and claims, pushes, own hands only;
      - a `Leave` (a Protocol entry, `pe_seams::LEAVE`) through `World::leave` at its stamp;
+     - a `Remove` (`pe_seams::Remove`, S3 v1.13) through `World::leave` for the key it removes, at its stamp; a
+       malformed one is refused `Malformed`; who may remove is S3's, which voids the rest;
      - other Governance and Protocol entries are `Applied` with no effects, as pe-world applies none yet.
    - **Each entry has one outcome,** pe-world's: applied, or refused with a reason. A refused entry changes nothing,
      the same way on every replica.
