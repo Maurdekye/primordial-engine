@@ -13,9 +13,11 @@
 //!   hands, and the view's rig and heads drawn from them.
 //! - [`mock`]: a small world model for tests and the harness.
 //! - [`peworld`]: pe-world's `World` as the replica's [`WorldModel`], [`PeWorld`].
+//! - [`costs`]: what this machine's replays cost, for a driver that attaches a probe (never agreed state).
 
 mod blobs;
 pub mod bodies;
+pub mod costs;
 pub mod drive;
 pub mod hands;
 pub mod logic;
@@ -26,6 +28,7 @@ pub mod replica;
 pub mod ring;
 pub mod world;
 
+pub use costs::{CostProbe, ReplayCostSummary, ReplayCosts};
 pub use drive::{DriveReport, Driver};
 pub use logic::{ScriptRunner, event_kind};
 pub use peworld::PeWorld;

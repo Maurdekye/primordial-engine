@@ -178,7 +178,8 @@ pub fn is_physical(hand: &HandRow, holding: bool) -> bool {
 /// Bring the hand bodies in line with the world model's hands, before a frame's step: a body for every physical
 /// hand, driven towards its target, and no other body that the world model does not list as physical. `hands` is
 /// the world model's [`WorldModel::hands`], in id order. Returns the number of refused physics calls (faults, 3.1),
-/// and each grab's reach for the step ([`reaches`]), for [`PhysicsWorld::step_holding`].
+/// and each grab's reach for the step ([`reaches`]), for [`PhysicsWorld::step_holding`]. With `grab_ns`, adds the
+/// time the grab joints' pass over every physical object took (the replay costs, crate::costs).
 pub fn sync<W: WorldModel + ?Sized>(
     world: &W,
     physics: &mut PhysicsWorld,
@@ -186,6 +187,7 @@ pub fn sync<W: WorldModel + ?Sized>(
     origin: Pos,
     rate: SimRate,
     frame: Frame,
+    grab_ns: Option<&mut u64>,
 ) -> (u64, Vec<(JointKey, HoldReach)>) {
     let claims = world.claims();
     let holding: Vec<ObjectId> = {
@@ -219,7 +221,11 @@ pub fn sync<W: WorldModel + ?Sized>(
             claims.iter().filter(|c| c.hand == hand.hand && physics.has_body(c.object)).map(|c| c.object).collect();
         faults += u64::from(drive(physics, hand, &held, origin, rate, frame, g).is_err());
     }
+    let t = grab_ns.is_some().then(std::time::Instant::now);
     faults += grabs(physics, &claims, &bodies, hands);
+    if let (Some(ns), Some(t)) = (grab_ns, t) {
+        *ns += crate::costs::since(t);
+    }
     (faults, reaches(physics, &claims, 1.0 / rate.hz() as f32, gravity))
 }
 

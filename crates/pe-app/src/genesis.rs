@@ -448,6 +448,7 @@ impl Genesis {
         let replica = ReplicaImpl::new(FaultWorld::armed(PeWorld::new(world, DomainId(0))), config)
             .map_err(|e| GenesisError::World(format!("{e:?}")))?
             .with_runner(runner);
+        let replica = crate::world::probed(replica);
         Ok(Box::new(replica))
     }
 
@@ -659,6 +660,7 @@ impl Genesis {
         let replica = ReplicaImpl::new(FaultWorld::armed(PeWorld::new(world, DomainId(0))), config)
             .map_err(|e| GenesisError::World(format!("{e:?}")))?
             .with_runner(runner);
+        let replica = crate::world::probed(replica);
         let root = replica.live_root(Frame(0)).ok_or_else(|| GenesisError::World("no root at frame 0".into()))?;
         Ok((Box::new(replica), node, root))
     }
