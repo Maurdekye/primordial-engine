@@ -394,6 +394,9 @@ pub struct HandStats {
     pub grabs: u64,
     pub releases: u64,
     pub throws: u64,
+    /// Objects this hand handed over at its open to the other, still-closed hand (two-hand holds), by a `Grab` that
+    /// hand made instead of a release; those grabs are counted in the other hand's `grabs`.
+    pub handovers: u64,
     /// The grabs applied, and those that weren't, by reason: a refusal's `Reason` (`Held`, `OutOfReach`, `Cooldown`,
     /// ...), or `Dropped` or `Unknown` for a voided entry or an unknown verdict. A grab no view has stepped yet is in
     /// neither.
@@ -1921,6 +1924,7 @@ impl Sim {
                     h.opens += u64::from(sent.opens[i]);
                     h.releases += u64::from(sent.releases[i]);
                     h.throws += u64::from(sent.throws[i]);
+                    h.handovers += u64::from(sent.handovers[i]);
                 }
                 // Each throw, with the velocity it carries and the fastest the object moved with the hand over the
                 // 50 ms up to the opening (the weak-throw fix): a window can be tuned from these with no format change.
@@ -3548,6 +3552,50 @@ pub(crate) mod tests {
     /// it and lets it go from a still hand, and `throw` sends it off fast; each closes once, grabs once and opens once.
     /// Scripted hands carry their velocity, as VR's do, so each open goes out as a `Throw` (world-model.md 8.1): the
     /// ball leaves at the hand's speed, about 0 from `grab`'s still hand.
+    /// A two-hand hold (@coordinator-opus; the user's): the right hand takes the ball the
+    /// left closed on, and when the right lets go while the left is still closed, the ball stays held, now by the left,
+    /// by a `Grab` from it instead of a release; it is let go only when the left opens too.
+    #[test]
+    fn a_ball_held_in_both_hands_stays_in_the_one_still_closed() {
+        struct NoDesktop;
+        impl pe_seams::HandFeed for NoDesktop {
+            fn hand_at(&self, _: pe_seams::Hand, _: HostTime) -> Option<pe_seams::HandInput> {
+                None
+            }
+        }
+        let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+        let (s, slot) = in_the_ball_pit(clock.clone(), Budget::new(RATE));
+        let hands = Arc::new(crate::scripted::ScriptedHands::new(slot.clone(), Arc::new(NoDesktop)));
+        let me = crate::world::DEV_MEMBER;
+        let mut s = s.with_local(me, [7; 32], hands.clone());
+        let mut f = 0;
+        run_frames(&mut s, &clock, &mut f, 120);
+        let ball = top_ball(&slot.newest().expect("published"));
+        hands.start(crate::scripted::load("twohand").expect("a routine"));
+        let hz = u64::from(RATE.hz());
+        // (seconds into the routine, the hand holding the ball)
+        let mut holders: Vec<(f64, Option<ObjectId>)> = Vec::new();
+        for k in 0..(7 * hz) {
+            run_frames(&mut s, &clock, &mut f, 1);
+            let v = slot.newest().expect("published");
+            let b = v.objects.iter().find(|o| o.id == ball).expect("the ball");
+            holders.push(((k + 1) as f64 / hz as f64, b.held_by.as_ref().map(|h| h.hand)));
+        }
+        let hand_of = |side: pe_seams::Hand| {
+            let v = slot.newest().expect("published");
+            v.objects.iter().find(|o| o.hand_of == Some((me, side))).map(|o| o.id).expect("the hand")
+        };
+        let (left, right) = (Some(hand_of(pe_seams::Hand::Left)), Some(hand_of(pe_seams::Hand::Right)));
+        let at = |t: f64| holders.iter().find(|(s, _)| *s >= t).map(|(_, h)| *h).expect("a view then");
+        assert_eq!(at(2.0), right, "the right's later grab took the hold: {holders:?}");
+        assert_eq!(at(4.0), left, "after the right let go, the left holds it: {holders:?}");
+        assert_eq!(at(6.0), None, "let go when both are open");
+        let [l, r] = &s.stats().hands;
+        assert_eq!((r.handovers, r.releases, r.throws), (1, 0, 0), "the right handed it over: {r:?}");
+        assert_eq!((l.grabs, l.grabs_applied, l.handovers, l.releases), (2, 2, 0, 1), "the left: {l:?}");
+        assert!(l.grabs_refused.is_empty() && r.grabs_refused.is_empty(), "{l:?} {r:?}");
+    }
+
     #[test]
     fn the_scripted_routines_grab_lift_and_throw_a_ball() {
         struct NoDesktop;

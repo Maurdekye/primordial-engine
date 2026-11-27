@@ -67,6 +67,14 @@ pub const ROUTINES: &[(&str, &str)] = &[
         "right reach top 1.0\nright wait 0.2\nright close\nright wait 0.3\nright lift 0.4 0.6\nright swing 0 2 -4 0.25\n\
          right open\nright swing 0 2 -4 0.1\nright rest 1.0\n",
     ),
+    // Two hands on the top ball: the left closes on it, the right 0.1 s later (taking the hold), both lift it 0.3 m,
+    // the right lets go and the left holds it 1 s more (the hand-over, local.rs `submit_hands`), then lets it fall.
+    (
+        "twohand",
+        "left reach top 1.0\nleft wait 0.2\nleft close\nleft wait 0.4\nleft lift 0.3 1.0\nleft wait 2.0\nleft open\n\
+         left wait 0.5\nleft rest 1.0\nright reach top 1.0\nright wait 0.3\nright close\nright wait 0.3\n\
+         right lift 0.3 1.0\nright wait 1.0\nright open\nright wait 1.5\nright rest 1.0\n",
+    ),
     // Both members at one ball: the lowest-id ball, closed on, lifted 0.3 m and held 4 s. Run it on each member at once:
     // a hold is one member's, so it is a contention test (K4's R0'): one member takes the ball, the other nothing or a
     // neighbour.

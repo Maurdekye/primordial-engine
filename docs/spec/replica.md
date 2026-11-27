@@ -324,12 +324,18 @@ The rules are world-model.md 8.1's (the speed cap, the teleport distance and the
   A body that appears is placed at its target, not swept there, and overlapping bodies are pushed out gently by
   Box3D's soft contacts.
 - **Within an input's span** the body is driven to its target in one frame by `set_target`, so it pushes what it meets
-  at the speed it moves. The move is measured for the hand and for everything it holds, and the farthest point
-  decides (world-model.md 8.1, option (b); @coordinator-opus):
+  at the speed it moves. **A hand that holds something has no speed cap** (the user's ruling of 2026-11-26: "remove any maximum throw speed (for v1); the grip strength should be what governs maximum throw
+  speed"): its body reaches its target every frame, so what it holds follows a swing at any speed. **An empty hand**
+  keeps the cap: its move is measured for the hand, and (world-model.md 8.1, option (b); @coordinator-opus):
   - **faster than the cap,** `MAX_HAND_PUSH_SPEED` (10 m/s, 8.1's `max_push_speed` at its default), the body moves
-    only that far this frame. It trails its target and catches up when the hand slows, and a throw leaves at up to
-    the cap;
-  - **beyond the teleport distance** (0.5 m, or two frames at the cap below 40 Hz), the body is placed at its target
+    only that far this frame. It trails its target and catches up when the hand slows;
+  - **a teleport** is told apart from a fast move by `teleport_distance` (0.5 m, or two frames at the cap below
+    40 Hz). For an empty hand the test is the frame's move. For a holding hand, which has no cap, it is the jump away
+    from the hand's own motion (`hands::jump_from_motion`): how far the move lands, at the hand and at each held
+    object, from where the hand's velocity (the physics', which a kinematic body keeps) would have taken it. A steady
+    swing lands where its motion leads at any speed (@astra-deliberator, @fable-reviewer: a 40 m/s swing is never
+    placed); a tracking glitch, a teleport or a body made at rest under a fast hand is far from it. Past it, the body
+    is placed at its target
     with no velocity, and each object its claims hold goes with it, keeping its rotation relative to the hand: a
     light hold (`hands::follows_tightly`, its force cap the object's mass's) to its place in the hand, a heavy one at
     its offset, so a placement lifts nothing the strength can't (`hands::placed`; world-model.md 8.1). A
@@ -347,24 +353,29 @@ The rules are world-model.md 8.1's (the speed cap, the teleport distance and the
   hand when the joint was made: a spring pulls it to that place (`grab_spring`: `HOLD_HZ`, 60 Hz, critically damped),
   and an angular drive (`GRAB_TORQUE`, 100 N m) keeps its rotation relative to the hand. A joint whose claim has gone
   is removed. A holder's `Throw` (world-model.md 8.1) is applied as its entry applies, while the hold's joint is
-  still there to say where the object's place is: if the object is within `BREAK_AWAY` of it (`hands::hold_gap`, the
-  physics alone, so every replica decides alike; the view's hysteresis is the publishing machine's), its velocity
-  becomes the throw's, the linear part scaled down to `MAX_HAND_PUSH_SPEED` and the spin to that speed at its
-  bounding radius about its centre of mass (`PhysicsWorld::local_center`). Otherwise it keeps its solver velocity. `hands::sync`
+  still there: if a hand's grab joint holds the object, its velocity becomes the throw's, as far as the hold's force
+  could have changed it in a frame (the change from its solver velocity at most `F dt / m`, `F` the holder's
+  strength), with no speed cap and no other gate (the user's rulings of 2026-11-26, "keep it straightforward and predictable"). A light object a hand carries leaves at the hand's
+  velocity; a heavy one that lags keeps most of what its hold gave it. The spin is the throw's, under Box3D's own
+  limit of an eighth of a turn a frame. With no joint the object keeps its solver velocity. `hands::sync`
   removes the joint before the frame's physics step either way. One whose claim a renewing grab moved to another of
   its author's hands is made again from that hand. An
   agent's grab has no hand, so it gets no joint. The joints are in the physics image, so a rollback restores them.
-- **A hold is tight, and its force is capped** (world-model.md 8.1, the tight hold; @coordinator-opus):
-  the spring's force is at most `min(strength, m (A + g))`, with the strength the holding hand's `HandRow::strength`
-  (pe-world's `Hand.strength`, 110 N by default), `m` the held object's mass when the joint is made and A
-  `HOLD_ACCELERATION` (200 m/s^2, provisional). So a light object follows the hand within millimetres, a heavy one lags
-  once the hand asks more than the strength, and a blocked light one is never pushed through what blocks it. The
-  strength is clamped to 0 to 10,000 N (`MAX_STRENGTH`) before the physics sees it.
-- **A hold's spring is bounded** (world-model.md 8.1): for each step it sees at most the error that the room under the
-  cap leaves, `(max_push_speed - v_hold) / k`, and at most the error whose speed, `k` times it, the hold can brake
-  from, `sqrt(2 a e)`, with `e` the object's distance from its place and `a` the deceleration its force cap gives it
-  along the way it comes, gravity's part included. So a held object kept from its place comes back no faster than
-  the cap, and one whose weight nears the strength settles at its place instead of overshooting. The part of the
+- **A hold is tight, and its force is the grip's** (world-model.md 8.1, the tight hold; the user's ruling of
+  2026-11-26, option (c)): the spring's force is at most the holding hand's strength,
+  `HandRow::strength` (pe-world's `Hand.strength`, 110 N by default), and nothing else; until then it was also at most
+  `m (A + g)`, A `HOLD_ACCELERATION` (200 m/s^2). So a light object follows the fastest swing or twist within
+  millimetres (an 18 g ball on a 0.6 m arc at 25 m/s: 2.7 mm), and a heavy one lags once the hand asks more than the
+  strength. **A hold presses what it holds into what blocks it with the whole grip,** so a light object pushed against
+  the floor or a wall can sink into it or go through (an 18 g ball: 43 mm into the floor, through a 2 cm wall at
+  1 m/s), accepted for the 11-27 kit (a stop at fixed surfaces is kept on the side branch
+  physics/hold-wall-stop, backlogged). The strength is clamped to 0 to 10,000 N (`MAX_STRENGTH`) before the physics
+  sees it.
+- **A hold's spring is bounded** (world-model.md 8.1): for each step it sees at most the error whose speed, `k` times
+  it, the hold can brake from, `sqrt(2 a e)`, with `e` the object's distance from its place and `a` the deceleration
+  its force cap gives it along the way it comes, gravity's part included. So one whose weight nears the strength
+  settles at its place instead of overshooting. (The bound by the room under the cap, `(max_push_speed - v_hold) / k`,
+  went with the holding hand's cap.) The part of the
   error that holds the object up keeps up to `support(g)`, `(A + g) / omega^2`. The bound moves the joint's anchor on
   the hand for the step only (`step_holding`), so it is never in an image.
 - **A lost race:** the loser's predicted hold disappears in its next corrected frame. The view's `held_by` names the
