@@ -92,6 +92,7 @@ use pe_seams::{
 };
 
 use crate::bodies;
+use crate::costs::{self, CostProbe, PhysicsReads, StepCost};
 use crate::hands;
 use crate::logic::{ScriptCounts, ScriptEvent, ScriptRunner, event_kind};
 use crate::players;
@@ -345,6 +346,8 @@ pub struct ReplicaImpl<W: WorldModel> {
     repairing_since: Option<Frame>,
     /// The script runner it was given (crate::logic). Without one it refuses to step a world with scripts.
     runner: Option<Box<dyn ScriptRunner>>,
+    /// The replay costs it measures for its driver, if given a probe (crate::costs); without one no step is timed.
+    costs: Option<Box<costs::Probe>>,
     /// The frame the live history stopped at for want of a runner, so that each stop counts one fault; cleared once a
     /// live step passes it (@engine-architect's Low 2 on 4ac9019f).
     refused_at: Option<Frame>,
@@ -541,6 +544,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
             unknown_to: Frame(0),
             repairing_since: None,
             runner: None,
+            costs: None,
             refused_at: None,
             scratch_refused_at: None,
             fx: BTreeMap::new(),
@@ -587,6 +591,13 @@ impl<W: WorldModel> ReplicaImpl<W> {
     /// The replica with its script runner (crate::logic): without one it refuses to step a world with scripts.
     pub fn with_runner(mut self, runner: Box<dyn ScriptRunner>) -> Self {
         self.runner = Some(runner);
+        self
+    }
+
+    /// Measure what its replays cost into `probe` (crate::costs): this machine's own counters and timers, never in
+    /// any agreed state. Without a probe no step is timed.
+    pub fn with_cost_probe(mut self, probe: CostProbe) -> Self {
+        self.costs = Some(Box::new(costs::Probe::new(probe)));
         self
     }
 
@@ -729,6 +740,10 @@ impl<W: WorldModel> ReplicaImpl<W> {
         let at = if live { &mut self.refused_at } else { &mut self.scratch_refused_at };
         *at = at.filter(|&r| r > f);
         let resimulated = f < self.reached;
+        // The replay costs (crate::costs), only with a probe: what the physics reads in this step, and its timers.
+        let probe = self.costs.is_some();
+        let mut reads = probe.then(PhysicsReads::new);
+        let (mut root_ns, mut scan_ns) = (0u64, 0u64);
         if !pe_core::fpenv::check_and_reset() {
             self.counters.fp_resets += 1;
         }
@@ -751,6 +766,9 @@ impl<W: WorldModel> ReplicaImpl<W> {
                 self.scratch_records.insert(id, (record, Seen::of(e)));
             }
             ids.push(id);
+            if let Some(r) = reads.as_mut().filter(|_| !fx.is_empty()) {
+                r.add(0, &fx);
+            }
             if !fx.is_empty() {
                 let done = bodies::reconcile(&self.world, &mut self.physics, self.origin, &fx.changed);
                 self.reconciled(f, live, done);
@@ -768,15 +786,28 @@ impl<W: WorldModel> ReplicaImpl<W> {
         self.logic(f, Stage::LogicPrePhysics, live, &mut events);
         // The player bodies (world-model.md 8.2): each walked by the mover before the hands are driven, so a hand's
         // target is where its moved body puts it.
+        if let Some(r) = reads.as_mut() {
+            for row in self.world.players() {
+                r.add(1, &(row.body, row.feet, players::input(&row, &pe_physics::PLAYER)));
+            }
+        }
         self.faults += self.move_players();
         // The hand bodies for this frame, rebuilt from the world model's hands and the physics state (3.3).
         let hands = self.world.hands();
-        let (faults, reaches) = hands::sync(&self.world, &mut self.physics, &hands, self.origin, self.rate, f);
+        if let Some(r) = reads.as_mut() {
+            self.physics_reads(r, &hands);
+        }
+        let grab_ns = probe.then_some(&mut scan_ns);
+        let (faults, reaches) = hands::sync(&self.world, &mut self.physics, &hands, self.origin, self.rate, f, grab_ns);
         self.faults += faults;
+        let t = probe.then(std::time::Instant::now);
         let awake_before = self.awake(&hands);
+        scan_ns += t.map_or(0, costs::since);
         self.faults += u64::from(self.physics.step_holding(self.dt, &reaches).is_err());
         let hits = self.step_hits(f, resimulated, &hands);
+        let t = probe.then(std::time::Instant::now);
         self.write_back(awake_before, &hands);
+        scan_ns += t.map_or(0, costs::since);
         self.logic(f, Stage::LogicPostPhysics, live, &mut events);
         self.faults += u64::from(self.world.maintain_transforms());
         self.note_checks(f, mine, live);
@@ -787,7 +818,12 @@ impl<W: WorldModel> ReplicaImpl<W> {
         let acts = self.world.end_frame(f);
         let next = Frame(f.0 + 1);
         self.frame = next;
-        let root = self.is_cut_frame(next).then(|| self.take_root());
+        let root = self.is_cut_frame(next).then(|| {
+            let t = probe.then(std::time::Instant::now);
+            let root = self.take_root();
+            root_ns = t.map_or(0, costs::since);
+            root
+        });
         if !live {
             self.scratch_events.insert(f, events);
             self.scratch_acts.insert(f, acts);
@@ -808,7 +844,25 @@ impl<W: WorldModel> ReplicaImpl<W> {
             }
             self.reached = self.reached.max(next);
         }
+        if let Some(p) = self.costs.as_deref_mut() {
+            let digest = reads.map(|r| r.finish()).filter(|_| !self.world.scripted());
+            p.step(f, live, resimulated, root.is_some().then_some(next), StepCost { root_ns, scan_ns, digest });
+        }
         root
+    }
+
+    /// What this step's hand sync reads, for the replay costs' digest (crate::costs): whether each hand's body is
+    /// physical, and a physical one's row; and the claims. An open hand with no body is only its id and `false`.
+    fn physics_reads(&self, r: &mut PhysicsReads, hands: &[HandRow]) {
+        let claims = self.world.claims();
+        for h in hands {
+            let physical = hands::is_physical(h, claims.iter().any(|c| c.hand == h.hand));
+            r.add(2, &(h.hand, physical));
+            if physical {
+                r.add(3, h);
+            }
+        }
+        r.add(4, &claims);
     }
 
     /// One logic stage (crate::logic): the runner over the world's scripts, then the physics effects of what they
@@ -1513,7 +1567,14 @@ impl<W: WorldModel> ReplicaImpl<W> {
         // cut off the grid) take it here; at a grid keyframe the rows are already written, so nothing changes.
         let root = match root {
             Some(root) => root,
-            None => self.take_root(),
+            None => {
+                let t = self.costs.is_some().then(std::time::Instant::now);
+                let root = self.take_root();
+                if let (Some(p), Some(t)) = (self.costs.as_deref_mut(), t) {
+                    p.scratch_root(costs::since(t));
+                }
+                root
+            }
         };
         // The transfer that take_root serialized for the check hash (5.4); serialized again with `reuse_live` off.
         let taken = self.taken.take().filter(|t| self.config.reuse_live && t.frame == at && t.root == root);
@@ -1989,6 +2050,9 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
             }
             let to = f.max(self.rollback_floor());
             if let Some(k) = (to < self.frame).then(|| self.roll_back(to)).flatten() {
+                if let Some(p) = self.costs.as_deref_mut() {
+                    p.rewind(to, k);
+                }
                 out.rolled_back_to = Some(k);
                 out.changed_from = Some(f);
                 self.counters.deepest_rollback = self.counters.deepest_rollback.max(self.reached.0 - k.0);
@@ -2004,6 +2068,9 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
             let to = c.max(self.rollback_floor());
             let forced = preview.is_some_and(|p| self.unpreview_base(p));
             if let Some(k) = (to < self.frame || forced).then(|| self.roll_back(to)).flatten() {
+                if let Some(p) = self.costs.as_deref_mut() {
+                    p.rewind(to, k);
+                }
                 out.rolled_back_to = Some(out.rolled_back_to.map_or(k, |r| r.min(k)));
                 out.replay_from = Some(c);
                 self.counters.deepest_rollback = self.counters.deepest_rollback.max(self.reached.0 - k.0);
@@ -2012,6 +2079,13 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         }
         // The ring's policy holds without a finalize too, so memory stays logarithmic in the unconfirmed span.
         self.ring.trim(self.config.policy, self.frame, self.floor_frame());
+        let (back, floor) = (self.frame >= self.reached, self.rollback_floor());
+        if let Some(p) = self.costs.as_deref_mut() {
+            if back {
+                p.caught_up();
+            }
+            p.trim(floor);
+        }
         self.counters.frames_resimulated += out.resimulated;
         self.counters.corrections += u32::from(out.resimulated > 0);
         out.caught_up = self.frame >= present && self.replay.is_none();

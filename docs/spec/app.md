@@ -211,6 +211,21 @@ call's need alone left the release tick short of the present (`late_entries_on_e
 (@design-reviewer's L2 on daf1e85f): a throw's spin term takes the object's offset from the previous view, which with
 poses held can be up to two ticks staler than without; a throw whose spin looks wrong in a test points here.
 
+**Replay costs** (the re-solve cost recommendation's E1, for the 11-27 friend test; @coordinator-opus).
+pe-app arms a probe (`pe_replica::costs`) before it opens a replica, unless `PE_REPLAY_COSTS=0`, and the end line's
+`replay_costs` shows what its replays cost. A replay is one rewind for a changed frame, with the re-steps until the
+replica is back where it was. Each figure has a total and a per-replay p50/p95:
+(1) the time taking the root in replayed grid frames, and the time of roots that were later taken again at the same
+frame;
+(2) the bookkeeping that visits every body: the awake set before and after the physics step, the write-back, and the
+grab joints' keys;
+(3) the frames re-stepped below the changed frame, from the restored keyframe;
+(4) the replays in which the physics read nothing new. That is a digest of what each step's physics reads (hand
+bodies, claims, mover inputs, entry effects) that matched the replaced history's at every re-stepped frame, for
+example an open hand with no body or a head's turn.
+These are this machine's own clock readings and counts, never in a root, a vote or a view. Without a probe the replica
+times nothing.
+
 **Bounded work per tick.** A deep rollback, or a repair's replay of up to `W_fg` (2 s, 120-240 frames), done in one tick
 would stall the simulation for hundreds of milliseconds, and with it agreement's votes and messages for every other
 member. So the replica re-simulates at most a budget of frames per call, expressed as simulated time (a local setting,

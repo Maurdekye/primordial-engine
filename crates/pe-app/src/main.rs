@@ -586,6 +586,13 @@ fn main() {
             Err(e) => fail(&e),
         }
     }
+    // The replay costs (pe_replica::costs; the 11-27 test's profiling), armed before any replica is made, as the fault
+    // is: on unless `PE_REPLAY_COSTS=0`. The end line's `replay_costs` shows them. They change no state.
+    if std::env::var("PE_REPLAY_COSTS").is_ok_and(|v| v.trim() == "0") {
+        pe_app::out!("replay costs: off (PE_REPLAY_COSTS=0)");
+    } else {
+        pe_app::world::arm_cost_probe();
+    }
     // A deliberate slowdown on this machine only (K4's R3'), armed before any replica is made, as the fault is. It changes
     // no state, so `--check-replay` may run with it (the replay waits too).
     if let Some(ms) = options.slow_frame {

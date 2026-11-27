@@ -341,6 +341,9 @@ pub struct SimStats {
     /// The coalesced pose rollbacks ([`crate::coalesce`]): changes held, let go together, rolled back at once, and
     /// raised to a final cut.
     pub coalesce: crate::coalesce::CoalesceStats,
+    /// What the replica's replays cost (pe_replica::costs), at the run's end, if the probe was armed
+    /// ([`crate::world::arm_cost_probe`], or [`Sim::with_cost_probe`]).
+    pub replay_costs: Option<pe_replica::ReplayCostSummary>,
     /// The local player's grasps, left hand then right (app.md 3.1 step 2).
     pub hands: [HandStats; 2],
     /// Rollbacks whose cause step 5 noted ([`Sim::note_rollback`]): one line each in the cut log (1.11).
@@ -518,6 +521,8 @@ pub struct Sim {
     driver: Driver,
     /// The coalesced pose rollbacks ([`crate::coalesce`]).
     coalesce: crate::coalesce::Coalesce,
+    /// The replay-cost probe its replica measures into, if any (`SimStats::replay_costs`).
+    cost_probe: Option<pe_replica::CostProbe>,
     budget: Budget,
     /// The verdict this tick's votes carry: `NotRun` until pe-diverge asks for a self-test.
     self_test: SelfTest,
@@ -897,6 +902,7 @@ impl Sim {
             slot,
             driver: Driver::new(),
             coalesce: crate::coalesce::Coalesce::default(),
+            cost_probe: crate::world::cost_probe(),
             budget: {
                 let mut budget = budget;
                 budget.set_need_window(crate::coalesce::Coalesce::default().window());
@@ -1183,6 +1189,19 @@ impl Sim {
         self.coalesce = crate::coalesce::Coalesce::new(ticks);
         self.budget.set_need_window(ticks);
         self
+    }
+
+    /// Read the replay costs from `probe`: the one the replica was given (`ReplicaImpl::with_cost_probe`). A process
+    /// that armed its own ([`crate::world::arm_cost_probe`]) needs none.
+    pub fn with_cost_probe(mut self, probe: pe_replica::CostProbe) -> Sim {
+        self.cost_probe = Some(probe);
+        self
+    }
+
+    /// The replay costs so far, if the probe is armed.
+    pub fn replay_costs(&self) -> Option<pe_replica::ReplayCostSummary> {
+        let p = self.cost_probe.as_ref()?;
+        Some(p.lock().unwrap_or_else(std::sync::PoisonError::into_inner).summary())
     }
 
     /// Keep S3's events in `log` as well as counting them (a test's, or a diagnostic's: it grows without a bound).
@@ -2536,6 +2555,7 @@ fn run(mut sim: Sim, host: &HostClock, stop: &AtomicBool, shared: &Shared) -> Si
     if let Some(c) = sim.diverge_counters() {
         sim.stats.diverge = c.clone();
     }
+    sim.stats.replay_costs = sim.replay_costs();
     sim.stats
 }
 
@@ -4258,6 +4278,10 @@ pub(crate) mod tests {
     /// a prediction is redone, never a cut's root (votes and finalize re-step the cut's exact entries from a keyframe
     /// where the live history differs). Printed per run: rollbacks, frames re-simulated, the coalescer's counts and the
     /// replica's advance time.
+    ///
+    /// The window-on run also measures its replay costs (pe_replica::costs): its roots equal to the unmeasured run's say
+    /// the probe changes no state. An open hand has no body, so a replay for one finds nothing new for the physics; one
+    /// for member 0's hand while it holds the ball does.
     #[test]
     fn coalesced_pose_rollbacks_re_simulate_less_and_change_no_root() {
         use pe_agree::{Node, NodeConfig};
@@ -4284,8 +4308,13 @@ pub(crate) mod tests {
                 let config = NodeConfig::new(line, members.clone(), genesis);
                 let node = Node::new(config, Box::new(keys.signer(i)), Box::new(keys.clone()), HostTime(0));
                 let world = pe_world::preset::ball_pit_with(5, pe_world::BlobStore::default(), Pos::ORIGIN, 8);
-                let replica =
-                    crate::world::ball_pit(world, &members, me, RATE, clock.clone(), runner()).expect("a replica");
+                let replica = crate::world::ball_pit_replica(world, &members, me, RATE, clock.clone(), runner())
+                    .expect("a replica");
+                let probe = (window > 1).then(pe_replica::costs::probe);
+                let replica: Box<dyn Replica> = match &probe {
+                    Some(p) => Box::new(replica.with_cost_probe(p.clone())),
+                    None => Box::new(replica),
+                };
                 let slot = Arc::new(FrameSlot::new());
                 let puppet = Puppet::default();
                 puppet.set([0.0, 3.0, 0.4 * i as f32], false);
@@ -4298,6 +4327,10 @@ pub(crate) mod tests {
                     .with_shown(lead.clone())
                     .with_event_log(events.clone())
                     .with_coalesce_window(window);
+                let sim = match probe {
+                    Some(p) => sim.with_cost_probe(p),
+                    None => sim,
+                };
                 sims.push((sim, slot, puppet, lead, events));
             }
             let mut f = 0u64;
@@ -4334,7 +4367,8 @@ pub(crate) mod tests {
             });
             step(&mut sims, 1, &|k, f| Some(if k == 0 { (at, false) } else { (sway([0.0, 3.0, 0.4], f, 1), false) }));
             step(&mut sims, 360, &|k, f| Some((sway([0.0, 3.0, 0.4 * k as f32], f, k), false)));
-            let stats: Vec<SimStats> = sims.iter().map(|(s, ..)| s.stats().clone()).collect();
+            let stats: Vec<SimStats> =
+                sims.iter().map(|(s, ..)| SimStats { replay_costs: s.replay_costs(), ..s.stats().clone() }).collect();
             let mut roots = BTreeMap::new();
             for (i, (.., events)) in sims.iter().enumerate() {
                 for e in events.lock().expect("the events").iter() {
@@ -4349,6 +4383,28 @@ pub(crate) mod tests {
                 assert_eq!(st.diverge.diverged, 0, "window {window}, member {i}");
                 assert!(st.hands[1].throws + st.hands[1].releases >= u64::from(i == 0), "member {i}: {:?}", st.hands);
             }
+            for (i, st) in stats.iter().enumerate() {
+                let Some(c) = st.replay_costs else {
+                    assert_eq!(window, 1, "member {i}: a probe gives costs");
+                    continue;
+                };
+                assert!(c.replays > 0 && c.replays <= st.phases.rollbacks, "member {i}: {c:?}; {:?}", st.phases);
+                assert_eq!(c.frames_replayed, st.phases.resimulated, "member {i}: every re-step is a replay's: {c:?}");
+                assert!(c.frames_before_change < c.frames_replayed && c.roots_replayed > 0, "member {i}: {c:?}");
+                assert!(c.root_live_us > 0 && c.scan_live_us >= c.scan_replayed_us, "member {i}: {c:?}");
+                assert!(c.replays_compared > 0 && c.replays_compared <= c.replays, "member {i}: {c:?}");
+            }
+            // Member 1's hand never closes, and an open hand has no body, its sweep included: member 0's replays find
+            // nothing new for the physics. Member 0's hand holds the ball for two seconds: some of member 1's replays
+            // find its held hand's poses, and the rest its open hand's.
+            if let (Some(c0), Some(c1)) = (stats[0].replay_costs, stats[1].replay_costs) {
+                assert!(c0.replays_unread > 0, "member 1's open hand has no body: {c0:?}");
+                assert!(c1.replays_unread > 0, "member 0's hand is open for most of the run: {c1:?}");
+                // Its grasp edges alone are two reads (the digest without hand rows: 198 of 200 unread); the held hand's
+                // moves are most of 41 [V, 2026-11-27 01:20Z].
+                let read = c1.replays_compared - c1.replays_unread;
+                assert!(read >= 10, "member 0's held hand is read, beyond its grasp edges: {read} ({c1:?})");
+            }
             (stats, roots)
         };
         let (off, off_roots) = run(1);
@@ -4362,14 +4418,15 @@ pub(crate) mod tests {
             for (i, s) in st.iter().enumerate() {
                 println!(
                     "window {name}, member {i}: rollbacks {}, re-simulated {} for {} stepped ({:.2}x), deepest {}, \
-                     advance {:.0} ms; coalesce {:?}",
+                     advance {:.0} ms; coalesce {:?}; replay costs {:?}",
                     s.phases.rollbacks,
                     s.phases.resimulated,
                     s.phases.stepped,
                     s.phases.resimulated as f64 / s.phases.stepped.max(1) as f64,
                     s.deepest_rollback,
                     s.phases.advance_ns as f64 / 1e6,
-                    s.coalesce
+                    s.coalesce,
+                    s.replay_costs
                 );
             }
         }

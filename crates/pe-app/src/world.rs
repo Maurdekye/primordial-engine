@@ -3,9 +3,9 @@
 //! joiner's import come later. Each is under [`FaultWorld`], which injects `--inject-fault-at`'s fault when this
 //! process armed one ([`crate::fault`]).
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
-use pe_replica::{PeWorld, ReplicaImpl, ScriptRunner};
+use pe_replica::{CostProbe, PeWorld, ReplicaImpl, ScriptRunner, WorldModel};
 use pe_seams::{DomainId, Frame, FrameClock, MemberKey, Offset, Pos, Replica, SimRate};
 use pe_world::{BlobStore, World, perm, preset};
 
@@ -32,7 +32,30 @@ pub fn open_new(
     let config = crate::genesis::replica_config(&crate::genesis::settings(), rate, clock);
     let replica =
         ReplicaImpl::new(FaultWorld::armed(PeWorld::new(world, DomainId(0))), config).map_err(|e| format!("{e:?}"))?;
-    Ok(Box::new(replica.with_runner(runner)))
+    Ok(Box::new(probed(replica.with_runner(runner))))
+}
+
+/// The replay costs' probe (pe_replica::costs) this process gives every replica it opens, once [`arm_cost_probe`]
+/// made it: this machine's own counters and timers, never agreed state. `SimStats::replay_costs` reads it.
+static COST_PROBE: OnceLock<CostProbe> = OnceLock::new();
+
+/// Make this process's replay-cost probe (main does, unless `PE_REPLAY_COSTS=0`): every replica opened from now on
+/// measures into it.
+pub fn arm_cost_probe() -> CostProbe {
+    COST_PROBE.get_or_init(pe_replica::costs::probe).clone()
+}
+
+/// This process's replay-cost probe, if armed.
+pub fn cost_probe() -> Option<CostProbe> {
+    COST_PROBE.get().cloned()
+}
+
+/// `replica`, measuring into this process's replay-cost probe if one is armed.
+pub fn probed<W: WorldModel>(replica: ReplicaImpl<W>) -> ReplicaImpl<W> {
+    match cost_probe() {
+        Some(p) => replica.with_cost_probe(p),
+        None => replica,
+    }
 }
 
 /// Where the `i`-th admitted member's hands start, before its first hand input moves them: at chest height over the
@@ -126,5 +149,5 @@ pub(crate) fn ball_pit_replica_over(
     let mut config = crate::genesis::replica_config(&crate::genesis::settings(), rate, clock);
     config.local = Some(me);
     let replica = ReplicaImpl::new(wrap(PeWorld::new(world, DomainId(0))), config).map_err(|e| format!("{e:?}"))?;
-    Ok(replica.with_runner(runner))
+    Ok(probed(replica.with_runner(runner)))
 }
