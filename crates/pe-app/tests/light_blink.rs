@@ -49,7 +49,7 @@ fn an_agent_s_light_blink_runs_on_both_machines_at_the_same_frames() {
     let (mut a, mut a_in, a_out) = start(&dir, "a", "light_agent", "author", &["--open", "--check-replay"]);
     let invite = line_after(&a_out, "invite: ", until, &dir);
     // B joins on the invite alone (invite-only, the user's ruling). A's console names the join.
-    let (mut b, _b_in, _b_out) = start(&dir, "b", "light_agent", "observer", &["--join", &invite]);
+    let (mut b, _b_in, b_out) = start(&dir, "b", "light_agent", "observer", &["--join", &invite]);
     line_with(&a_out, " is joining with your invite…", until, &dir);
     // As in the demo test: no script before the join has ended.
     line_with(&a_out, " joined the session.", until, &dir);
