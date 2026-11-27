@@ -146,6 +146,24 @@ pub fn map_refusal(snap: &WorldSnapshot, e: &WorldEdit, op: Option<u32>, reason:
             f.details = Some(json!({ "limit": limit }));
             f
         }
+        // pe-world's cap on an entry's carried bytes, and on one carried blob (both 960 KiB; world-model.md 3.4):
+        // pe-api's 768 KiB check comes first, so a forward change reaches this only with a blob pe-api didn't count.
+        Reason::TooLarge { limit }
+            if *limit as usize == pe_world::inline::MAX_CARRIED_BYTES
+                || *limit as usize == pe_world::inline::MAX_CARRIED_BLOB =>
+        {
+            let mut f = if e.undo {
+                carried_undo_in_parts()
+            } else {
+                refusal(
+                    RefusalCode::TooLarge,
+                    None,
+                    format!("The change carries more than {limit} bytes of meshes or hulls; split this change."),
+                )
+            };
+            f.details = Some(json!({ "limit": limit }));
+            f
+        }
         Reason::TooLarge { limit } => {
             let mut f = refusal(RefusalCode::TooLarge, None, format!("The change creates more than {limit} objects."));
             f.details = Some(json!({ "limit": limit }));
@@ -256,8 +274,45 @@ pub fn script_key(r: &Resolved, script: &pe_world::edit::AssetTarget) -> String 
     }
 }
 
+/// The bytes of names a transaction carries: its inline-class blobs (1-256 B). A longer one in `inline` is a carried
+/// simulation blob (world-model.md 3.4), counted by [`carried_bytes`] instead.
 fn inline_bytes(tx: &pe_world::edit::Transaction) -> usize {
-    tx.inline.iter().map(Vec::len).sum()
+    tx.inline.iter().map(Vec::len).filter(|&n| n <= pe_world::inline::MAX_INLINE_BLOB).sum()
+}
+
+/// The carried bytes a transaction carries: simulation blobs over 256 B (meshes, hulls; world-model.md 3.4).
+fn carried_bytes(tx: &pe_world::edit::Transaction) -> usize {
+    tx.inline.iter().map(Vec::len).filter(|&n| n > pe_world::inline::MAX_INLINE_BLOB).sum()
+}
+
+fn carried_undo_in_parts() -> Refusal {
+    let mut f = refusal(
+        RefusalCode::TooLarge,
+        None,
+        format!(
+            "Undoing this would carry more than {} bytes of meshes or hulls; undo this in parts.",
+            pe_world::inline::MAX_CARRIED_BYTES
+        ),
+    );
+    f.next =
+        Some("Revert the later, smaller changes that touched these objects first, or edit them back by hand.".into());
+    f
+}
+
+/// The carried-byte limit (pe-api's 768 KiB, under pe-world's 960 KiB; @coordinator-opus): `what` is
+/// "change" or "undo", `key` the details' name for the count.
+fn carried_over(n: usize, undo_of: bool) -> Option<Refusal> {
+    (n > crate::edit::CARRIED_MAX).then(|| {
+        let what = if undo_of { "Undoing this change would carry" } else { "The change carries" };
+        let mut f = refusal(
+            RefusalCode::TooLarge,
+            None,
+            format!("{what} {n} bytes of meshes or hulls, more than {}; split this change.", crate::edit::CARRIED_MAX),
+        );
+        let key = if undo_of { "undo_bytes" } else { "bytes" };
+        f.details = Some(json!({ "limit": crate::edit::CARRIED_MAX, key: n }));
+        f
+    })
 }
 
 fn undo_in_parts() -> Refusal {
@@ -278,8 +333,14 @@ fn undo_in_parts() -> Refusal {
 /// change carries at most [`INLINE_MAX`](crate::edit::INLINE_MAX) bytes of names; a revert, up to pe-world's cap.
 fn inline_refusal(e: &WorldEdit) -> Option<Refusal> {
     let n = inline_bytes(&e.tx);
+    let carried = carried_bytes(&e.tx);
     if e.undo {
-        return (n > pe_world::inline::MAX_INLINE_BYTES).then(undo_in_parts);
+        return (n > pe_world::inline::MAX_INLINE_BYTES)
+            .then(undo_in_parts)
+            .or_else(|| (carried > pe_world::inline::MAX_CARRIED_BYTES).then(carried_undo_in_parts));
+    }
+    if let Some(f) = carried_over(carried, false) {
+        return Some(f);
     }
     (n > crate::edit::INLINE_MAX).then(|| {
         let mut f = refusal(
@@ -298,7 +359,11 @@ fn undo_refusal(e: &WorldEdit, inverse: Option<&[u8]>) -> Option<Refusal> {
     if e.undo {
         return None;
     }
-    let n = inverse.and_then(pe_world::edit::Transaction::decode).map_or(0, |t| inline_bytes(&t));
+    let inverse = inverse.and_then(pe_world::edit::Transaction::decode);
+    let n = inverse.as_ref().map_or(0, inline_bytes);
+    if let Some(f) = carried_over(inverse.as_ref().map_or(0, carried_bytes), true) {
+        return Some(f);
+    }
     (n > crate::edit::INLINE_MAX).then(|| {
         let mut f = refusal(
             RefusalCode::TooLarge,
@@ -633,6 +698,48 @@ mod tests {
         let limit = pe_world::inline::MAX_INLINE_BYTES as u32;
         let f = map_refusal(&snap, &revert(9), None, &Reason::TooLarge { limit });
         assert!(f.message.contains("undo this in parts"), "{}", f.message);
+    }
+
+    /// Carried simulation blobs (meshes and hulls over 256 B, world-model.md 3.4; @coordinator-opus)
+    /// count against their own 768 KiB, never against the 1 KiB of names: an undo that restores a 300 KiB mesh is
+    /// fine; one past 768 KiB, a change past it and a revert past pe-world's 960 KiB are refused, each saying so.
+    #[test]
+    fn carried_blobs_have_their_own_limit_apart_from_names() {
+        let tx = |inline: Vec<Vec<u8>>| {
+            let mut inline = inline;
+            inline.sort_by_key(|b| pe_world::BlobRef::of(b).hash);
+            pe_world::edit::Transaction {
+                inline,
+                actor: Actor::Person,
+                label: None,
+                preconditions: vec![],
+                ops: vec![],
+                blobs: vec![],
+            }
+        };
+        let edit = |inline, undo| WorldEdit { tx: tx(inline), blobs: vec![], op_of: vec![], undo, replaced: vec![] };
+        let mesh = |kib: usize, k: u8| vec![k; kib * 1024];
+        // A 300 KiB mesh and a name: neither limit is passed, forward, undone or predicted.
+        let one = vec![mesh(300, 1), b"Cup".to_vec()];
+        assert!(inline_refusal(&edit(one.clone(), false)).is_none(), "a mesh is not names");
+        assert!(undo_refusal(&edit(vec![], false), Some(&tx(one.clone()).encode())).is_none());
+        assert!(inline_refusal(&edit(one, true)).is_none());
+        // 800 KiB carried: refused forward, and as a predicted undo, with the counts.
+        let over = vec![mesh(400, 1), mesh(400, 2)];
+        let f = inline_refusal(&edit(over.clone(), false)).expect("refused");
+        assert_eq!(f.code, RefusalCode::TooLarge);
+        assert!(f.message.contains("meshes or hulls") && f.message.contains("split this change"), "{}", f.message);
+        assert_eq!(f.details, Some(json!({ "limit": crate::edit::CARRIED_MAX, "bytes": 800 * 1024 })));
+        let f = undo_refusal(&edit(vec![], false), Some(&tx(over.clone()).encode())).expect("refused");
+        assert!(f.message.starts_with("Undoing this change"), "{}", f.message);
+        // A revert may carry up to pe-world's cap; past it, in parts. pe-world's own refusal reads the same.
+        assert!(inline_refusal(&edit(over, true)).is_none());
+        let huge = vec![mesh(500, 1), mesh(500, 2)];
+        assert!(inline_refusal(&edit(huge.clone(), true)).expect("refused").message.contains("undo this in parts"));
+        let (snap, _) = world();
+        let limit = pe_world::inline::MAX_CARRIED_BYTES as u32;
+        let f = map_refusal(&snap, &edit(huge, true), None, &Reason::TooLarge { limit });
+        assert!(f.message.contains("meshes or hulls") && f.message.contains("undo this in parts"), "{}", f.message);
     }
 
     /// pe-world's shape limit reaches the agent as `too_large`, with both counts and what to do (world-model.md 7.1;

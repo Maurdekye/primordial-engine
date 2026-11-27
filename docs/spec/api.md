@@ -955,8 +955,15 @@ names `too_large` ("split this change"), and it refuses one whose undo would car
 dry run from the inverse pe-world records ("undoing this change … split this change"). A delete's undo names objects
 rather than bytes, so it carries none. A `revert` may carry up to pe-world's hard cap of 2 KiB per entry, which
 leaves room for an inverse grown through a race. Past that cap the revert is refused `too_large`: "undo this in
-parts". There is no split undo. Blobs over 256 B (hulls, meshes) don't travel inline; they wait for fetch (M1's
-known gaps).
+parts". There is no split undo.
+
+**Meshes and hulls travel inside the entry too** (world-model.md 3.4, the carried class; @coordinator-opus). A blob over 256 B written to a `SimBlobRef` field goes in the same `Transaction::inline` list, and it
+counts against its own limit, never the names': pe-api refuses a change that carries more than 768 KiB of them
+`too_large` ("… bytes of meshes or hulls … split this change", details `limit` and `bytes`), and one whose undo would
+(details `undo_bytes`). A `revert` may carry up to pe-world's cap of 960 KiB; past it, "undo this in parts". pe-api
+can't write a blob field yet (5.3: `null` only), so in M1 its carried bytes come only from the inverses pe-world
+records. Display blobs over 256 B still don't travel; they wait for fetch (M1's known gaps). A 960 KiB entry holds a
+thin link's entry lane for seconds (world-model.md 3.4).
 
 ### 9.4 The re-send backstop
 

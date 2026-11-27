@@ -2573,8 +2573,11 @@ mod tests {
             panic!("a list")
         };
         let names: Vec<String> = templates.iter().map(|t| t.name.clone()).collect();
-        assert_eq!(names, [n::BOX, n::SPHERE, n::CAPSULE, n::STACK]);
-        for (template, objects) in [(n::BOX, 1), (n::SPHERE, 1), (n::CAPSULE, 1), (n::STACK, 1 + n::STACK_BOXES)] {
+        // The heavy templates follow the four (@world-model's world/ft-body, the friend test 11-27).
+        assert_eq!(names, [n::BOX, n::SPHERE, n::CAPSULE, n::STACK, n::BIG_CRATE, n::PLATFORM, n::SLAB]);
+        let heavy = [(n::BIG_CRATE, 1), (n::PLATFORM, 1), (n::SLAB, 1)];
+        let four = [(n::BOX, 1), (n::SPHERE, 1), (n::CAPSULE, 1), (n::STACK, 1 + n::STACK_BOXES)];
+        for (template, objects) in four.into_iter().chain(heavy) {
             let spawn =
                 tx(json!([{"op": "create", "template": template, "name": template, "parent": "/Spawned", "as": "$s",
                 "components": {"Transform": {"position": {"offset": [0.5, 1.0, -0.5], "relative_to": "parent"}}}}]));
