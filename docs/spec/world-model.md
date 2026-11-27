@@ -2276,16 +2276,21 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
     `Release`; a non-finite value refuses it (`Invalid`), and the claim stays. The holder's ends the claim exactly as
     `Release` does, and reaches the physics as a `Thrown` in the entry's footprint [V `tests/input.rs`,
     `only_the_holders_throw_ends_the_claim_and_reaches_the_physics`].
-  - **In the physics** (pe-replica, as the entry applies, the way a push goes): if the object is with the hand,
-    judged against the hold's joint (the hand body's anchor to the object), neither blocked nor stretched past the
-    tight hold's break-away distance (render.md D4), its velocity becomes the throw's, capped; the joint is gone
-    before the frame's physics step (@engine-architect). The linear speed is capped at `max_push_speed`,
-    the vector scaled down with its direction kept. The angular speed is capped so that the spin moves the object's rim
-    at most at `max_push_speed`: `|ω| ≤ max_push_speed / R`, `R` the object's bounding radius about its centre of mass.
-    A small ball may spin fast, a long object only slowly, and no point of a thrown object leaves faster than twice the
-    cap, inside the speeds continuous collision is measured to hold (8.1's pushes). Box3D's own limit of 45 degrees a
-    tick (replica.md 3.5) applies beyond it. Otherwise (blocked, or stretched past break-away) the object keeps its
-    solver velocity, as a `Release` leaves it.
+  - **In the physics** (pe-replica, as the entry applies, the way a push goes; the 11-27 kit's rules, the user's
+    rulings of 2026-11-26, "remove any maximum throw speed (for v1); the grip strength should be what
+    governs maximum throw speed", and, "keep it straightforward and predictable even with the tunneling
+    issues"): if a hand's grab joint holds the object, its velocity becomes the throw's, as far as the hold's force
+    could have changed it in a frame: the change from its solver velocity is at most `F dt / m`, `F` the holder's
+    strength. There is **no speed cap** and no other gate: not the object's distance from its place in the hand, nor
+    a wall between them. A light object a hand carries leaves at the hand's velocity (an 18 g ball thrown at 25 m/s
+    on a 0.6 m arc leaves at 25.0 [V @vdw-physics]); a heavy one that lags keeps most of what its hold gave it. The
+    spin is the throw's, under Box3D's own limit of 45 degrees a tick (replica.md 3.5). The joint is gone before the
+    frame's physics step (@engine-architect). With no joint from a hand the object keeps its solver
+    velocity, as a `Release` leaves it. A thrown object faster than continuous collision is measured to hold for
+    (50 m/s against walls, 8.1's pushes) may pass through a wall or the floor; that is accepted for now. Until
+    2026-11-26 a throw was capped at `max_push_speed` (and its spin at `max_push_speed / R`) and voided when the
+    object was blocked or past the break-away distance, which lost fast throws whole (an 18 g ball thrown at 25 m/s
+    on a 0.6 m arc left at 3.5 m/s).
   - **Order:** a `Release` and a `Throw` are entries like any other, applied in agreed order. The first of them by
     the holder ends the claim; a later one finds no claim and notes `NoEffect`, so a release after a throw takes
     nothing back, and a throw after a release sets no velocity.
@@ -2318,6 +2323,11 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
     exist (refound plan, piece 10), a player may mark their hand colliders as bullets in a **full** custom avatar,
     at their own cost like any bullet's. A **fallback** avatar's strict format has no such field, so a fallback's
     hands are never bullets, and a world that restricts players to fallbacks has no bullet hands.
+  - **A hand that holds something has no cap** (the user's ruling of 2026-11-26): its body reaches
+    its target every frame, so a held object follows a swing at any speed and a throw leaves at the hand's speed. Its
+    teleport test is the jump away from its own motion (replica.md 3.3), so a fast swing is never placed. Empty
+    hands, and pushes that aren't a held object or a throw, keep `max_push_speed` (@fable-reviewer).
+    The rest of this bullet is an **empty** hand's.
   - **A hand moving faster than the cap moves at the cap** (@coordinator-opus, option (b)): its body
     trails the target and catches up, so it still pushes and throws at up to `max_push_speed`; there is no cliff
     where hard throws begin. Hard throws top out at the cap, 10 m/s by default and adjustable (8.1's pushes). The
@@ -2372,7 +2382,11 @@ then grabs, releases, pushes and every other entry, in agreed order (the full ru
     apply to held objects to move them"; a blocked held object stays held and shows apart from the
     hand; @coordinator-opus, after @vdw-physics's sweep). The spring that pulls a held
     object to its place in the hand is stiff, 60 Hz (Box3D's own stiffness for rigid joints at the engine's 1/240 s
-    sub-step), critically damped, and its force is at most `min(strength, m (A + g))`, `m` the held mass:
+    sub-step), critically damped, and its force is at most the holder's strength (the user's ruling of 2026-11-26, option (c): "the grip strength should be what governs"; until then `min(strength, m (A + g))`, `m`
+    the held mass, as the sub-points below describe). With the grip alone a hold presses a light object into what
+    blocks it with the whole strength: an 18 g ball held against the floor sinks 43 mm, and one held against a 2 cm
+    wall goes through at 1 m/s [V @vdw-physics, pe-replica `measure_push_through_at_the_grip_s_strength`], accepted
+    for now (a stop at fixed surfaces, which held it to 2-5 mm, waits on a backlogged item):
     - **`Hand.strength`**, in newtons, is the player's strength: M1's stand-in for the character controller's, where
       it moves later. World logic writes it at admission, 110 N, the user's value (confirmed): a default player moves about 0.5-1 kg with no lag, and 110 N holds 1 kg tight up to a
       100 m/s² flick. No input writes it, and no edit (a `Hand` row is not editable,
