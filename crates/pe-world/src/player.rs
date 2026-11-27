@@ -136,6 +136,20 @@ pub struct PlayerRow {
 }
 
 impl World {
+    /// The most collision shapes an edit may leave in this world (7.1): its first `Limits` row's, in id order, capped
+    /// at [`SHAPES_CEILING`](crate::components::SHAPES_CEILING); without one, the build's
+    /// [`MAX_SHAPES`](crate::edit::MAX_SHAPES).
+    pub fn shape_limit(&self) -> usize {
+        use crate::components::{Limits, SHAPES_CEILING, ids};
+        if self.store.registry().get(ids::LIMITS).is_none() {
+            return crate::edit::MAX_SHAPES;
+        }
+        self.store
+            .iter::<Limits>()
+            .min_by_key(|(id, _)| *id)
+            .map_or(crate::edit::MAX_SHAPES, |(_, l)| l.max_shapes.min(SHAPES_CEILING) as usize)
+    }
+
     /// Every player body with its row, in id order: what the mover reads each frame.
     pub fn players(&self) -> Vec<PlayerRow> {
         if self.store.registry().get(crate::components::ids::PLAYER).is_none() {

@@ -10,7 +10,9 @@ pub struct Rate {
 }
 
 impl Rate {
-    pub const TX_DEFAULT: Rate = Rate { per_s: 20.0, burst: 40.0 };
+    /// x100 for the friend test 11-27's stress test (user; it was 20 a second, a burst of 40). The
+    /// shared queue (256 changes, `queue::CAPACITY`) and pe-app's 1,024 inputs a tick bind before this does.
+    pub const TX_DEFAULT: Rate = Rate { per_s: 2_000.0, burst: 4_000.0 };
 }
 
 #[derive(Clone, Debug)]

@@ -29,7 +29,10 @@ pub const MAX_NEW_OBJECTS: usize = 65_536;
 /// stepping 520 shapes takes about half a frame period there (the M1 recording's stalls, 2026-11-20;
 /// @coordinator-opus). A constant of this build, so the build id's source hash covers it: members of one
 /// session all run the same sources (app.md 4). It moves only with a new measurement.
-pub const MAX_SHAPES: usize = 520;
+///
+/// The friend test 11-27 (user, a stress test): x100, 52,000. A world with a `Limits` row uses that
+/// row's value instead (`World::shape_limit`), which an edit can change mid-session.
+pub const MAX_SHAPES: usize = 52_000;
 /// The `precondition` index a `Stale` refusal carries when an op's own check failed rather than a listed
 /// precondition: a `Copy` whose source subtree no longer has the `size` its author saw (7.1).
 pub const OWN_CHECK: u32 = u32::MAX;

@@ -45,6 +45,8 @@ pub mod ids {
     pub const PROTECTION: ComponentId = ComponentId(11);
     /// Registered only in worlds whose preset gives members a body ([`register_player`]).
     pub const PLAYER: ComponentId = ComponentId(12);
+    /// Registered only in worlds whose preset sets the world's limits as a row ([`register_limits`]).
+    pub const LIMITS: ComponentId = ComponentId(13);
 }
 
 /// `"name": field, Kind, count;` or, with a unit (world-model.md 3.6), `"name": field, Kind, count, "unit";`.
@@ -378,6 +380,44 @@ impl Component for Protection {
     const NAME: &'static str = "Protection";
     fn fields() -> Vec<FieldDesc> {
         fields![Protection; "owner": owner, MemberKey, 1;]
+    }
+}
+
+/// The world's own limits (7.1): world state, so an ordinary edit changes them and every member switches at that
+/// edit's frame (the friend test 11-27, @coordinator-opus). The plane carries one on its `World
+/// settings` root. Only an admin member changes it, and never to 0 or past [`SHAPES_CEILING`] (7.1).
+/// The first row in id order counts ([`World::shape_limit`](crate::World::shape_limit)); without one, the build's
+/// [`MAX_SHAPES`](crate::edit::MAX_SHAPES).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Pod, Zeroable)]
+#[repr(C)]
+pub struct Limits {
+    /// The most collision shapes an edit may leave in the world, at most [`SHAPES_CEILING`].
+    pub max_shapes: u32,
+}
+
+/// The highest `Limits.max_shapes` counts as: Box3D's own shape index has 22 bits (box3d-fork `MAX_SHAPES`), and a
+/// world takes a few shapes outside the rows (the player bodies). A larger value is read as this.
+pub const SHAPES_CEILING: u32 = (1 << 22) - 4096;
+
+impl Component for Limits {
+    const ID: ComponentId = ids::LIMITS;
+    const NAME: &'static str = "Limits";
+    fn fields() -> Vec<FieldDesc> {
+        fields![Limits; "max_shapes": max_shapes, U32, 1;]
+    }
+}
+
+/// Registers [`Limits`] in `store`'s registry: a preset that sets the world's limits as a row calls it at genesis.
+pub fn register_limits(store: &mut pe_sim::SimStore) {
+    store.register_engine(Limits::desc()).expect("the engine's Limits description");
+}
+
+impl crate::World {
+    /// Gives this world its limits as a row: [`Limits`] registered, on `id` (an existing object), as world logic does
+    /// at genesis. Not an edit: for a preset, or a test.
+    pub fn set_limits(&mut self, id: pe_core::ObjectId, limits: Limits) -> Result<(), crate::WorldError> {
+        register_limits(&mut self.store);
+        self.insert(id, limits)
     }
 }
 

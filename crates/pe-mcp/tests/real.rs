@@ -64,6 +64,7 @@ impl WorldSource for Src {
             here: vec![ALICE.into()],
             link: Link::Fine,
             caught_up: true,
+            caught_up_once: true,
             tick_hz: 60,
             agents_move_user: false,
             scripts_not_running: vec![],

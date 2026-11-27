@@ -129,6 +129,8 @@ struct Inner {
     edits: EditIndex,
     here: BTreeSet<MemberKey>,
     caught_up: bool,
+    /// `caught_up` has been true at least once (`SessionFacts::caught_up_once`).
+    caught_up_once: bool,
     /// A join this machine admits holds script commits back (app.md 4).
     joining: bool,
     /// The scripts this machine can't run, as the attester last found them (`Attester::not_running`).
@@ -151,6 +153,7 @@ impl ApiShared {
             // Until the first advance says otherwise, so pe-api refuses live changes with `not_ready` meanwhile
             // (@api-eng's Low on slice 1).
             caught_up: false,
+            caught_up_once: false,
             joining: false,
             scripts_not_running: Vec::new(),
         };
@@ -210,7 +213,9 @@ impl ApiShared {
     }
 
     pub fn caught_up(&self, caught_up: bool) {
-        self.lock().caught_up = caught_up;
+        let mut g = self.lock();
+        g.caught_up = caught_up;
+        g.caught_up_once |= caught_up;
     }
 
     /// Whether a join this machine admits holds script commits back: pe-api answers them `unavailable` (app.md 4).
@@ -331,6 +336,7 @@ impl WorldSource for ApiWorld {
             // state this machine knows of itself.
             link: if g.caught_up { Link::Fine } else { Link::CatchingUp },
             caught_up: g.caught_up,
+            caught_up_once: g.caught_up_once,
             tick_hz: self.0.facts.rate.hz(),
             agents_move_user: false,
             joining: g.joining,
@@ -369,7 +375,10 @@ pub fn spawn_mcp(api: Arc<dyn WorldApi>, opts: HostOpts) -> io::Result<McpThread
     let handle = rt.handle().clone();
     let thread = thread::Builder::new().name("mcp".into()).spawn(move || {
         let served = rt.block_on(async move {
-            let mut hosted = host::start(api, &opts).await?;
+            // Said at once (@design-reviewer's L2): otherwise only the quit's `stop_mcp` would tell.
+            let mut hosted = host::start(api, &opts)
+                .await
+                .inspect_err(|e| crate::err!("pe-app: the MCP server didn't start: {e}"))?;
             tokio::select! {
                 exited = hosted.wait() => exited,
                 _ = stopped => Ok(None),

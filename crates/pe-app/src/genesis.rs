@@ -66,8 +66,9 @@ pub const PRESET: &str = "m1-ball-pit";
 pub const PRESET_VERSION: u32 = 1;
 pub const PLANE: &str = "plane";
 /// 2: each member gets a player body (world-model.md 8.2, locomotion L2), so a version-1 build can't join a version-2
-/// world, nor the other way round.
-pub const PLANE_VERSION: u32 = 2;
+/// world, nor the other way round. 3: a `World settings` root carries the world's `Limits` row (world-model.md
+/// 7.1, the friend test 11-27).
+pub const PLANE_VERSION: u32 = 3;
 /// Bounds a record keeps: `decode` refuses bytes past them, and `ball_pit` refuses values past them, so a record A
 /// sends is one B can read.
 const MAX_BUILD: usize = 256;

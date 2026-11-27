@@ -783,8 +783,18 @@ fn shapes_in(w: &World) -> usize {
 }
 
 fn too_many(count: usize) -> (Option<u32>, Reason) {
-    use pe_world::edit::MAX_SHAPES;
-    (None, Reason::TooManyShapes { limit: MAX_SHAPES as u32, count: count as u32 })
+    (None, Reason::TooManyShapes { limit: LIMIT as u32, count: count as u32 })
+}
+
+/// The shape limit these tests set as the world's `Limits` row (7.1): the build's `MAX_SHAPES` (52,000) is past what
+/// one edit may create (`MAX_OPS`), and the row is how a world says its limit.
+const LIMIT: usize = 520;
+
+/// `f`'s world with its shape limit at [`LIMIT`], on an object of its own.
+fn limited(f: &mut Fx) {
+    let id = ObjectId::from_u128(9_999);
+    f.w.create(id, None, f.keys.key(0), pe_world::GENESIS).expect("the settings object");
+    f.w.set_limits(id, pe_world::components::Limits { max_shapes: LIMIT as u32 }).expect("its limits");
 }
 
 /// The world's shape limit (world-model.md 7.1, 7.6 step 5; @coordinator-opus): an edit that would
@@ -793,9 +803,9 @@ fn too_many(count: usize) -> (Option<u32>, Reason) {
 /// change to a shape in place, or a swap of one for another, applies.
 #[test]
 fn an_edit_past_the_shape_limit_is_refused_whole() {
-    use pe_world::edit::MAX_SHAPES;
-    let max = MAX_SHAPES;
+    let max = LIMIT;
     let mut f = fx();
+    limited(&mut f);
     let (_, ball, _) = table_and_ball(&mut f);
     let first = shaped(&mut f, max - 2, 1.0);
     assert_eq!(shapes_in(&f.w), max - 2);
@@ -840,9 +850,9 @@ fn an_edit_past_the_shape_limit_is_refused_whole() {
 /// always does, and only an edit that leaves more shapes than the world had is refused.
 #[test]
 fn past_the_shape_limit_only_an_edit_that_adds_shapes_is_refused() {
-    use pe_world::edit::MAX_SHAPES;
-    let max = MAX_SHAPES;
+    let max = LIMIT;
     let mut f = fx();
+    limited(&mut f);
     for n in 0..(max + 5) as u128 {
         let id = ObjectId::from_u128(10_000 + n);
         f.w.create(id, None, f.keys.key(0), pe_world::GENESIS).expect("an object");
@@ -959,4 +969,49 @@ fn light_angles_are_checked_on_edit() {
             }
         }
     }
+}
+
+/// The world's limits as a row (7.1; the friend test 11-27, @coordinator-opus): an admin's edit changes
+/// the shape limit, and one edit may raise it and add shapes together; a non-admin's change is refused, and so is a
+/// limit of 0 or past the ceiling. Without a row, the build's `MAX_SHAPES` counts.
+#[test]
+fn an_admin_changes_the_shape_limit_with_an_edit_and_no_one_else_may() {
+    use pe_world::components::{Limits, SHAPES_CEILING};
+    let mut f = fx();
+    assert_eq!(f.w.shape_limit(), pe_world::edit::MAX_SHAPES, "no row: the build's");
+    f.w.set_member(f.keys.key(0), perm::EDIT | perm::ADMIN);
+    limited(&mut f);
+    assert_eq!(f.w.shape_limit(), LIMIT);
+    shaped(&mut f, LIMIT, 1.0);
+    let settings = Target::Existing(ObjectId::from_u128(9_999));
+    let set = |n: u32| Op::SetRow { id: settings, row: row(Limits { max_shapes: n }) };
+    let one = || Op::Create {
+        new: 0,
+        parent: Target::Root,
+        index: None,
+        rows: vec![row(Transform::at(at(5.0))), row(sphere(0.06))],
+    };
+    // At the limit, a new shape is refused.
+    assert_eq!(refused(&apply(&mut f.w, &entry(&mut f.a, &tx(vec![one()]))).0), too_many(LIMIT + 1));
+    // A member without admin may not change the limit.
+    let theirs = apply(&mut f.w, &entry(&mut f.b, &tx(vec![set(600)]))).0;
+    assert_eq!(refused(&theirs), (None, Reason::NoPermission));
+    // Neither 0 nor past the ceiling, even for an admin.
+    for bad in [0, SHAPES_CEILING + 1] {
+        assert_eq!(
+            refused(&apply(&mut f.w, &entry(&mut f.a, &tx(vec![set(bad)]))).0),
+            (None, Reason::Invalid { field: None })
+        );
+    }
+    assert_eq!(f.w.shape_limit(), LIMIT, "nothing changed");
+    // An admin raises it and adds a shape in the same edit.
+    let both = apply(&mut f.w, &entry(&mut f.a, &tx(vec![set(600), one()]))).0;
+    assert!(matches!(both, Outcome::Applied { .. }), "{both:?}");
+    assert_eq!((f.w.shape_limit(), shapes_in(&f.w)), (600, LIMIT + 1));
+    // Lowered below the count: nothing is removed, and only edits that add shapes are refused.
+    assert!(matches!(apply(&mut f.w, &entry(&mut f.a, &tx(vec![set(10)]))).0, Outcome::Applied { .. }));
+    assert_eq!(
+        refused(&apply(&mut f.w, &entry(&mut f.a, &tx(vec![one()]))).0).1,
+        Reason::TooManyShapes { limit: 10, count: LIMIT as u32 + 2 }
+    );
 }

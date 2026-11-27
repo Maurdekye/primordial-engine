@@ -15,8 +15,7 @@ use pe_sim::{ComponentId, Node, RowVersion, Transform};
 
 use crate::components::{Light, Protection, SimSize, ids};
 use crate::edit::{
-    Actor, AssetTarget, MAX_NEW_OBJECTS, MAX_SHAPES, OWN_CHECK, Op, Precondition, Row, Target, Transaction,
-    content_hash, row_tag,
+    Actor, AssetTarget, MAX_NEW_OBJECTS, OWN_CHECK, Op, Precondition, Row, Target, Transaction, content_hash, row_tag,
 };
 use crate::script::{
     AssetId, BuildFailure, MAX_REKEY_ROWS, MAX_SOURCE_BYTES, ModuleRow, PendingCommit, RekeyReport, VoidKind,
@@ -436,12 +435,28 @@ impl World {
         {
             return Err((None, Reason::TooLarge { limit: u32::try_from(limit).unwrap_or(u32::MAX) }));
         }
-        // The world's shape limit (7.1; 7.6 step 5), on the state after every op: never past `MAX_SHAPES` by an edit
+        // The world's limits (7.1): only an admin changes them (as governance), and never to 0 or past the ceiling, so
+        // neither a guest nor a typo can wedge the world (@world-model). World logic sets them at
+        // genesis.
+        if work.store.registry().get(ids::LIMITS).is_some()
+            && work.store.column_raw(ids::LIMITS) != self.store.column_raw(ids::LIMITS)
+        {
+            if !src.author.is_logic() && !self.permits(src.author, perm::ADMIN) {
+                return Err((None, Reason::NoPermission));
+            }
+            let bad =
+                |l: &crate::components::Limits| l.max_shapes == 0 || l.max_shapes > crate::components::SHAPES_CEILING;
+            if work.store.iter::<crate::components::Limits>().any(|(_, l)| bad(l)) {
+                return Err((None, invalid()));
+            }
+        }
+        // The world's shape limit (7.1; 7.6 step 5), on the state after every op: never past `shape_limit` by an edit
         // that adds shapes. An edit that adds none (a delete, a colour, a move) passes even past it.
-        let (had, count) = (self.store.count(ids::SHAPE), work.store.count(ids::SHAPE));
-        if count > MAX_SHAPES && count > had {
+        // The limit is the world's after the edit (`shape_limit`), so one edit may raise it and add shapes together.
+        let (had, count, max) = (self.store.count(ids::SHAPE), work.store.count(ids::SHAPE), work.shape_limit());
+        if count > max && count > had {
             let n = |v: usize| u32::try_from(v).unwrap_or(u32::MAX);
-            return Err((None, Reason::TooManyShapes { limit: n(MAX_SHAPES), count: n(count) }));
+            return Err((None, Reason::TooManyShapes { limit: n(max), count: n(count) }));
         }
         // Templates (`crate::templates`): an edit that makes a held object inert or live is refused, as an edit of a
         // held object's parent is (7.2); the first such claim in object order names the holder.
