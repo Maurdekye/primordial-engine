@@ -2,10 +2,11 @@
 //! struct whose layout the store checks against its own rules, and its description for the manifest.
 
 use crate::layout::{ColorSpace, FieldKind};
-use crate::space::Pos;
+use crate::space::{OffsetFrom, Pos, Saved};
 
 /// A type a component field may have. Arrays of a scalar are one field with a count. `Offset` is deliberately not a
-/// field type: a saved offset must name its reference (logic.md 8).
+/// field type: a saved offset must name its reference, so it is an [`OffsetFrom<Own>`](crate::space::OffsetFrom) or
+/// an `OffsetFrom<Parent>` (logic.md 8).
 pub trait Field: Copy {
     const KIND: FieldKind;
     const COUNT: u32;
@@ -25,6 +26,13 @@ impl Field for LinearRgba {
     const KIND: FieldKind = FieldKind::F32;
     const COUNT: u32 = 4;
     const COLOR: Option<ColorSpace> = Some(ColorSpace::LinearSrgb);
+}
+
+/// Three `f32` in the store. The space it is relative to is in the type, so a script reads it back as the
+/// `Offset<Own>` or `Offset<Parent>` it saved.
+impl<S: Saved> Field for OffsetFrom<S> {
+    const KIND: FieldKind = FieldKind::F32;
+    const COUNT: u32 = 3;
 }
 
 /// An object id, as the store keeps it (16 bytes, 8-aligned like the store's 8-byte kinds).

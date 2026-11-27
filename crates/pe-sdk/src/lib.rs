@@ -3,6 +3,7 @@
 //! batch and manifest bytes.
 //!
 //! Specification: docs/spec/logic.md 3 (the ABI), 4.1 (what a script may contain), 8 (positions) and appendix A.
+//! The position wall's compile-fail tests are in `walls.rs` (doctests only).
 //! Everything is `macro_rules!`: no build script and no procedural macro, so a player needs no host linker (5.2a).
 //!
 //! A script, in outline:
@@ -34,6 +35,8 @@ pub mod guest;
 pub mod layout;
 pub mod manifest;
 pub mod space;
+#[cfg(doctest)]
+mod walls;
 
 /// What `pe_abi_version()` returns: pe-logic's `abi::ABI_VERSION`.
 pub const ABI_VERSION: i32 = 1;
@@ -41,7 +44,7 @@ pub const ABI_VERSION: i32 = 1;
 pub mod prelude {
     pub use crate::component::{Component, LinearRgb, LinearRgba, ObjectId};
     pub use crate::guest::{Ctx, Full};
-    pub use crate::space::{ORIGIN, Offset, Own, Parent, Pos, World};
+    pub use crate::space::{CellKey, ORIGIN, Offset, OffsetFrom, OutOfRange, Own, Parent, Pos, World};
 }
 
 #[cfg(all(target_arch = "wasm32", not(test)))]

@@ -27,6 +27,7 @@ use pe_sdk::layout::{
 use pe_sim::{ComponentDesc, ComponentId, FieldDesc, Registry, SimStore};
 
 use crate::manifest::{self, Manifest};
+use crate::pose;
 use crate::runtime::{Fault, Instance, NoServices, Script, Services};
 
 /// A script asset's key: its stable asset id, the same for every version (the `modules` table's row, 6.1), never a
@@ -287,6 +288,15 @@ impl Loaded {
                 ids.push(*next_own.next().expect("counted above"));
                 continue;
             }
+            // `pe.Pose` is computed by the runner, never a store column: its layout is checked against its own.
+            if c.name == pose::NAME {
+                let declared = component_desc(c, pose::ID).map_err(|e| BindError(format!("component {}: {e}", c.name)))?;
+                if !same_layout(&pose::desc(), &declared) {
+                    return Err(BindError(format!("{}: the layout differs from the engine's", c.name)));
+                }
+                ids.push(pose::ID);
+                continue;
+            }
             let Some(e) = engine.iter().find(|e| e.name == c.name) else {
                 return Err(BindError(format!("{} is not an engine component scripts may bind", c.name)));
             };
@@ -306,7 +316,7 @@ impl Loaded {
         };
         let tag_size = tag_desc.size();
         for (c, &id) in manifest.components.iter().zip(ids) {
-            if engine_ids.contains(&id) {
+            if engine_ids.contains(&id) || id == pose::ID {
                 continue;
             }
             let want = component_desc(c, id).map_err(|e| BindError(format!("component {}: {e}", c.name)))?;
@@ -339,7 +349,8 @@ impl Loaded {
                 if bound.iter().any(|b: &Bound| b.id == id) {
                     return Err(BindError(format!("system {}: {name} is bound twice", s.name)));
                 }
-                if *access == Access::Write && engine.iter().find(|e| e.id == id).is_some_and(|e| !e.scripts_may_write)
+                if *access == Access::Write
+                    && (id == pose::ID || engine.iter().find(|e| e.id == id).is_some_and(|e| !e.scripts_may_write))
                 {
                     return Err(BindError(format!("system {}: scripts may not write {name}", s.name)));
                 }
@@ -349,6 +360,13 @@ impl Loaded {
                 return Err(BindError(format!("system {} binds no component", s.name)));
             }
             let reads_other = s.reads_other.iter().map(|n| resolve(&s.name, n)).collect::<Result<Vec<_>, _>>()?;
+            if reads_other.iter().any(|&(id, _)| id == pose::ID) {
+                return Err(BindError(format!(
+                    "system {}: {} describes only the bound object, so it can't be read from others",
+                    s.name,
+                    pose::NAME
+                )));
+            }
             let columns = bound.iter().map(|b| column_of(b.id)).collect();
             plans.push(Plan {
                 index: index as u32,
@@ -695,8 +713,12 @@ fn call_system(
     report: &mut StageReport,
 ) -> Result<(Rows, Vec<Cmd>), Fault> {
     // The tag is bound implicitly: only objects carrying it run the script (3.2). It is joined, never copied in.
-    let mut join: Vec<ComponentId> = plan.bound.iter().map(|b| b.id).collect();
+    // `pe.Pose` is computed, not stored: an object has one when it has a `Transform`.
+    let mut join: Vec<ComponentId> =
+        plan.bound.iter().map(|b| if b.id == pose::ID { ComponentId::TRANSFORM } else { b.id }).collect();
     join.push(script.tag);
+    join.sort();
+    join.dedup();
     let objects = bound_objects(store, &join, &mut report.join_steps);
     if objects.is_empty() {
         return Ok((Vec::new(), Vec::new()));
@@ -704,8 +726,12 @@ fn call_system(
     // Each bound object's row index in each bound column, by one merge walk per column per call; each batch takes its
     // slice (the store does not change during the call). A walk per batch from row 0 would grow with the square of
     // the objects, at a batch size the script chooses.
-    let indices: Vec<Vec<usize>> =
-        plan.bound.iter().map(|b| row_indices(store.column_raw(b.id).0, &objects, &mut report.join_steps)).collect();
+    let indices: Vec<Vec<usize>> = (plan.bound.iter())
+        .map(|b| match b.id {
+            pose::ID => Vec::new(),
+            id => row_indices(store.column_raw(id).0, &objects, &mut report.join_steps),
+        })
+        .collect();
     let registry = store.registry().clone();
     let base = script.manifest.batch_addr as usize;
     let frame = store.frame();
@@ -743,7 +769,8 @@ fn call_system(
         }
         // Where this batch's rows sit in each bound column: batches are consecutive slices of `objects`.
         let lo = batch_no * plan.rows;
-        let places: Vec<Place> = indices.iter().map(|ix| place(&ix[lo..lo + chunk.len()])).collect();
+        let places: Vec<Place> =
+            indices.iter().map(|ix| if ix.is_empty() { Place::Rows(&[]) } else { place(&ix[lo..lo + chunk.len()]) }).collect();
         report.batches += 1;
         for ((b, &at), pl) in plan.bound.iter().zip(&plan.columns).zip(&places) {
             let bytes = b.size * chunk.len();
@@ -752,8 +779,15 @@ fn call_system(
                 report.skipped_in += bytes as u64;
                 continue;
             }
-            let col = store.column_raw(b.id).1;
             let at = at as usize;
+            if b.id == pose::ID {
+                for (k, &o) in chunk.iter().enumerate() {
+                    area[at + pose::SIZE * k..][..pose::SIZE].copy_from_slice(&pose::row(store, o)?);
+                }
+                report.copied_in += bytes as u64;
+                continue;
+            }
+            let col = store.column_raw(b.id).1;
             match pl {
                 // The chunk's rows are one run of the column: one copy.
                 Place::Run(first) => area[at..at + bytes].copy_from_slice(&col[first * b.size..][..bytes]),

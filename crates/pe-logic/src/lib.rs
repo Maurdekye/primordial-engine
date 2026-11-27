@@ -19,6 +19,7 @@ pub mod abi;
 pub mod build;
 pub mod manifest;
 pub mod meter;
+pub mod pose;
 pub mod run;
 pub mod runtime;
 

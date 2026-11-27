@@ -1,0 +1,17 @@
+# A test script for pe-logic (docs/spec/logic.md 8): pe-sdk's `Pos` against pe-core's, in wasm under the runner, and
+# `pe.Pose` and the `Transform` accessors. Its own workspace, so the root workspace never builds it for the host;
+# pe-logic's tests build it for wasm32 through the build service.
+[package]
+name = "positions"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+pe-sdk = { path = "../../../../pe-sdk" }

@@ -24,7 +24,7 @@ Inputs: `docs/refound-plan.md` (b610464), review files 03, 11 (3.2, 3.5), 13 (Pa
 | User, Q3b | A divergence over 2 s ends in a world-line merge with the main line; nobody waits | 6.4 (M2, with WS-diverge) |
 | User, QR (b), Q8; | A per-player field is its player's input, and a shared script reading it stays shared; its plain read is the latest value, or the field's selector; a local script runs on its player's machine only | 7.1 (M2) |
 | User, 2026-11-24 | A script is shared or local as a whole, flagged automatically; local files, devices and addresses are off by default, with reading and publishing granted separately; per-frame drawing never feeds the simulation | 7.1-7.3 (design, not built) |
-| User, file 17 answers | `Pos` cannot become numbers except as `pos - ORIGIN`; saved offsets name their reference; no warning or test, the types enforce it | 8 |
+| User, file 17 answers; U3 | `Pos` cannot become numbers except as `pos - ORIGIN`; saved offsets name their reference; no warning or test, the types enforce it; in M2 | 8 |
 | User, U1 | M1 contains a small logic edit authored by an agent | 10 |
 | Coordinator | Cranelift from the first build, with metering injected into the module, never wasmi | 5 |
 | User, R7 | Live modification of logic by players with authority; sooner commit wins; the loser rebases | 6.1 |
@@ -1270,25 +1270,66 @@ across k.
 M1 has no per-player script and no draw system. The manifest carries `mode` from v0, so no ABI change is needed
 for local scripts; draw and `state_at` systems are new kinds.
 
-## 8. Positions for script authors (file 17, section 7)
+## 8. Positions for script authors (file 17, section 7; M2, U3) [V: built on `logic/u3-pos`, @logic-eng]
 
-`pe-sdk` exposes the types; `pe-logic` converts at the batch boundary.
+The user's rulings: a position cannot be turned into plain numbers except as `pos - ORIGIN`, where
+`ORIGIN` is a world constant; no warning or test, the type system alone enforces it; an object's own position,
+rotation and scale are relative to its parent, as in Resonite. Exact integer cells stay (`pos.cell(level)`,
+coordinator 20:17Z). In M2 because the user put them there before the region system (U3).
 
-- **`Pos`**: exact everywhere, the store's chunk index plus offset [V `crates/pe-core/src/coords.rs:23-28`],
-  exposed with no accessor to its numbers. Allowed: `Pos - Pos -> Offset<World>` (exact on the chunk indices
-  first), `Pos + Offset<World> -> Pos`, `==`, distance, blend. `ORIGIN` is a constant `Pos`; `pos - ORIGIN` is the
-  only way to absolute numbers, and it reads as the choice it is.
-- **`Offset<S>`**: an ordinary `f32`/`f64` vector tagged with its space: `Own` (the bound object's own space),
-  `Parent`, `World` (world axes, no origin). Mixing two spaces needs an explicit conversion through the bound
-  object. Offsets have no `==`; they offer `within(distance)`.
-- **Fields:** a saved field may be `Pos` or `OffsetFrom<Own | Parent | Anchor>`; a bare `Offset` field does not
-  compile, because the component macro only accepts the field types that name a reference.
-- **What the batch hands a system:** the bound object's own transform relative to its parent, as its inspector
-  shows it, and everything else (query results, hit points, neighbours) in its own space.
-- The store needs a `Pos` field kind (three `i64` and three `f64`, 48 bytes) for the first; that is WS-world's
-  `FieldKind` (section 9).
+**The types** (`pe-sdk/src/space.rs`):
+- **`Pos`** is pe-core's `Pos` (world-model.md 4.2) in pe-sdk's `no_std`: the 1,024 m chunk index per axis and the
+  offset in the chunk, 48 bytes, the store's `Pos` field kind, with private fields. `Pos - Pos -> Offset<World>` is
+  pe-core's pinned formula, rounded once to `f32` at the end. `checked_add` and `checked_sub` with an
+  `Offset<World>` return `Result<Pos, OutOfRange>`, bit for bit pe-core's `checked_add` of the offset widened to
+  `f64`. `Pos + Offset<World>` and `-` trap when out of range (about ±9.4 × 10^21 m), which faults the call
+  deterministically (3.6; Q-P1, coordinator). `distance`, `blend` and `cell(level) -> CellKey`
+  (exact integers, no offset arithmetic) are the rest.
+  - **Missing on purpose:** field access, a constructor from numbers, `Pos + Pos`, `Pos * f32`, conversion to or
+    from arrays, and `encode` or a text parser (world-model.md 4.2's note after @chunks-reviewer's L6).
+  - **The same bits as the engine.** pe-core needs `std`, so pe-sdk's copy keeps pe-core's order of operations and
+    its own exact `floor` (tested bit for bit against std's). `tests/positions.rs` runs 100,000 seeded cases and
+    the range's edges in wasm under the runner and compares the row bytes with pe-core's.
+- **`Offset<S>`** is an `f32` vector tagged with its space: `Own` (the bound object's own space), `Parent` (its
+  parent's; the world's axes for a root) or `World` (world axes, no origin). Two spaces don't mix: converting goes
+  through a pose (below). Offsets have `+ - neg * f32`, `dot`, `cross`, `length` (correctly rounded) and
+  `within(d)`, but no `==`. `f32` was ruled (Q-P2): script maths is `f32`, and an `f32` offset is exact to about
+  1 µm at 8 m.
+- **Fields:** a component field may be a `Pos` or an `OffsetFrom<Own>` / `OffsetFrom<Parent>` (three `f32` in the
+  store; `get()` gives the `Offset<S>` back). A bare `Offset<S>`, or an `OffsetFrom<World>`, is not a field type, so
+  a saved offset always names its reference. [I] For now the space is in the type only; marking it in the store's
+  field description comes with the field modes (7), which change that description too.
+- **What the wall is not:** a security boundary. It stops accidents, as the ruling asks. `Debug` prints a `Pos`
+  exactly (only to `pe.log`, on the author's machine), and a script can copy a row's bytes through `pe.get`. A
+  determined author can recover numbers either way, as `- ORIGIN` already allows (@shader-reviewer).
 
-M1's toy uses only `Offset<Own>` and its own fields. The types exist from v0 so the API does not break in M2 [I].
+**What a system is handed** (`pe-sdk/src/engine.rs`, `pe-logic/src/pose.rs`):
+- **`pe.Transform`** keeps the engine's 80-byte layout, but its position fields are private.
+  - `place(&pose)` gives `Place::Root(Pos)` for a root, or `Place::Child(Offset<Parent>)` for a child.
+    `set_place(&pose, place)` writes one; a kind that doesn't match the object is `PlaceError::Mismatch`. The row
+    alone can't tell a root at chunk 0 from a child, so the pose says which.
+  - `translate(Offset<Parent>)` moves either kind; past the store's 2^50 m local limit it writes nothing.
+  - `rot`, `scale`, `to_parent(Offset<Own>)` and `to_own(Offset<Parent>)` give plain numbers, because rotation
+    and scale are not positions.
+- **`pe.Pose`** is read-only, and the runner computes it for each bound row. It holds the object's world `Pos`, its
+  world rotation and scale, and `root`, set when the object has no frame.
+  - The values are pe-sim's `SimStore::world_transform`, ancestors included, which is plain IEEE arithmetic in a
+    fixed order (pe-sim `transform.rs`), so every machine gets the same bits. A world position out of range faults
+    the call.
+  - It offers `pos()`, `to_world(Offset<Own>)`, `to_own(Offset<World>)` and `at(Offset<Own>) -> Pos`.
+  - Binding it joins `Transform`. It may not be written, and it may not be named in `reads_other`.
+  - It is never stored or hashed. Its id is reserved below `FIRST_USER`, and no registry holds it.
+  - **For skipping unchanged systems (M2):** a Pose row depends on the object's own `Transform` and every
+    ancestor's, not only on the system's bound rows. A system that binds it must count those as its inputs, or never
+    be skipped (@shader-reviewer).
+- **Everything else is in the object's own space:** `query_near`'s results are `(ObjectId, Offset<Own>)`, and G1's
+  `spawn` takes an `Offset<Own>` (10.4.4, @world-model).
+
+**The acceptance's compile-fail tests** (`pe-sdk/src/walls.rs`, run by `cargo test -p pe-sdk --doc`): reading a
+`Pos`'s or a `Transform`'s or a `Pose`'s position fields; converting a `Pos` to or from an array; `Pos + Pos`;
+`Pos * f32`; moving a `Pos` by an `Offset<Own>`; adding offsets of two spaces; comparing offsets with `==`; a
+component field of type `Offset<Own>` or `OffsetFrom<World>`; `Pos::encode`. Each refusal names its error code
+(checked once under nightly rustdoc, which enforces the codes) and sits beside a twin that compiles.
 
 ## 9. What this needs from others
 
