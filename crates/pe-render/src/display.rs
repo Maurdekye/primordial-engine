@@ -7,10 +7,13 @@
 //!   becomes a new blend component, so the drawn pose never moves at the instant a view arrives, and steady motion
 //!   gets no offset at all. Components decay independently, each by a monotone smoothstep, so a further correction
 //!   mid-blend never jumps, and the drawn pose reaches the target within one blend time of the last correction.
-//! - **D3, by size and by view;** every in-view correction above `E_cue` carries the cue.
+//! - **D3, by size and by view;** the cue (outline and ghost) marks only an in-view correction above `E_cue` that a
+//!   rollback deeper than [`CUE_MIN_ROLLBACK`] caused; any other correction just blends to its place, uncued (user
+//!   ruling, 2026-11-26: the cue showed whenever the other player started, stopped, turned or touched
+//!   anything).
 //! - **D4, never correct what the player holds:** the own hands and held objects get no offset, ever.
 //! - **D5:** remote hands blend like any object.
-//! - **D7:** a hold that ends by a lost race blends out of the hand with its cue.
+//! - **D7:** a hold that ends by a lost race blends out of the hand, cued only under D3's rule.
 //!
 //! One-shot effects (D6) are in [`crate::effects`]. The capture bypasses this layer: it draws simulated poses.
 
@@ -36,6 +39,12 @@ const CONTACT_MARGIN: f64 = 0.02;
 /// A change of prediction below this is float error, not an offset: 1 µm, 1 µrad.
 const TOL_POS: f64 = 1e-6;
 const TOL_ANG: f64 = 1e-6;
+/// The shallowest rollback whose corrections carry the cue (D3): half a second of simulated time, strictly deeper
+/// (user ruling: "only ... on rollbacks of more than half a second or so. otherwise remove the effect
+/// entirely"). A view's depth is its `counters.deepest_rollback`, in frames, times the frame period between views.
+pub const CUE_MIN_ROLLBACK: Duration = Duration::from_millis(500);
+/// The frame period assumed before two views have shown one: 60 Hz.
+const DEFAULT_FRAME_SECS: f64 = 1.0 / 60.0;
 /// At most this many live blend components per object; past it the two oldest merge into one.
 const MAX_COMPONENTS: usize = 12;
 
@@ -109,6 +118,9 @@ pub struct DisplaySettings {
     pub t_cue: Duration,
     /// The ghost's opacity at its start; it fades with the outline.
     pub ghost_alpha: f32,
+    /// Only corrections from a rollback deeper than this carry the cue ([`CUE_MIN_ROLLBACK`]). Zero cues every one
+    /// above `E_cue`, the rule before 2026-11-26, which the ball-pit grid keeps checking the cue's coverage with.
+    pub cue_min_rollback: Duration,
     pub controls: Controls,
 }
 
@@ -126,6 +138,7 @@ impl Default for DisplaySettings {
             t_fast: Duration::from_millis(40),
             t_cue: Duration::from_millis(250),
             ghost_alpha: 0.35,
+            cue_min_rollback: CUE_MIN_ROLLBACK,
             controls: Controls::default(),
         }
     }
@@ -188,7 +201,10 @@ pub struct DisplayCounters {
     /// Out-of-view corrections above `E_snap`, which jump by design.
     pub jumps_out_of_view: u64,
     pub cues: u64,
-    /// In-view corrections above `E_cue` with no cue: must be 0.
+    /// In-view corrections above `E_cue` (or a hold lost, D7) that weren't cued because their rollback was no deeper
+    /// than `cue_min_rollback`: blended to their place with no outline and no ghost (D3).
+    pub cues_withheld: u64,
+    /// In-view corrections above `E_cue` from a rollback deeper than `cue_min_rollback` with no cue: must be 0.
     pub cueless_large_corrections: u64,
     /// The largest offset ever applied to an own hand or a held object, in metres (or radians at the bounding
     /// radius): must be exactly 0.
@@ -253,6 +269,8 @@ struct Pending {
     /// velocity, is the prediction the correction replaces.
     base: ViewObject,
     base_time: HostTime,
+    /// The corrected view's rollback went deeper than `cue_min_rollback` (D3).
+    deep: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -308,6 +326,10 @@ pub struct DisplayLayer {
     /// A gap's batch is arriving: the drawn poses to blend from (and whether each was own), closed by `frame`.
     gap_open: bool,
     gap_drawn: BTreeMap<ObjectId, (WorldPose, bool)>,
+    /// A view of the open gap's batch rolled back deeper than `cue_min_rollback` (D3): the gap's blend is cued.
+    gap_deep: bool,
+    /// The simulated time per frame, measured between the newest two views that differ in frame (D3's depth).
+    frame_secs: f64,
     /// The last display frame's time, and the newest [`PERIOD_SAMPLES`] intervals between display frames, ns: the
     /// measured display period that Present's cap adds (render.md 7).
     last_display: Option<HostTime>,
@@ -362,6 +384,8 @@ impl DisplayLayer {
             gap: false,
             gap_open: false,
             gap_drawn: BTreeMap::new(),
+            gap_deep: false,
+            frame_secs: DEFAULT_FRAME_SECS,
             last_display: None,
             periods: VecDeque::new(),
             period: Duration::from_nanos(PERIOD_MAX_NS.unsigned_abs()),
@@ -637,6 +661,14 @@ impl DisplayLayer {
         let lost: Vec<ObjectId> =
             view.effects.iter().filter(|e| e.key.kind == EffectKind::GrabLost).map(|e| e.key.object).collect();
         let interpolating = self.settings.drawn_time.interpolates();
+        let frames = view.frame.0.saturating_sub(prev.frame.0);
+        let secs = view.sim_time.secs_since(prev.sim_time);
+        if frames > 0 && secs > 0.0 {
+            self.frame_secs = secs / frames as f64;
+        }
+        let deep = self.deep(&view);
+        // Under (b) a gap's batch arrives here: its blend (`close_gap`) is cued if any of its views was deep.
+        self.gap_deep |= self.gap_open && deep;
         let hands = own_hands(&view);
         for o in &view.objects {
             let own_now = is_own(o) && !self.settings.controls.correct_own;
@@ -692,7 +724,13 @@ impl DisplayLayer {
                     let base = prev.object(o.id).expect("checked").clone();
                     let cont = extrapolate(&base, view.sim_time.secs_since(prev.sim_time));
                     let st = self.objects.get_mut(&o.id).expect("made above");
-                    st.pending.push(Pending { frame: view.frame, at: view.sim_time, base, base_time: prev.sim_time });
+                    st.pending.push(Pending {
+                        frame: view.frame,
+                        at: view.sim_time,
+                        base,
+                        base_time: prev.sim_time,
+                        deep,
+                    });
                     self.substitutes.insert((o.id, view.frame), cont);
                 }
                 continue;
@@ -710,7 +748,7 @@ impl DisplayLayer {
                 (apply(old_target, st.offset(now)), old_target)
             };
             let force_cue = was_own && lost.contains(&o.id);
-            self.correct(o, old_target, drawn_before, target_now, corrected || was_own, force_cue, now, volumes);
+            self.correct(o, old_target, drawn_before, target_now, corrected || was_own, force_cue, deep, now, volumes);
         }
         let ids: Vec<ObjectId> = view.objects.iter().map(|o| o.id).collect();
         self.objects.retain(|id, _| ids.binary_search(id).is_ok());
@@ -723,6 +761,7 @@ impl DisplayLayer {
     fn open_gap(&mut self, view: Arc<FrameView>) {
         self.counters.views_taken += 1;
         self.counters.gaps += 1;
+        self.gap_deep = self.deep(&view);
         self.history.clear();
         self.history.push_back(view.clone());
         self.substitutes.clear();
@@ -755,6 +794,7 @@ impl DisplayLayer {
     /// carries all).
     fn arrive_in_gap(&mut self, view: Arc<FrameView>) {
         self.counters.views_taken += 1;
+        self.gap_deep |= self.deep(&view);
         self.history.push_back(view.clone());
         while self.history.len() > HISTORY {
             self.history.pop_front();
@@ -784,6 +824,7 @@ impl DisplayLayer {
         volumes: &[ViewVolume],
     ) {
         self.gap_open = false;
+        let deep = std::mem::take(&mut self.gap_deep);
         let kept = std::mem::take(&mut self.gap_drawn);
         for o in &newest.objects {
             let Some(&(drawn, was_own)) = kept.get(&o.id) else { continue };
@@ -797,7 +838,7 @@ impl DisplayLayer {
             // The old components were offsets from targets that no longer exist; the new one carries the whole
             // difference from the drawn pose, so nothing moves now.
             self.objects.get_mut(&o.id).expect("checked").components.clear();
-            self.correct(o, drawn, drawn, target_now, true, false, now, volumes);
+            self.correct(o, drawn, drawn, target_now, true, false, deep, now, volumes);
         }
     }
 
@@ -831,8 +872,16 @@ impl DisplayLayer {
             let old_target = extrapolate(&p.base, t_draw.secs_since(p.base_time));
             let (Some(new_target), _) = self.resolve_in(hist, id, t_draw) else { continue };
             let drawn_before = apply(old_target, self.objects[&id].offset(now));
-            self.correct(o, old_target, drawn_before, new_target, true, false, now, volumes);
+            self.correct(o, old_target, drawn_before, new_target, true, false, p.deep, now, volumes);
         }
+    }
+
+    /// Whether `view`'s rollback went deeper than `cue_min_rollback` (D3): more of its `deepest_rollback` frames than
+    /// the threshold is whole frames at the measured period (30 at 60 Hz), so a period's rounding to the nanosecond
+    /// can't tip an exact half second over. A zero threshold makes every correction deep.
+    fn deep(&self, view: &FrameView) -> bool {
+        let min = self.settings.cue_min_rollback;
+        min.is_zero() || view.counters.deepest_rollback as f64 > (min.as_secs_f64() / self.frame_secs).round()
     }
 
     /// Add one change of prediction as a blend component, by D3's rules.
@@ -845,6 +894,7 @@ impl DisplayLayer {
         target_now: WorldPose,
         corrected: bool,
         force_cue: bool,
+        deep: bool,
         now: HostTime,
         volumes: &[ViewVolume],
     ) {
@@ -869,12 +919,15 @@ impl DisplayLayer {
         let big = e_pos > s.e_snap || e_ang > s.a_snap;
         let st = self.objects.get_mut(&o.id).expect("state exists");
         let mut cued = false;
-        if in_view && (e > s.e_cue || force_cue) && s.controls.cue {
+        // D3: the cue only for a rollback deeper than `cue_min_rollback`; any other correction blends uncued.
+        if in_view && (e > s.e_cue || force_cue) && !deep {
+            self.counters.cues_withheld += 1;
+        } else if in_view && (e > s.e_cue || force_cue) && s.controls.cue {
             st.cue = Some(CueState { start: now, ghost: drawn_before });
             self.counters.cues += 1;
             cued = true;
         }
-        if in_view && e > s.e_cue && !cued {
+        if in_view && e > s.e_cue && deep && !cued {
             self.counters.cueless_large_corrections += 1;
         }
         if !in_view && big {

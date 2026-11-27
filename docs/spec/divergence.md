@@ -699,7 +699,8 @@ exposes them (WS-api). They are measured in every harness scenario (plan 4.1, ru
 | `corrections_per_min` | Drawn objects whose drawn pose had to blend or jump after a correction, per minute | pe-render (section 8) |
 | `visible_error` | Mean and max distance between drawn and simulated pose, over objects in view, per second | pe-render |
 | `snaps_in_view` | Corrections that jumped rather than blended while in view | pe-render |
-| `cueless_large_corrections` | Corrections in view larger than `E_cue` shown without a cue. Must be zero | pe-render |
+| `cueless_large_corrections` | Corrections in view larger than `E_cue`, from a rollback deeper than 0.5 s, shown without a cue. Must be zero | pe-render |
+| `cues_withheld` | Corrections in view larger than `E_cue` left uncued because their rollback was 0.5 s or shallower (D3) | pe-render |
 | `own_error` | Error of the local player's own hands and held objects. Must be exactly zero | pe-render |
 | `rollback_depth` | Deepest rollback, and the distribution | pe-replica (WS-state) |
 | `voided_own` | The local player's entries voided as late (P5) | pe-agree, through S3 |
@@ -733,7 +734,8 @@ open splits, and pe-diverge's open episode.
 pe-render builds it (plan 3.1, WS-render); WS-diverge states what it must do and how it is tested. The numbers are
 parameters, to be tuned with a person in VR at the M1 checkpoint (plan section 8), within the user's targets
 [R, answer 8; file 14 8.3]:
-- **no correction larger than a hand's width in view without a visible cue** (`E_cue`, section 14);
+- **no correction larger than a hand's width in view without a visible cue** (`E_cue`, section 14), narrowed by the
+  user on 2026-11-26 to corrections from rollbacks deeper than about half a second (D3);
 - others see an action within **0.25 s on good links and 1 s on poor ones**. That is a harness property over every
   network scenario, owned by WS-harness; the display layer's blends count inside it, so `T_blend` must leave room.
 
@@ -753,9 +755,9 @@ replay since the last publication (a `corrected` flag, or the correction offset)
 **D3. Choose by size and by view** (file 14, 4.1):
 - an error below `E_small` blends over `T_blend`;
 - an error above `E_snap`, out of view, jumps at once;
-- any correction in view larger than `E_cue` (a hand's width) carries a visible cue, whether it blends or jumps
-  [R]. The cue's form is WS-render's to design; `cueless_large_corrections` counts misses and must be
-  zero;
+- a correction in view larger than `E_cue` (a hand's width) carries a visible cue, whether it blends or jumps
+  [R], when a rollback deeper than half a second caused it; any other has no cue at all (user ruling, 2026-11-26). The cue's form is WS-render's to design; `cueless_large_corrections` counts misses and
+  must be zero;
 - above `E_snap` in view: a fast blend over `T_fast`, or a jump if the blend's straight path would pass through
   another drawn solid. [I: the solid test may wait until after M1; until then, in view always blends fast.]
 

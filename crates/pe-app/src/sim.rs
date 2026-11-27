@@ -4057,8 +4057,12 @@ pub(crate) mod tests {
                     st.root_splits
                 );
             }
-            let counters: Vec<_> =
-                roots.iter().map(|v| (v.counters.deepest_rollback, v.counters.frames_resimulated)).collect();
+            // The run's deepest rollback (a view's own is since the view before it) and the frames re-simulated.
+            let counters: Vec<_> = sims
+                .iter()
+                .zip(&roots)
+                .map(|((s, ..), v)| (s.stats().deepest_rollback, v.counters.frames_resimulated))
+                .collect();
             println!(
                 "leads {leads:?} (true = 46 ms ahead): winner member {} (the {}); deepest rollback / frames re-simulated: \
                  member 0 {:?}, member 1 {:?}; shown ahead {} and {} frames",

@@ -320,9 +320,9 @@ impl DepthRange { pub fn xr_depth_info(&self) -> XrDepthInfo; }   // min/max dep
 - **What each costs, at the lead measured on Virtual Desktop** (38-63 ms p50-p95 [V M0]). Present doesn't pay
   either cost for the lead: the world is drawn as of the engine's present, and the lead is the VR user's to manage.
   - (a) draws a ball at 5 m/s up to 30 cm from where the next frame view puts it, when it hits something meanwhile.
-    The display layer blends that miss exactly as a correction (D2), and **in-view misses above `E_cue` carry the
-    cue and count** under the user's target [R coordinator, on review M2]: the player sees a jump the same way
-    whatever caused it. `extrapolation_error` reports them apart as well.
+    The display layer blends that miss exactly as a correction (D2), uncued unless a deep rollback caused it
+    (D3): the player sees a jump the same way whatever caused it
+    [R coordinator, on review M2]. `extrapolation_error` reports them apart as well.
   - (b) shows every object 40-60 ms or more after its simulated time.
   - Neither makes a pushed ball react sooner: the simulation hasn't seen the push yet.
 - **Counted under every rule** (for pe-xr's counters too): `t_draw − display_time`, the extrapolation span, the age
@@ -374,8 +374,8 @@ open points R1 to R12 (section 15).
   - DR3's test holds the correction state fixed (below).
 
   Shared hits and grabs are then judged on the fixed step, as today. So during a correction's blend, the picture
-  and the simulated pose differ by the current offset, which `visible_error_max` bounds (8). Below `E_cue` nothing
-  marks it; above it the object carries the cue, so the player can see a correction is running. A grab in that time
+  and the simulated pose differ by the current offset, which `visible_error_max` bounds (8). Nothing marks it
+  unless a rollback deeper than half a second caused it (D3), when the object carries the cue. A grab in that time
   is still judged at the simulated pose, and can be refused or land off by that offset. The desktop hand's ray
   (9, "Hit testing") reads the last drawn poses today, which are this scene while no script draws; it must move to
   the interaction scene before any script can change a drawn pose. A click on personal UI is tested against the
@@ -459,10 +459,16 @@ that decays to zero. The simulated pose comes from S5; time-resolving it (sectio
   - `E_small` ≤ `e` ≤ `E_snap`, out of every view: blend over `T_blend`, with no cue (review L1);
   - `e > E_snap` (1 m or 90°) and out of every view: jump, with offset 0;
   - in view: blend over `T_blend`, or over `T_fast` (40 ms) above `E_snap`;
-  - **every in-view correction above `E_cue`** (a hand's width, 10 cm [R]) **carries the cue.** My
-    proposal for the cue (R6): a 250 ms fading outline on the object, plus a faint ghost at the pose it left, fading
-    over the same time. It is visible, but not a flash. `cueless_large_corrections` counts any miss; the code path
-    makes a miss impossible, and the test checks it;
+  - **the cue only for a deep rollback** (user ruling, 2026-11-26, replacing the 2026-11-13 rule that
+    every in-view correction above `E_cue` carries it): an in-view correction above `E_cue` (a hand's width, 10 cm
+    [R]) carries the cue only when the view's rollback (`counters.deepest_rollback` frames at the
+    frame period between views) went deeper than `CUE_MIN_ROLLBACK`, 0.5 s. Any other correction just blends to its
+    place, with no outline and no ghost, counted in `cues_withheld`. (At the 2026-11-26 friend test the cue showed
+    1,767 times in 716 s and 7,028 times in 2,257 s, whenever the other player started, stopped, turned or touched
+    anything; the deepest rollback of either run was 31-33 frames.) The cue (R6): a 250 ms fading outline on the
+    object, plus a faint ghost at the pose it left, fading over the same time. `cueless_large_corrections` counts a
+    deep one left uncued, and must be zero; `DisplaySettings::cue_min_rollback` zero restores the old rule, which
+    test 6 checks the cue's coverage with;
   - "in view" means inside any current view frustum (either eye, the window), tested with the object's bounding
     sphere;
   - the "jump if the blend's path would pass through a solid" rule is after M1 [I, divergence.md 8].
@@ -508,7 +514,8 @@ that decays to zero. The simulated pose comes from S5; time-resolving it (sectio
     removes; on one clock it is none.
   - **When a hold ends any other way** (undone because a race was lost, a lapsed claim, or a release a replay moved
     as it happened, `CORRECTED`), the object enters the display layer with its last drawn pose. Its offset is set
-    from there and blends as a correction; a lost grab also plays its short cue (D7). Nothing emits `GrabLost` in
+    from there and blends as a correction; a lost grab plays its short cue under D3's rule
+    (D7). Nothing emits `GrabLost` in
     the app yet [V, @astra-deliberator], so a lost race is cued by size alone.
   - **When a hold starts,** the object snaps to the hand (xr.md 5.6).
   - `own_error` measures the offset applied to own hands and held objects, which must be exactly zero. It doesn't
@@ -538,8 +545,8 @@ that decays to zero. The simulated pose comes from S5; time-resolving it (sectio
 - **After a gap** (section 3): the history and every pending correction start over from the batch's first view. Under
   X8 (a) the batch's other views are history only; under (b) a `CORRECTED` one among them waits as usual. At the
   frame that took the batch, every object blends from where it was drawn to that frame's target, as a correction by
-  D3's rules: an in-view one above `E_cue` carries the cue, so a hitch ends in outlines, never in an uncued jump
-  (@coordinator-opus's ruling, with my question on the cue in). Counted in `gaps`.
+  D3's rules: cued when a view of the batch rolled back deeper than `CUE_MIN_ROLLBACK`, otherwise an uncued blend
+  (@coordinator-opus's ruling, narrowed by the user's). Counted in `gaps`.
 - **Known edge:** an object corrected out of view blends over `T_blend` with no cue (D3). If it comes into view while
   blending, the rest of the blend shows uncued, up to about `1.5 × e / T_blend` per second (16 cm a 90 Hz frame for
   a 1 m correction). Test 6 saw none; a cue on entering view would close it.
@@ -891,7 +898,8 @@ On the gate, in pe-render, with a software adapter where a GPU is needed:
    - the drawn pose reaches the target within `T_blend` of the last correction;
    - a mid-blend correction never jumps;
    - no overshoot;
-   - every in-view correction above `E_cue` has a cue;
+   - every in-view correction above `E_cue` from a rollback deeper than `CUE_MIN_ROLLBACK` has a cue, and a shallower
+     one has none;
    - `own_error == 0`, including a hold that ends by a lost race;
    - the two controls of section 8.
 2. **Effects:** a replayed key fires once; a retracted sustained effect stops; own effects play at once.
@@ -909,7 +917,9 @@ On the gate, in pe-render, with a software adapter where a GPU is needed:
    `Presenter` at 90 Hz, under X8 (a), (b) and Present, each also with a 300 ms reader stall. The target is checked on
    the display layer's counter and, independently, on the drawn output: no object in view moves more than `E_cue` in one
    display frame without a cue, except where its own views jump without `CORRECTED` (a push's edit, drawn as it
-   happened). The quick form (1 seed) is on the gate; the full grid is `--ignored`, run in release.
+   happened). It runs with `cue_min_rollback` zero (every correction above `E_cue` cued), so it checks the cue's
+   coverage rather than the shipped rule (D3). The quick form (1 seed)
+   is on the gate; the full grid is `--ignored`, run in release.
 7. **By hand, on the headset** (each run with a go through @coordinator-opus): the frame time with 500 balls and one
    remote hand at 60 ms; the cue's look; hand tracking enabled in Virtual Desktop first (the user will). X8 is now a single confirmation run under Present: swat, push slowly and catch, on the user's word
    with SteamVR closed (coordinator).

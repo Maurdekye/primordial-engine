@@ -1813,6 +1813,10 @@ impl<W: WorldModel> ReplicaImpl<W> {
         view.hits_from = self.hits_low.filter(|&low| low < self.frame);
         self.hits_low = self.hits.keys().next().copied();
         view.counters = self.counters;
+        // `deepest_rollback` is the deepest since the last view (S5's ViewCounters), so it starts over here; pe-render
+        // cues only a view whose rollback went past half a second (render.md 8, D3), and pe-app keeps the run's
+        // deepest as the most any view read. The other counters stay cumulative.
+        self.counters.deepest_rollback = 0;
         self.view = Arc::new(view);
     }
 }

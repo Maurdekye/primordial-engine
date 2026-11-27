@@ -104,12 +104,13 @@ impl Mode {
 }
 
 fn modes() -> [Mode; 6] {
-    let a = DisplaySettings::default();
-    let b = DisplaySettings {
-        drawn_time: DrawnTime::InterpolateLate { d_render: Duration::from_millis(50) },
-        ..Default::default()
-    };
-    let present = DisplaySettings { drawn_time: DrawnTime::present(60), ..Default::default() };
+    // Every correction above E_cue cued, the rule before 2026-11-26: the grid checks the cue's coverage (no pop
+    // without one). The shipped rule cues only rollbacks deeper than CUE_MIN_ROLLBACK (render.md 8.2, D3), which leaves
+    // a shallow one's blend uncued by design.
+    let all = DisplaySettings { cue_min_rollback: Duration::ZERO, ..Default::default() };
+    let a = all;
+    let b = DisplaySettings { drawn_time: DrawnTime::InterpolateLate { d_render: Duration::from_millis(50) }, ..all };
+    let present = DisplaySettings { drawn_time: DrawnTime::present(60), ..all };
     [
         Mode { name: "X8 (a), the default", settings: a, stall: false },
         Mode { name: "X8 (b)", settings: b, stall: false },
@@ -313,6 +314,7 @@ impl Row {
         c.snaps_in_view += x.snaps_in_view;
         c.jumps_out_of_view += x.jumps_out_of_view;
         c.cues += x.cues;
+        c.cues_withheld += x.cues_withheld;
         c.cueless_large_corrections += x.cueless_large_corrections;
         c.own_error = c.own_error.max(x.own_error);
         c.visible_error_max = c.visible_error_max.max(x.visible_error_max);
