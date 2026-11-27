@@ -13,6 +13,15 @@ pe_sdk::component! {
 }
 
 pe_sdk::component! {
+    /// More of the cross-check. In: `a`, `b`. Out: `a.blend(b, t)` for t = 0, 0.5, 1 (bit k of `ok` set when blend k
+    /// is in range), and `a.cell(level)` for each of [`LEVELS`], each axis's `i128` as its low then high `u64`.
+    pub struct More { a: Pos, b: Pos, blends: [Pos; 3], ok: u32, _pad: u32, cells: [u64; 36] }
+}
+
+/// The levels `cells` covers: both ends of the range and both sides of the chunk.
+pub const LEVELS: [i32; 6] = [-60, -1, 0, 1, 63, 64];
+
+pe_sdk::component! {
     /// What `locate` saw: the pose's position, the point `aim` ahead of it, whether the object is a root, and its
     /// place (the offset from its parent for a child, the difference from the pose's position for a root). `step` is
     /// the move `walk` makes each frame.
@@ -49,6 +58,28 @@ pe_sdk::system! {
 }
 
 pe_sdk::system! {
+    fn more(stage: PrePhysics, read: [], write: [m: More]) |_ctx, me| {
+        me.m.ok = 0;
+        for (k, t) in [0.0f32, 0.5, 1.0].into_iter().enumerate() {
+            match me.m.a.blend(me.m.b, t) {
+                Ok(p) => {
+                    me.m.blends[k] = p;
+                    me.m.ok |= 1 << k;
+                }
+                Err(OutOfRange) => me.m.blends[k] = ORIGIN,
+            }
+        }
+        for (i, level) in LEVELS.into_iter().enumerate() {
+            let c = me.m.a.cell(level).map_or([0; 3], |c| c.c);
+            for a in 0..3 {
+                me.m.cells[6 * i + 2 * a] = c[a] as u64;
+                me.m.cells[6 * i + 2 * a + 1] = (c[a] >> 64) as u64;
+            }
+        }
+    }
+}
+
+pe_sdk::system! {
     fn walk(stage: PrePhysics, read: [w: Where], write: [t: Transform]) |_ctx, me| {
         let _ = me.t.translate(me.w.step.get());
     }
@@ -72,4 +103,4 @@ pe_sdk::system! {
     }
 }
 
-pe_sdk::script!(components: [PosCase, Where, Far, Pose, Transform], systems: [cases, walk, locate, overflow]);
+pe_sdk::script!(components: [PosCase, More, Where, Far, Pose, Transform], systems: [cases, more, walk, locate, overflow]);

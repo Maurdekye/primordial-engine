@@ -225,6 +225,58 @@ fn the_sdk_pos_in_wasm_gives_pe_cores_bytes() {
     });
 }
 
+#[test]
+fn cells_and_blends_in_wasm_give_pe_cores_values() {
+    big_stack(|| {
+        // The levels the script covers (its `LEVELS`).
+        const LEVELS: [i32; 6] = [-60, -1, 0, 1, 63, 64];
+        let mut w = World::new();
+        let mut seq = Seq(0x2545_F491_4F6C_DD1D);
+        let mut cases = Vec::new();
+        for k in 0..20_000u128 {
+            let a = pos([seq.chunk(), seq.chunk(), seq.chunk()], [seq.local(), seq.local(), seq.local()]);
+            let b = pos([seq.chunk(), seq.chunk(), seq.chunk()], [seq.local(), seq.local(), seq.local()]);
+            let mut row = Vec::with_capacity(536);
+            for p in [a, b, Pos::ORIGIN, Pos::ORIGIN, Pos::ORIGIN] {
+                row.extend_from_slice(&pose::pos_row(p));
+            }
+            row.extend_from_slice(&[0u8; 8 + 288]);
+            let o = w.object(1 + k, &[("More", row)]);
+            cases.push((o, a, b));
+        }
+        let (pre, _) = w.frame(1);
+        assert!(pre.faults.is_empty(), "{:?}", pre.faults);
+        let mut in_range = [0u32; 3];
+        for (o, a, b) in cases {
+            let row = w.row("More", o);
+            let ok = u32::from_le_bytes(row[240..244].try_into().unwrap());
+            // The SDK's blend: `a + (b - a) * t`, the difference rounded to f32 and scaled in f32.
+            let d = (b - a).0.map(|x| canon32(x as f32));
+            for (k, t) in [0.0f32, 0.5, 1.0].into_iter().enumerate() {
+                let want = a.checked_add(Offset(d.map(|x| (x * t) as f64)));
+                match want {
+                    Ok(p) => {
+                        assert_eq!(ok >> k & 1, 1, "blend({a:?}, {b:?}, {t})");
+                        assert_eq!(&row[96 + 48 * k..144 + 48 * k], &pose::pos_row(p), "blend({a:?}, {b:?}, {t})");
+                        in_range[k] += 1;
+                    }
+                    Err(_) => assert_eq!(ok >> k & 1, 0, "blend({a:?}, {b:?}, {t}) is out of range"),
+                }
+            }
+            for (i, level) in LEVELS.into_iter().enumerate() {
+                let want = a.cell(level).expect("a level in range").c;
+                for (ax, &c) in want.iter().enumerate() {
+                    let at = 248 + 8 * (6 * i + 2 * ax);
+                    let lo = u64::from_le_bytes(row[at..at + 8].try_into().unwrap());
+                    let hi = u64::from_le_bytes(row[at + 8..at + 16].try_into().unwrap());
+                    assert_eq!(((hi as u128) << 64 | lo as u128) as i128, c, "{a:?}.cell({level}) axis {ax}");
+                }
+            }
+        }
+        assert!(in_range.iter().all(|&n| n > 5_000), "{in_range:?}");
+    });
+}
+
 fn transform(chunk: [i64; 3], p: [f64; 3], rot: [f32; 4], scale: [f32; 3]) -> Transform {
     Transform { chunk, pos: p, rot, scale, _pad: 0 }
 }

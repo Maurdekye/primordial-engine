@@ -423,6 +423,8 @@ fn abs(x: f64) -> f64 {
 /// `f64::floor`, bit for bit, for every input (`core` has no float methods on this toolchain). At and above 2^52
 /// every finite `f64` is an integer, so it is its own floor; below, the cast to `i64` truncates exactly. `-0.0`,
 /// infinities and NaN are returned as they are, as `floor` returns them.
+///
+/// Not `core::arch::wasm32::f64_floor`: it is unstable (`wasm_numeric_instr`) on the pinned toolchain, 1.99.0.
 pub(crate) fn floor(x: f64) -> f64 {
     if x.is_nan() || abs(x) >= 4_503_599_627_370_496.0 || x == 0.0 {
         return x; // NaN, integral (|x| >= 2^52, infinities included), or a zero of either sign
@@ -439,6 +441,9 @@ fn sqrt_f32(x: f32) -> f32 {
 }
 
 /// IEEE-754 square root by digit recurrence, correctly rounded, so every machine gets the same bits.
+///
+/// Not `core::arch::wasm32::f64_sqrt`, which would cost one instruction: it is unstable (`wasm_numeric_instr`) on the
+/// pinned toolchain, 1.99.0. Its fuel cost (a 55-step loop) is the price until it is stable.
 pub(crate) fn sqrt_f64(x: f64) -> f64 {
     if x.is_nan() || x <= 0.0 {
         return if x == 0.0 { x } else { f64::NAN };
