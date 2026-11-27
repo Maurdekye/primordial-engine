@@ -318,9 +318,9 @@ fn a_mesh_with_both_sides_weighs_its_front_only() {
     assert_eq!(pw.mass(id(4)).unwrap().to_bits(), pw.mass(id(5)).unwrap().to_bits());
 }
 
-/// A scale applies axis by axis, a mirror keeps the mass (and mirrors the centre), and an axis under 0.01 in
-/// magnitude is refused, whatever the body's kind (@coordinator-opus), as is a scaled vertex beyond
-/// the size limit.
+/// A scale applies axis by axis, a mirror keeps the mass (and mirrors the centre), and an axis under 1e-6 in
+/// magnitude is refused, whatever the body's kind (@coordinator-opus; 0.01 until E2), as
+/// is a scaled vertex beyond the size limit. 1e-6 itself builds.
 #[test]
 fn a_mesh_scale_applies_per_axis_and_an_axis_under_the_floor_is_refused() {
     let (c, h) = ([0.3, -0.2, 0.1], [0.5, 0.25, 0.1]);
@@ -340,11 +340,15 @@ fn a_mesh_scale_applies_per_axis_and_an_axis_under_the_floor_is_refused() {
     pw.add_body(id(3), &with(BodyKind::Dynamic, [2.0, 1.0, 0.5])).unwrap();
     assert!((pw.mass(id(3)).unwrap() - plain).abs() <= 1e-5 * plain, "2 x 1 x 0.5 keeps the volume");
     pw.add_body(id(4), &with(BodyKind::Dynamic, [0.01, -0.01, 1.0])).unwrap();
+    // Under the old 0.01 floor: a dynamic body while its volume holds 10^-9 m^3, a static one down to the floor.
+    pw.add_body(id(5), &with(BodyKind::Dynamic, [0.005, -0.005, 1.0])).unwrap();
+    assert!((pw.mass(id(5)).unwrap() - 2.5e-5 * plain).abs() <= 1e-5 * 2.5e-5 * plain, "0.005 x 0.005 x 1");
+    pw.add_body(id(6), &with(BodyKind::Static, [1.0e-6, 1.0, -1.0e-6])).unwrap();
     for kind in [BodyKind::Dynamic, BodyKind::Static] {
-        for (scale, axis) in [([0.005, 1.0, 1.0], "x"), ([1.0, -0.0, 1.0], "y"), ([1.0, 1.0, 0.0], "z")] {
+        for (scale, axis) in [([0.99e-6, 1.0, 1.0], "x"), ([1.0, -0.0, 1.0], "y"), ([1.0, 1.0, 0.0], "z")] {
             match pw.add_body(id(9), &with(kind, scale)) {
                 Err(PhysicsError::InvalidValue(why)) => {
-                    assert!(why.starts_with(&format!("mesh scale {axis} is under 0.01 in magnitude")), "{why}");
+                    assert!(why.starts_with(&format!("mesh scale {axis} is under 1e-6 in magnitude")), "{why}");
                     assert!(why.ends_with("rescale the mesh at import"), "{why}");
                 }
                 other => panic!("{scale:?}: {other:?}"),
@@ -675,4 +679,44 @@ fn check_hull_refuses_what_a_hull_shape_refuses() {
     assert!(matches!(pe_physics::check_hull(&far), Err(PhysicsError::InvalidValue(_))));
     let nan = [[0.0, 0.0, 0.0], [f32::NAN, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
     assert!(pe_physics::check_hull(&nan).is_err());
+}
+
+/// E2 (@coordinator-opus): a mesh scaled under the old 0.01 floor collides where it is drawn. Each case
+/// is a static slab and a ball dropped on it; the ball comes to rest at the slab's top plus its radius plus Box3D's
+/// mesh rest offset, 4.93 mm in world units whatever the sizes (a known limit, world-model.md 3.2). With the old floor
+/// each scale here was refused; Box3D alone would have raised it to 0.01, and the millimetre slab would have been
+/// 10 m wide and 1 m thick. The resting heights' bits are pinned (the same on every platform).
+#[test]
+fn a_mesh_scaled_under_the_old_floor_collides_where_it_is_drawn() {
+    // A millimetre blob: 1 m x 10 cm x 1 m at 0.001.
+    let mm = box_mesh([0.0; 3], [500.0, 50.0, 500.0]);
+    // A 10 m room's floor, 20 cm thick, at 1/200.
+    let room = box_mesh([0.0; 3], [5.0, 0.1, 5.0]);
+    // (mesh, scale, the slab's top, the ball's radius)
+    let cases: [(&Mesh, [f32; 3], f64, f32); 5] = [
+        (&mm, [0.001; 3], 0.05, 0.05),
+        (&mm, [-0.001, 0.001, 0.001], 0.05, 0.05),
+        (&room, [0.005; 3], 0.0005, 0.005),
+        // Flattened to the floor (a 1 m slab 0.1 mm thick) and mirrored through it.
+        (&mm, [0.001, 1.0e-6, 0.001], 50.0e-6, 0.05),
+        (&mm, [0.001, -1.0e-6, 0.001], 50.0e-6, 0.05),
+    ];
+    let mut bits = Vec::new();
+    for (k, &(mesh, scale, top, radius)) in cases.iter().enumerate() {
+        let mut pw = PhysicsWorld::new(PhysicsConfig::engine()).unwrap();
+        let slab = ShapeDesc::new(Geometry::Mesh { mesh: mesh.clone(), scale, both_sides: false });
+        pw.add_body(id(1), &BodyDesc::new(BodyKind::Static, [0.0; 3]).with_shape(slab)).unwrap();
+        let drop = top + 4.0 * f64::from(radius);
+        pw.add_body(id(2), &ball([0.1 * f64::from(radius), drop, 0.0], radius, [0.0; 3])).unwrap();
+        for _ in 0..120 {
+            pw.step(DT).unwrap();
+        }
+        let y = pw.pose(id(2)).unwrap().position[1];
+        let gap = y - top - f64::from(radius);
+        assert!((gap - 4.93e-3).abs() < 1.0e-4, "case {k} {scale:?}: {gap} above the drawn top, not 4.93 mm");
+        println!("RESULT e2_scaled_mesh case={k} y_bits={:016x}", y.to_bits());
+        bits.push(y.to_bits());
+    }
+    let golden = [0x3fbadcab5123a90c, 0x3fbadcab5123a90c, 0x3f855c224acd70f0, 0x3fac264a8ec428d0, 0x3fac264a8ec428d0];
+    assert_eq!(bits, golden, "resting heights' bits");
 }

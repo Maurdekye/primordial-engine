@@ -3246,7 +3246,8 @@ fn a_mesh_must_sit_at_its_body_s_origin_unturned() {
 }
 
 /// Box3D's floor on scale (world-model.md 3.2): any axis of a mesh's or a hull's world scale, parent scales
-/// included, under 0.01 in magnitude refuses the body, naming the axis; 0.01 itself builds.
+/// included, under 1e-6 in magnitude refuses the body, naming the axis; 1e-6 itself builds, and so does a miniature's
+/// 0.005, which the floor of 0.01 refused until E2 (@coordinator-opus).
 #[test]
 fn a_scale_axis_under_the_floor_refuses_a_mesh_or_a_hull() {
     let body_at = |kind: u32, parent: [f32; 3], own: [f32; 3]| {
@@ -3263,19 +3264,20 @@ fn a_scale_axis_under_the_floor_refuses_a_mesh_or_a_hull() {
     };
     for kind in [shape_kind::MESH, shape_kind::HULL] {
         let floor = |axis| Err(Unbuildable::Shape(ShapeReason::ScaleFloor { axis }));
-        assert_eq!(body_at(kind, [1.0; 3], [1.0, 0.005, 1.0]), floor(1));
-        assert_eq!(body_at(kind, [1.0; 3], [-0.009, 1.0, 1.0]), floor(0), "in magnitude");
+        assert_eq!(body_at(kind, [1.0; 3], [1.0, 0.5e-6, 1.0]), floor(1));
+        assert_eq!(body_at(kind, [1.0; 3], [-0.99e-6, 1.0, 1.0]), floor(0), "in magnitude");
         assert_eq!(
-            body_at(kind, [1.0, 1.0, 0.05], [1.0, 1.0, 0.1]),
+            body_at(kind, [1.0, 1.0, 0.5e-5], [1.0, 1.0, 0.1]),
             floor(2),
             "the world scale, the parent's included"
         );
-        assert!(body_at(kind, [1.0; 3], [0.01, 1.0, -0.01]).is_ok_and(|b| b.is_some()), "0.01 builds");
+        assert!(body_at(kind, [1.0; 3], [1.0e-6, 1.0, -0.01]).is_ok_and(|b| b.is_some()), "1e-6 builds");
+        assert!(body_at(kind, [0.005; 3], [1.0; 3]).is_ok_and(|b| b.is_some()), "a 1/200 miniature builds");
     }
     let why = Unbuildable::Shape(ShapeReason::ScaleFloor { axis: 2 }).to_string();
     assert_eq!(
         why,
-        "the shape's world scale z is under 0.01 in magnitude, Box3D's floor on scale: rescale the mesh at import"
+        "the shape's world scale z is under 1e-6 in magnitude, Box3D's floor on scale: rescale the mesh at import"
     );
 }
 

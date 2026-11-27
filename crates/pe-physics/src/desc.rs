@@ -43,9 +43,10 @@ pub mod limits {
     pub const MAX_SIM_BLOB_BYTES: usize = 960 * 1024;
     /// Most points a hull v1 blob holds (world-model.md 3.2).
     pub const MAX_HULL_BLOB_POINTS: usize = 64;
-    /// Smallest magnitude of a mesh scale axis: Box3D's floor (`MIN_SCALE`), which it would raise a smaller axis to,
-    /// so the mesh would collide and weigh as a solid 1% thick where it is drawn flat. Refused instead
-    /// (@coordinator-opus, after @fable-reviewer; world-model.md 3.2, "the scale floor").
+    /// Smallest magnitude of a mesh scale axis: the fork's floor (`MIN_SCALE`, 1e-6; upstream Box3D's is 0.01), which
+    /// it would raise a smaller axis to, so the mesh would collide and weigh larger than it is drawn. Refused instead
+    /// (@coordinator-opus, after @fable-reviewer; lowered from 0.01 by E2;
+    /// world-model.md 3.2, "the scale floor").
     pub const MIN_MESH_SCALE: f32 = box3d_rust::math_functions::MIN_SCALE;
 }
 
@@ -206,9 +207,9 @@ impl ShapeDesc {
                     return Err(PhysicsError::InvalidValue("mesh scale"));
                 }
                 const UNDER: [&str; 3] = [
-                    "mesh scale x is under 0.01 in magnitude, Box3D's floor on scale: rescale the mesh at import",
-                    "mesh scale y is under 0.01 in magnitude, Box3D's floor on scale: rescale the mesh at import",
-                    "mesh scale z is under 0.01 in magnitude, Box3D's floor on scale: rescale the mesh at import",
+                    "mesh scale x is under 1e-6 in magnitude, Box3D's floor on scale: rescale the mesh at import",
+                    "mesh scale y is under 1e-6 in magnitude, Box3D's floor on scale: rescale the mesh at import",
+                    "mesh scale z is under 1e-6 in magnitude, Box3D's floor on scale: rescale the mesh at import",
                 ];
                 for (s, why) in scale.iter().zip(UNDER) {
                     if s.abs() < MIN_MESH_SCALE {

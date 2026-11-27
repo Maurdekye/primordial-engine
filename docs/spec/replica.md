@@ -133,8 +133,9 @@ Rules for shapes, as built [V `peworld.rs`]:
   - **Scale composes as a box's does:** a mesh's and a hull's world scale is composed axis by axis down the chain, so
     under a turned parent with an uneven scale it isn't the shear the parent's frame would give, as for an offset box
     (@design-reviewer's N3 on CCD part 2 D) [read].
-  - **The scale floor:** any axis of a mesh's or a hull's world scale, parent scales included, under 0.01 in
-    magnitude (or not a number) refuses the body (`ScaleFloor`, naming the axis); 0.01 builds.
+  - **The scale floor:** any axis of a mesh's or a hull's world scale, parent scales included, under 1e-6 in
+    magnitude (or not a number) refuses the body (`ScaleFloor`, naming the axis); 1e-6 builds (0.01 until E2,
+    world-model.md 3.2).
   - **A blob is read and built once per machine,** then kept by its hash and its reading (mesh or hull), so a
     rebuild takes the built mesh (crate::blobs). The cache lets the least recently used builds go once their blobs
     pass 32 MiB [I]; it is a cache of a pure function of the bytes, so what it keeps never changes a result. A hull
@@ -1360,7 +1361,7 @@ world-model.md 3.2 says what a bullet means; this is the solver's side [V `crate
   - A dynamic body with a mesh whose shapes together have no mass is refused before anything is made
     (`PhysicsError::Massless`, with the dropped count when dropped triangles opened a mesh); pe-replica says so first,
     as `Unbuildable::Mass` (2.1), by the same check (`BodyDesc::check_mass`). A closed mesh's mass is summed once per
-    scale and density: the mesh keeps its newest 8 answers, so the checks before a build cost no second sum. A mesh scale axis under 0.01 in magnitude is refused, `InvalidValue` naming the axis
+    scale and density: the mesh keeps its newest 8 answers, so the checks before a build cost no second sum. A mesh scale axis under 1e-6 in magnitude (0.01 until E2) is refused, `InvalidValue` naming the axis
     (@coordinator-opus).
   - Both sides: a second Box3D shape, the triangles reversed, with density 0 and a name that rides in the snapshot,
     so it adds no mass and a hit on it names its front's place among the body's shapes, after a restore and on a

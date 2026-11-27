@@ -875,8 +875,8 @@ fn part(
 /// A mesh or a hull, from its blob (world-model.md 3.2), at `placed`; `center` is its position as the build uses it.
 /// In order: the world must build them (its blob-shapes setting, 6.6 config item 8), the shape must name a blob, a mesh
 /// must sit at its body's origin, unturned (v1: Box3D's mesh has no local transform), every axis of the world scale
-/// must be 0.01 or more in magnitude, this machine must hold the blob (a local condition, [`Unbuildable::BlobAbsent`]),
-/// and the blob must read and build.
+/// must be 1e-6 or more in magnitude (`pe_physics::limits::MIN_MESH_SCALE`), this machine must hold the blob (a local
+/// condition, [`Unbuildable::BlobAbsent`]), and the blob must read and build.
 fn blob_part(
     world: &World,
     shapes: &BlobShapes,

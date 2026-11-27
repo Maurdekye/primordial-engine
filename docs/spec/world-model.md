@@ -539,17 +539,40 @@ Players call worlds **domains** (the user's ruling); the code keeps "world".
         scale, so shrinking a small mesh below 10⁻⁹ m³ leaves it without mass (@vdw-physics); (b) a mesh authored
         tiny and scaled up loses triangles that are large in the world, an author-facing limit that the import
         warning (below) names;
-      - **the scale floor:** any axis of a mesh's or a hull's world scale (parent scales included) under 0.01 in
+      - **the scale floor:** any axis of a mesh's or a hull's world scale (parent scales included) under 1e-6 in
         magnitude is refused and the body isn't built. Through pe-replica, a mesh's and a hull's alike are caught
         first, as `Unbuildable::Shape(ShapeReason::ScaleFloor { axis })`; pe-physics's `InvalidValue`, "mesh scale x
-        is under 0.01 in magnitude, Box3D's floor on scale: rescale the mesh at import", stays as the backstop for
+        is under 1e-6 in magnitude, Box3D's floor on scale: rescale the mesh at import", stays as the backstop for
         a direct caller (@vdw-physics, CCD part 2 D).
-        The reason names the axis and the 0.01 floor (@coordinator-opus, after @vdw-physics and
-        @fable-reviewer). Box3D would otherwise raise such an axis to 0.01, keeping its sign (−0 to
-        +0.01) [V `box3d-fork/src/math_functions/vector.rs`, `safe_scale`], so a mesh scaled flat would collide and
-        weigh as a solid 1% thick where it is drawn flat. It is a floor on scale, not on size: a 10 m mesh scaled to
-        1 cm is refused, while a 1 cm box builds. Lowering or removing the floor in the fork is a later, measured
-        change;
+        The reason names the axis and the floor (@coordinator-opus, after @vdw-physics and
+        @fable-reviewer). The fork would otherwise raise such an axis to the floor, keeping its sign
+        (−0 to +1e-6) [V `box3d-fork/src/math_functions/vector.rs`, `safe_scale`], so the mesh would collide and
+        weigh larger than it is drawn. It is a floor on scale, not on size. Upstream Box3D's floor is 0.01, and it
+        was the engine's until E2 lowered it (@coordinator-opus, after
+        @physics-2's E2 spike). Box3D applies a mesh's scale exactly: the narrow phase gets each triangle as `scale × vertex`,
+        in world units, and the triangle queries and rays use `1 / scale` on world-unit bounds. So 0.01 was no
+        numeric limit: on a mesh flattened on one axis, contacts stay right to 1e-38, mirrored or not, and rays hit
+        to 1e-38 from 1 m away and to 1e-35 from 1 km (1000 / scale overflows below), and a uniform scale to 1e-8
+        neither falls through nor gives a NaN [V, E2 spike f1, f3, f7]. A scale of 0.01 or more steps bit for bit
+        as before. 1e-6 keeps a wide margin and still lets a 10 km blob reach 1 cm; a millimetre blob at 0.001 and a
+        1/200 miniature build. What limits a small mesh is its size in the world, against Box3D's tolerances, which
+        are fixed in metres (next);
+      - **small meshes, known limits** (E2 spike, @physics-2): they hold for a mesh authored small at scale 1 as much
+        as for a scaled one:
+        - everything rests 4.93 mm above a mesh (Box3D's `mesh_rest_offset`, the linear slop, 5 mm), whatever the
+          sizes [V, E2 spike f3, f5; pe-physics `a_mesh_scaled_under_the_old_floor_collides_where_it_is_drawn`]: a
+          1 cm ball floats half its size, and objects of 3 mm and under also slide. A hull floor holds a 1 cm ball
+          to within 1% of its size and a 1 cm box to within 5%. Scaling this one offset per contact pair to the
+          smaller shape (the user's ruling) was measured in E2 and does not hold: bodies sliding across a mesh then
+          catch on its internal triangle edges, more so the faster they go, so the 5 mm stays for now while those edge
+          contacts, and a mesh inset 5 mm instead, are studied;
+        - a mesh contact gathers at most 512 triangles, from the other shape's box widened by 7 cm in world units
+          [V `box3d-fork/src/contact/mesh_cache.rs`, `MAX_MESH_CONTACT_TRIANGLES`], so a dense mesh drops what lands
+          on it: on a 4,608-triangle terrain 20 cm across, 7 of 9 balls fell through (E2 spike f6). A fall-through
+          at an allowed scale is a bug, and E2 removes it (@coordinator-opus);
+        - the drop (above) is judged in the blob's units, so a mesh shrunk by its scale keeps triangles that the same
+          surface authored at its world size would lose (E2 spike f2), and pe-import bakes units into the vertices,
+          so a model imported in millimetres loses its triangles under 0.7 mm, below what the tolerances resolve;
       - **a `Scale` edit rebuilds the body** (pe-replica's `Rebuilt`: the body is removed and added again), never in
         the step. The rebuild sums the mass twice, once in pe-physics's refusal check and once in Box3D's
         composition. Each sum runs the closedness test's sort again, since the fork's mass sees only the built mesh,
@@ -601,9 +624,11 @@ Players call worlds **domains** (the user's ruling); the code keeps "world".
   - a hull is a convex `SimBlobRef`, on any body, its mass Box3D's. The mesh's scale floor (above) holds for it
     too, but there it is pe-replica's: pe-replica passes a hull's points already scaled into the body's frame and
     pe-physics never scales a hull, so the refusal is `Unbuildable::Shape` at pe-replica's build, with the same
-    reason (@vdw-physics). A hull has no placement limit: a child hull's points are scaled on the shape's own axes,
-    then turned, then offset into the body's frame, as an offset box is; the scale floor is judged on those axes
-    of the world scale.
+    reason (@vdw-physics). A hull needs no floor of its own: Box3D's hull builder judges flatness relative to the
+    hull's size [V `box3d-fork/src/hull/builder_init.rs`, `compute_tolerance`], and a scale that flattens a hull
+    past it is `ScaledHull` (replica.md's shape reasons); the shared floor keeps one rule for both. A hull has no
+    placement limit: a child hull's points are scaled on the shape's own axes, then turned, then offset into the
+    body's frame, as an offset box is; the scale floor is judged on those axes of the world scale.
   - **The blob formats** (@coordinator-opus, Q2, after @vdw-physics's proposal and @fable-reviewer's
     points). `Shape.mesh` names a mesh or a hull blob by `Shape.kind`; both travel inside their entry (3.4, carried
     blobs). Common to both: little-endian; coordinates are `f32` metres in the shape's local frame, before the

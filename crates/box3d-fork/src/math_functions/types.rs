@@ -107,7 +107,12 @@ pub const DEG_TO_RAD: f32 = 0.01745329251;
 pub const RAD_TO_DEG: f32 = 57.2957795131;
 
 /// Minimum scale used for scaling collision meshes, etc. (B3_MIN_SCALE)
-pub const MIN_SCALE: f32 = 0.01;
+///
+/// Primordial Engine fork (E2): 1e-6, where upstream has 0.01. See FORK.md. Box3D applies a mesh's scale exactly
+/// (`get_mesh_triangle` gives the narrow phase `scale * vertex`; queries and rays use `1 / scale`), so 0.01 is no
+/// numeric limit: contacts on a flattened mesh were measured right to 1e-38 and rays to 1e-35. Any scale of 0.01 or
+/// more is unchanged.
+pub const MIN_SCALE: f32 = 1.0e-6;
 
 pub const VEC2_ZERO: Vec2 = Vec2 { x: 0.0, y: 0.0 };
 

@@ -205,8 +205,8 @@ pub enum ShapeReason {
     /// hull blob's points are checked as the blob gives them, before the shape's scale: one authored past the size limit
     /// is refused even where its scale would shrink it (@design-reviewer's N2 on CCD part 2 D).
     BadBlob,
-    /// An axis of a mesh's or a hull's world scale (parent scales included) under 0.01 in magnitude, Box3D's floor on
-    /// scale (world-model.md 3.2): 0 is x, 1 is y, 2 is z.
+    /// An axis of a mesh's or a hull's world scale (parent scales included) under 1e-6 in magnitude, the fork's floor
+    /// on scale (`pe_physics::limits::MIN_MESH_SCALE`, world-model.md 3.2), or not a number: 0 is x, 1 is y, 2 is z.
     ScaleFloor { axis: u8 },
     /// A mesh whose place in its body, composed down the chain, isn't the body's origin, unturned (world-model.md 3.2,
     /// v1): Box3D's mesh has no local transform.
@@ -249,7 +249,7 @@ impl std::fmt::Display for ShapeReason {
             ),
             ShapeReason::ScaleFloor { axis } => write!(
                 f,
-                "the shape's world scale {} is under 0.01 in magnitude, Box3D's floor on scale: rescale the mesh at import",
+                "the shape's world scale {} is under 1e-6 in magnitude, Box3D's floor on scale: rescale the mesh at import",
                 ["x", "y", "z"].get(usize::from(*axis)).copied().unwrap_or("?")
             ),
             ShapeReason::MisplacedMesh => write!(
