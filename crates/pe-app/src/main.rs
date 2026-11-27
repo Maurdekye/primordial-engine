@@ -674,6 +674,10 @@ fn main() {
     // The window's status line (render.md 8.1): a joiner's "Joining: catching up…".
     let status = Arc::new(StatusLine::default());
     let sim = sim.with_status(status.clone()).with_hand_feel(pe_app::handfeel::console()).with_moves(moves.clone());
+    // The menu's note about a member's link (app.md 4.1): it dropped, or it closed and New session makes a new invite.
+    let link_notes = pe_app::leave::LinkNotes::default();
+    let opener = menu_seed.as_ref().is_some_and(|s: &MenuSeed| matches!(s.role, pe_app::menu::Role::Opener { .. }));
+    let sim = sim.with_link_notes(link_notes.clone(), opener);
     // `--slow-frame` (pe_app::slowframe): the status line and the end line say so while the replica waits.
     let sim = sim.with_slow_frame(pe_app::slowframe::armed());
     // `PE_TICK_TRACE=<file>`: a line a second and one per long tick, for a stall's phase (crate::trace). Off by default.
@@ -828,7 +832,8 @@ fn main() {
                 report: report.clone(),
                 shown: Some(display_lead.clone()),
                 ui: menu_seed.clone().map(|s| {
-                    let host = pe_app::menu::AppHost::new(s.files, s.replies, console.clone());
+                    let host = pe_app::menu::AppHost::new(s.files, s.replies, console.clone())
+                        .with_link_notes(link_notes.clone());
                     Box::new(pe_app::menu::Menu::new(s.role, Box::new(host))) as Box<dyn pe_render::menu::Ui>
                 }),
                 // The move feed the drawn rig turns with (locomotion L4c): pe-xr's MoveRing once L4a/L4b wire it, the
@@ -922,7 +927,8 @@ fn main() {
         captures: captures.clone(),
         // The menu, if VR didn't take it (a run in the window, or VR that ended).
         ui: menu_seed.take().map(|s| {
-            let host = pe_app::menu::AppHost::new(s.files, s.replies, console.clone());
+            let host =
+                pe_app::menu::AppHost::new(s.files, s.replies, console.clone()).with_link_notes(link_notes.clone());
             Box::new(pe_app::menu::Menu::new(s.role, Box::new(host))) as Box<dyn pe_render::menu::Ui>
         }),
         moves: Some(desktop_moves),

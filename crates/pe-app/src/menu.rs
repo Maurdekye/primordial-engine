@@ -82,6 +82,10 @@ pub trait MenuHost: Send {
     fn spawn_status(&self) -> Option<String> {
         None
     }
+    /// What the session says about a member's link (app.md 4.1): it dropped, or it closed and nobody can come back.
+    fn link_note(&self) -> Option<crate::leave::LinkNote> {
+        None
+    }
 }
 
 /// Button ids.
@@ -219,6 +223,20 @@ impl Menu {
                 b.push(Button::new(id::NEW_SESSION, "New session"));
                 b.push(Button::new(id::JOIN, "Join a session"));
             }
+        }
+        // A member's link (@coordinator-opus): the note under the status. Once a link closed nobody can
+        // come back into this session, so the opener's New session comes first, and its invite, which would be refused
+        // now, and the invite's time left go (@xr-eng's Low).
+        if let Some(note) = self.host.link_note() {
+            if note.gone && matches!(self.role, Role::Opener { .. }) {
+                b.retain(|x| x.id != id::INVITE);
+                lines.clear();
+                if let Some(i) = b.iter().position(|x| x.id == id::NEW_SESSION) {
+                    let new = b.remove(i);
+                    b.insert(0, new);
+                }
+            }
+            lines.extend(note.lines);
         }
         b.push(Button::new(id::QUIT, "Quit"));
         b.push(Button::new(id::CLOSE, "Close menu"));
@@ -517,6 +535,8 @@ pub struct AppHost {
     /// The opener's admission: a pasted reply code goes where the console's does.
     replies: Option<std::sync::mpsc::Sender<pe_net_crypto::identity::Reply>>,
     quit: std::sync::Arc<crate::console::Quit>,
+    /// The simulation's note about members' links ([`crate::sim::Sim::with_link_notes`]).
+    notes: Option<crate::leave::LinkNotes>,
 }
 
 impl AppHost {
@@ -525,7 +545,13 @@ impl AppHost {
         replies: Option<std::sync::mpsc::Sender<pe_net_crypto::identity::Reply>>,
         quit: std::sync::Arc<crate::console::Quit>,
     ) -> AppHost {
-        AppHost { dir, replies, quit }
+        AppHost { dir, replies, quit, notes: None }
+    }
+
+    /// Show the simulation's note about members' links: the same `notes` as [`crate::sim::Sim::with_link_notes`].
+    pub fn with_link_notes(mut self, notes: crate::leave::LinkNotes) -> AppHost {
+        self.notes = Some(notes);
+        self
     }
 }
 
@@ -625,6 +651,10 @@ impl MenuHost for AppHost {
 
     fn spawn_status(&self) -> Option<String> {
         crate::spawn::installed().and_then(|s| s.status())
+    }
+
+    fn link_note(&self) -> Option<crate::leave::LinkNote> {
+        self.notes.as_ref().and_then(|n| n.lock().unwrap_or_else(|e| e.into_inner()).clone())
     }
 }
 
@@ -776,6 +806,7 @@ mod tests {
         now: u64,
         /// The world takes spawns (S4's panel shows).
         spawns: bool,
+        note: Option<crate::leave::LinkNote>,
     }
 
     impl MenuHost for FakeHost {
@@ -815,11 +846,14 @@ mod tests {
         fn spawn_status(&self) -> Option<String> {
             self.spawns.then(|| "Box: spawned".into())
         }
+        fn link_note(&self) -> Option<crate::leave::LinkNote> {
+            self.note.clone()
+        }
     }
 
     fn opener(paste: Result<String, String>, clipboard: bool) -> (Menu, Log) {
         let log = Log::default();
-        let host = FakeHost { log: log.clone(), clipboard, paste, now: 1_000, spawns: false };
+        let host = FakeHost { log: log.clone(), clipboard, paste, now: 1_000, spawns: false, note: None };
         (Menu::new(Role::Opener { invite: "pe1:abc".into(), expires_unix_s: 1_000 + 52 * 60 }, Box::new(host)), log)
     }
 
@@ -877,6 +911,38 @@ mod tests {
         assert!(s.lines[0].contains("52 min"), "{:?}", s.lines);
         assert!(m.spec(1_000 + 3_600).lines[0].contains("expired"));
         assert!(m.is_open(), "open at launch");
+    }
+
+    /// @ticket:primordial-engine/friend-test-rejoining-after-a-drop-is-refused-wi (@coordinator-opus): a
+    /// member's link note shows under the status; once the link closed, the opener's New session comes first and its
+    /// Invite goes. A
+    /// joiner's buttons stay as they are.
+    #[test]
+    fn a_link_note_shows_and_a_closed_link_puts_new_session_first() {
+        let note = |gone| crate::leave::LinkNote { lines: vec![format!("note {gone}")], gone };
+        let host = |n| FakeHost {
+            log: Log::default(),
+            clipboard: true,
+            paste: Err("x".into()),
+            now: 1_000,
+            spawns: false,
+            note: Some(n),
+        };
+        let role = Role::Opener { invite: "pe1:abc".into(), expires_unix_s: 1_000 + 52 * 60 };
+        let ids = |s: &PanelSpec| s.buttons.iter().map(|b| b.id).collect::<Vec<u32>>();
+        let dropped = Menu::new(role.clone(), Box::new(host(note(false)))).spec(1_000);
+        assert_eq!(ids(&dropped), [id::INVITE, id::JOIN, id::NEW_SESSION, id::QUIT, id::CLOSE], "dropped: as before");
+        assert_eq!(dropped.lines, ["Your session. Invite valid for 52 min", "note false"]);
+        let gone = Menu::new(role, Box::new(host(note(true)))).spec(1_000);
+        assert_eq!(
+            ids(&gone),
+            [id::NEW_SESSION, id::JOIN, id::QUIT, id::CLOSE],
+            "closed: New session first, no invite"
+        );
+        assert_eq!(gone.lines, ["note true"], "the invite's time left goes too");
+        let joiner = Menu::new(Role::Joiner { reply: "pe1r:x".into() }, Box::new(host(note(true)))).spec(1_000);
+        assert_eq!(ids(&joiner), [id::LEAVE, id::QUIT, id::CLOSE]);
+        assert_eq!(joiner.lines.last().map(String::as_str), Some("note true"));
     }
 
     #[test]
@@ -963,7 +1029,14 @@ mod tests {
     #[test]
     fn a_lapsed_question_asks_again() {
         let log = Log::default();
-        let host = FakeHost { log: log.clone(), clipboard: true, paste: Err("x".into()), now: 2_000, spawns: false };
+        let host = FakeHost {
+            log: log.clone(),
+            clipboard: true,
+            paste: Err("x".into()),
+            now: 2_000,
+            spawns: false,
+            note: None,
+        };
         let mut m = Menu::new(Role::Alone, Box::new(host));
         m.confirm = Some((id::QUIT, 2_000 - 1));
         m.press(id::QUIT);
@@ -1003,7 +1076,8 @@ mod tests {
     #[test]
     fn a_joiner_copies_its_reply_and_leaves_into_a_new_session() {
         let log = Log::default();
-        let host = FakeHost { log: log.clone(), clipboard: true, paste: Err("x".into()), now: 0, spawns: false };
+        let host =
+            FakeHost { log: log.clone(), clipboard: true, paste: Err("x".into()), now: 0, spawns: false, note: None };
         let mut m = Menu::new(Role::Joiner { reply: "pe1r:me".into() }, Box::new(host));
         let ids: Vec<u32> = m.spec(0).buttons.iter().map(|b| b.id).collect();
         // No reply to copy: the invite let it in. The press still works, for the fallback.
@@ -1109,7 +1183,14 @@ mod tests {
     #[test]
     fn the_spawn_panel_sits_beside_the_menu_and_spawns_in_front_of_the_head() {
         let log = Log::default();
-        let host = FakeHost { log: log.clone(), clipboard: true, paste: Err("x".into()), now: 1_000, spawns: true };
+        let host = FakeHost {
+            log: log.clone(),
+            clipboard: true,
+            paste: Err("x".into()),
+            now: 1_000,
+            spawns: true,
+            note: None,
+        };
         let mut m = Menu::new(Role::Opener { invite: "pe1:abc".into(), expires_unix_s: 9_000 }, Box::new(host));
         let out = m.frame(&input(&m, None, 0, false, false));
         assert_eq!(out.overlays.len(), 2, "the main panel and the spawn panel");

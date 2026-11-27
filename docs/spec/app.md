@@ -735,8 +735,19 @@ with @fable-reviewer's refinements, and):
    - this machine holds the member's signed `Leave`, but E isn't final here: "<player> left before the session could
      confirm it. You can keep playing, but changes from now on won't be shared, and this world ends when you quit."
      Once every other member has left this way, its hands are no longer paced (section 3, step 2);
-   - no `Leave` from it is in hand: "<player>'s connection dropped. They may come back; until then, changes wait to
-     be confirmed."
+   - no `Leave` from it is in hand: "<player> can't rejoin this session: press New session and send them the new
+     invite." (a joiner: "<player>'s connection closed, and this session can't go on: ask them for a new invite (their
+     New session)."). At n = 2 nobody can come back into the session: the member is still in it, every cut needs its
+     vote, so no `Admit` can be final, and a restarted process can't rechain yet (agreement.md 8). A member that comes
+     back by its invite anyway is refused, told "this session can't take you back after a drop: ask them for a new
+     invite (their New session)" (@coordinator-opus;
+     @item:primordial-engine/friend-test-rejoining-after-a-drop-is-refused-wi).
+
+   Before that, when a member's link goes quiet (pe-net's `LinkDegraded`, nothing heard for `T_degraded`, 1 s), the
+   console says "<player>'s connection dropped. If they're back within 30 s, play goes on." (`T_idle`), and "<player>'s
+   connection is back." if it comes back on the same connection (transport.md 6.5). The menu shows the latest of these
+   under its status (4.1), and once a link closed, the opener's New session comes first. That note stays, and the
+   console says nothing more about that member's link.
 
    M1 keeps no world past any quit (saves are M5), so a stranded member loses nothing a normal quit doesn't; "delayed,
    never lost" is about edits within a live session. In M1 these lines go to the console only, in
@@ -774,6 +785,10 @@ from a menu instead of the console (crate::menu, on pe-render's panels, render.m
     invite-only; the menu's press still works, for the fallback.)
   - A joiner: **Leave (back to my own session)**; "In someone else's session".
   - Alone: **New session**, **Join a session**.
+  - A member's link (section 4, step 3): the latest "dropped" or "can't rejoin" note goes under the status, in every
+    role, in short lines of its own that fit a panel row (34 characters; the console's lines would be cut before
+    their instruction, @xr-eng). Once a link closed, the opener's **New session** comes first, and its Invite button
+    and the invite's time left go, since that invite would be refused (@coordinator-opus).
   - Always: **Quit** (the graceful quit, as the console's `quit`) and **Close menu**. A press's result shows as the
     last lines ("Invite copied (52 min left); also saved to ...").
   - **Quit and Join ask first** (@coordinator-opus): the first press says what happens and its button
