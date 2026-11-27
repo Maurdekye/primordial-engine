@@ -20,8 +20,13 @@
 //!   the world it imports at E, whose root E's certificate covers (@engine-architect's Low on b84295a2).
 //! - **A `Remove`** (S3 v1.13; agreement.md 8) takes a member out at the next epoch: a Protocol entry whose payload is
 //!   [`Remove::encode`], the key removed and why ([`RemoveReason`]). [`RemoveReason::Admin`] is an admin's removal of
-//!   another member (never its own: that is a `Leave`). [`RemoveReason::Silent`] is the user's automatic removal of a
-//!   member silent for 30 s; its rule isn't built, so the fold denies it for now.
+//!   another member (never its own: that is a `Leave`). [`RemoveReason::Silent`] (S3 v1.14) is one member's vote that
+//!   another has been silent for 30 s (the user's ruling): S3 counts the votes, and the one that brings the
+//!   tally to a quorum takes the member out (agreement.md 8, "Silent members"). The world ignores a vote.
+//!   [`RemoveReason::Departed`] (S3 v1.14) follows such a removal into the world: once S3's epoch drops a member by
+//!   the tally, its members sign a `Remove{k, Departed}`, which S3 makes effective only while k awaits departure
+//!   (removed by the tally, no `Departed{k}` effective since; never for a current member), and pe-replica applies as
+//!   k's leave; duplicates are harmless.
 
 use std::collections::BTreeMap;
 
@@ -49,8 +54,10 @@ pub const REMOVE_VERSION: u8 = 1;
 pub enum RemoveReason {
     /// An admin removes another member.
     Admin = 0,
-    /// A member silent for 30 s (the user's); not yet allowed by the fold.
+    /// One member's vote that another has been silent for 30 s (the user's ruling).
     Silent = 1,
+    /// A member S3's silence tally removed, for the world to follow (module doc).
+    Departed = 2,
 }
 
 /// A `Remove` entry's payload (module doc).
@@ -81,6 +88,7 @@ impl Remove {
                 let reason = match reason {
                     0 => RemoveReason::Admin,
                     1 => RemoveReason::Silent,
+                    2 => RemoveReason::Departed,
                     _ => return Some(None),
                 };
                 Some(Remove { key: MemberKey(key.try_into().expect("32 bytes")), reason })
@@ -189,6 +197,10 @@ pub enum GovVerdict {
     Admit { key: MemberKey, role: u32 },
     /// Allowed: `key` leaves the members at the next epoch, if it is one (S3 voids it as `NoChange` otherwise).
     Remove { key: MemberKey },
+    /// A silence vote against `key` (S3 v1.14): S3 counts it in the epoch's tally.
+    Silent { key: MemberKey },
+    /// `key`'s departure, for the world (S3 v1.14): S3 makes it effective only while `key` awaits departure.
+    Departed { key: MemberKey },
 }
 
 /// One epoch's governance state (module doc): each member's role bits (pe-world's permission bits); only
@@ -221,16 +233,19 @@ impl GovState {
     /// admin (the signer's own signature is its vouch), admits with the payload's role. S3 checks separately that the
     /// signer is a member and that the key isn't one.
     ///
-    /// A `Remove`: an admin's removal of another member is allowed ([`RemoveReason::Admin`]); a removal of the
-    /// signer's own key, by a non-admin, malformed or [`RemoveReason::Silent`] (not built) is denied.
+    /// A `Remove`: an admin's removal of another member is allowed ([`RemoveReason::Admin`]), and any signer's
+    /// silence vote ([`RemoveReason::Silent`]) or departure ([`RemoveReason::Departed`]) about another key; S3 checks
+    /// that the signer is a member, and for a departure that the key is a former one. One about the signer's own key,
+    /// an admin removal by a non-admin, or a malformed one is denied.
     pub fn step(&self, e: &SignedEntry) -> Option<GovVerdict> {
         if let Some(remove) = Remove::of(e) {
             return Some(match remove {
-                Some(Remove { key, reason: RemoveReason::Admin })
-                    if self.is_admin(&e.entry.author) && key != e.entry.author =>
-                {
+                Some(Remove { key, .. }) if key == e.entry.author => GovVerdict::Deny,
+                Some(Remove { key, reason: RemoveReason::Admin }) if self.is_admin(&e.entry.author) => {
                     GovVerdict::Remove { key }
                 }
+                Some(Remove { key, reason: RemoveReason::Silent }) => GovVerdict::Silent { key },
+                Some(Remove { key, reason: RemoveReason::Departed }) => GovVerdict::Departed { key },
                 _ => GovVerdict::Deny,
             });
         }
@@ -323,8 +338,10 @@ mod tests {
         let mut extra = p.to_vec();
         extra.push(0);
         assert_eq!(Remove::decode(&extra), Some(None));
+        let d = Remove { reason: RemoveReason::Departed, ..r };
+        assert_eq!(Remove::decode(&d.encode()), Some(Some(d)));
         let mut bad = p.to_vec();
-        *bad.last_mut().unwrap() = 2;
+        *bad.last_mut().unwrap() = 3;
         assert_eq!(Remove::decode(&bad), Some(None));
         let mut v2 = p.to_vec();
         v2[REMOVE.len()] = 2;

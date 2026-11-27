@@ -1910,6 +1910,19 @@ impl Sim {
             }
         }
         let leaving = self.leaving != Leaving::Staying;
+        // What agreement asks this member to sign (S3 v1.14, agreement.md 8 "Silent members"): a silence vote against a
+        // member it has heard nothing new from for the silence time, or a removed member's departure for the world to
+        // follow. One at most per frame, at the frame's stamp, never after this member's `Leave`. A refusal is offered
+        // again later by agreement.
+        if !leaving
+            && let Some(l) = &mut self.local
+            && let Some(payload) = self.agree.take_protocol()
+        {
+            let entry = l.chain.entry(self.replica.domain(), stamp, Class::Protocol, payload.to_vec());
+            if let Ok(signed) = self.agree.submit(entry) {
+                l.chain.took(&signed);
+            }
+        }
         // A join this member admits holds script commits back from the joiner's ready (app.md 4). Read after step 1,
         // which may have just made the joiner ready, so pe-api's check and this frame's drain below agree with the
         // `Admit` written next.

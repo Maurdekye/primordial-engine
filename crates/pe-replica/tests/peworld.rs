@@ -2738,6 +2738,67 @@ fn a_remove_takes_the_removed_members_hand_and_grab_as_its_leave_would() {
     assert!(!r.physics().has_body(oid(B_HAND)) && r.physics().joint_count() == 0, "no hand body, no grab");
 }
 
+/// Silent members (S3 v1.14; agreement.md 8): A's silence vote against B (`Remove{B, Silent}`) at frame 5 is nothing
+/// in the world; S3's removal reaches it by `Remove{B, Departed}`, here A's at 10, which does what B's leave does. A
+/// duplicate at 12 (every remaining member signs one) is a true no-op: applied, nothing written, the same root as a
+/// world without it (@world-model). B admitted again after it comes back fresh: two new hands from the
+/// `Admit`'s frame, none of the old ones (coordinator: S3 admits B only once a `Departed` is final).
+#[test]
+fn a_silence_vote_is_nothing_in_the_world_and_the_first_departure_takes_the_hand() {
+    let (grab, _) = grab_then_leave();
+    let keys = keys();
+    let b_key = keys.key(1);
+    let remove = |reason| pe_seams::Remove { key: b_key, reason }.encode();
+    let mut a = EntryBuilder::new(&keys, 0);
+    let vote = a.next(Class::Protocol, Frame(5), remove(pe_seams::RemoveReason::Silent));
+    let departed = a.next(Class::Protocol, Frame(10), remove(pe_seams::RemoveReason::Departed));
+    let duplicate = a.next(Class::Protocol, Frame(12), remove(pe_seams::RemoveReason::Departed));
+    let run = |with_duplicate: bool| {
+        let mut s = Source::default();
+        s.add(grab.clone());
+        s.add(vote.clone());
+        s.add(departed.clone());
+        if with_duplicate {
+            s.add(duplicate.clone());
+        }
+        let mut r = replica_of(with_bs_hand());
+        r.advance(Frame(9), &mut s);
+        assert!(matches!(r.outcome(&vote.id()).map(|o| o.1), Some(Outcome::Applied { .. })), "the vote applies");
+        let store = r.world().world().store();
+        assert!(store.exists(oid(B_HAND)) && r.physics().joint_count() == 1, "the vote changes nothing");
+        r.advance(Frame(20), &mut s);
+        assert_eq!(r.faults(), 0);
+        assert!(matches!(r.outcome(&departed.id()).map(|o| o.1), Some(Outcome::Applied { .. })));
+        let store = r.world().world().store();
+        assert!(!store.exists(oid(B_HAND)), "B's hand is gone");
+        assert!(store.exists(oid(HAND)), "A's stays");
+        assert_eq!(store.parent(oid(TOY)), None, "the toy is a root");
+        assert!(r.world().claims().is_empty() && r.physics().joint_count() == 0, "no grab");
+        r
+    };
+    let mut once = run(false);
+    let mut twice = run(true);
+    assert!(
+        matches!(twice.outcome(&duplicate.id()).map(|o| o.1), Some(Outcome::Applied { .. })),
+        "the duplicate applies as nothing, not a refusal"
+    );
+    assert_eq!(roots(&mut once, 20), roots(&mut twice, 20), "a duplicate departure moved the roots");
+    assert_eq!(twice.world().root(), once.world().root(), "a duplicate departure moved the live root");
+
+    // The rejoin, once the departure applied: fresh hands from the `Admit`'s frame, none of the old.
+    let mut pw = PeWorld::new(with_bs_hand(), DomainId(0));
+    assert!(matches!(pw.apply(Frame(10), &departed).0, Outcome::Applied { .. }));
+    let again = a.next(Class::Protocol, Frame(15), pe_seams::Admit::new(b_key, perm::EDIT).encode());
+    assert!(matches!(pw.apply(Frame(15), &again).0, Outcome::Applied { .. }));
+    let mut hands: Vec<ObjectId> = pw.hands().into_iter().filter(|h| h.owner == b_key).map(|h| h.hand).collect();
+    hands.sort_by_key(|id| id.to_u128());
+    let line = again.entry.line;
+    let mut fresh = vec![ObjectId::hand(line, b_key, 0, Frame(15)), ObjectId::hand(line, b_key, 1, Frame(15))];
+    fresh.sort_by_key(|id| id.to_u128());
+    assert_eq!(hands, fresh, "B's hands after the rejoin");
+    assert!(!pw.world().store().exists(oid(B_HAND)), "B's old hand came back");
+}
+
 /// A leave that arrives late rolls the replica back to its stamp and reaches the roots of a replica that had it in
 /// order. Until then the hand and the grab stay.
 #[test]

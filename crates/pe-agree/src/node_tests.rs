@@ -96,6 +96,14 @@ struct Sim {
     link_down: Option<(usize, usize, i64, i64)>,
     /// (from, to, extra ms, jitter ms): one direction of one link is slower by extra plus up to jitter ms.
     slow_link: Option<(usize, usize, i64, i64)>,
+    /// (member, from ms, until ms): everything it sends then is lost (it can receive but not send).
+    mute: Option<(usize, i64, i64)>,
+    /// (member, from ms, until ms): everything sent to it then is lost (it can send but not receive).
+    deaf: Option<(usize, i64, i64)>,
+    /// Sign what `take_protocol` offers, as pe-app's driver does each frame (silence votes, departures).
+    drive_protocol: bool,
+    /// Per member: the protocol payloads it signed through `drive_protocol`, with their stamps.
+    protocol: Vec<Vec<(EntryRef, Bytes, Frame)>>,
     /// The world's frame clock.
     clock: Clock,
     /// (hands, edits): entries a member submits each frame, on one chain (overrides `every_ms` when set).
@@ -225,6 +233,10 @@ impl Sim {
             down_from: vec![i64::MAX; n as usize],
             link_down: None,
             slow_link: None,
+            mute: None,
+            deaf: None,
+            drive_protocol: false,
+            protocol: vec![Vec::new(); n as usize],
             clock: Clock(60),
             per_frame: vec![None; n as usize],
             last_frame: vec![None; n as usize],
@@ -324,6 +336,12 @@ impl Sim {
                 && self.now >= from * MS
                 && self.now < until * MS
             {
+                continue;
+            }
+            let within = |w: Option<(usize, i64, i64)>, k: usize| {
+                w.is_some_and(|(m, a, b)| m == k && self.now >= a * MS && self.now < b * MS)
+            };
+            if within(self.mute, i) || within(self.deaf, j) {
                 continue;
             }
             if self.cut_off.is_some_and(|k| i == k || j == k)
@@ -468,6 +486,24 @@ impl Sim {
                 // Refused locally (too late): the builder's chain moved on without it, so start a fresh chain.
                 self.builders[i] = EntryBuilder::new(&self.keys, i);
                 self.every_ms[i] = 0;
+            }
+        }
+        // pe-app's driver: what agreement asks this member to sign (silence votes, departures), at the frame's stamp.
+        if self.drive_protocol
+            && self.now > 0
+            && self.now < self.down_from[i].saturating_mul(MS)
+            && let Some(payload) = Agreement::take_protocol(&mut self.nodes[i])
+        {
+            let present = clock.frame_at(now).unwrap();
+            let stamp = Frame(present.0 + self.stamp_lead[i]);
+            let saved = self.builders[i].clone();
+            let e = self.builders[i].next_unsigned(Class::Protocol, stamp, payload.clone());
+            if let Ok(s) = self.nodes[i].submit(e) {
+                self.submitted[i].push(s.id());
+                self.submitted_at[i].push(stamp);
+                self.protocol[i].push((s.id(), payload, stamp));
+            } else {
+                self.builders[i] = saved;
             }
         }
         // The replica's stepped frame, as pe-app reports it (F3 S2): `behind` frames below the present, or a false one.
@@ -1377,6 +1413,7 @@ fn the_consensus_hash_covers_exactly_the_must_match_settings() {
         ("min_pending", Box::new(|c| c.min_pending = 601)),
         ("defer_bytes", Box::new(|c| c.defer_bytes += 1)),
         ("cut_interval_s", Box::new(|c| c.cut_interval_s = 0.2)),
+        ("silence_s", Box::new(|c| c.silence_s = 20.0)),
         ("cadence", Box::new(|c| c.timing.cadence_ns += 1)),
         ("min timeout", Box::new(|c| c.timing.min_timeout_ns += 1)),
         ("max timeout", Box::new(|c| c.timing.max_timeout_ns += 1)),
@@ -4181,3 +4218,5 @@ mod scale;
 
 /// `Remove` (S3 v1.13).
 mod remove;
+/// Silent members (S3 v1.14).
+mod silence;

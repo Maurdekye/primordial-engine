@@ -1,6 +1,6 @@
 //! `Remove` (S3 v1.13; agreement.md 8): an admin takes another member out at the next epoch (M2 S3,
 //! @item:primordial-engine/m2-s1-s3-agreement-at-3-8-players-open-internet-h). The user's automatic removal after 30 s
-//! of silence builds on it and isn't here yet: its reason is denied.
+//! of silence builds on it: silence.rs.
 
 use super::*;
 use pe_seams::{Remove, RemoveReason};
@@ -101,8 +101,8 @@ fn two_members_down_at_7_are_removed_in_one_cut_and_the_five_go_on() {
 #[test]
 fn removes_that_may_not_or_change_nothing_are_void_and_the_removed_members_later_entries_too() {
     // n = 5: member 4 isn't an admin. In one epoch: 4 removes 1 (not an admin), 0 removes itself, 0 removes a key that
-    // was never a member, 0 removes 3 for silence (not built), 0 removes 2 (takes effect), 1 removes 2 again (no
-    // change). Member 2 keeps submitting; what it signs after the removal is void as AfterLeave.
+    // was never a member, 0 votes 3 silent (one vote against a live member: changes nothing, at most stale),
+    // 0 removes 2 (takes effect), 1 removes 2 again (no change). Member 2 keeps submitting; what it signs after the removal is void as AfterLeave.
     // Key 5 is never a member: a joiner that is never started.
     let keys = TestKeys::new(55, 6);
     let mut s = Sim::build(6, 5, 55, |_, c| {
@@ -130,7 +130,11 @@ fn removes_that_may_not_or_change_nothing_are_void_and_the_removed_members_later
         assert!(v.contains(&(by_non_admin, VoidReason::NotAuthorized)), "member {i}: the non-admin's Remove: {v:?}");
         assert!(v.contains(&(own, VoidReason::NotAuthorized)), "member {i}: a Remove of its own key: {v:?}");
         assert!(v.contains(&(stranger, VoidReason::NoChange)), "member {i}: a Remove of a non-member: {v:?}");
-        assert!(v.contains(&(silent, VoidReason::NotAuthorized)), "member {i}: a Silent Remove: {v:?}");
+        // Counted, or stale (`NoChange`) if an entry of 3 stamped after it is final by its cut: never anything else.
+        assert!(
+            v.iter().all(|x| x.0 != silent || x.1 == VoidReason::NoChange),
+            "member {i}: the one silence vote voided otherwise: {v:?}"
+        );
         assert!(v.contains(&(again, VoidReason::NoChange)), "member {i}: the second Remove of 2: {v:?}");
         assert!(!v.iter().any(|x| x.0 == first), "member {i}: the Remove of 2 voided: {v:?}");
         let after_leave = v.iter().filter(|x| x.1 == VoidReason::AfterLeave).count();

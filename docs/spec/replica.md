@@ -220,6 +220,10 @@ the live history and once for a re-step off it); it never steps such a world as 
      - a `Leave` (a Protocol entry, `pe_seams::LEAVE`) through `World::leave` at its stamp;
      - a `Remove` (`pe_seams::Remove`, S3 v1.13) through `World::leave` for the key it removes, at its stamp; a
        malformed one is refused `Malformed`; who may remove is S3's, which voids the rest;
+     - (S3 v1.14, agreement.md 8 "Silent members") a silence vote, `Remove{k, Silent}`, is `Applied` with no effect;
+       `Remove{k, Departed}` goes through `World::leave` for k at its stamp when the world holds k's row, and is a
+       true no-op otherwise (`Applied`, nothing written, so duplicates from several members can't move the root).
+       Only `Departed` treats a missing row so: anywhere else `World::leave` on a non-member stays a refusal;
      - other Governance and Protocol entries are `Applied` with no effects, as pe-world applies none yet.
    - **Each entry has one outcome,** pe-world's: applied, or refused with a reason. A refused entry changes nothing,
      the same way on every replica.

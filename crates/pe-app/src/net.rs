@@ -1297,6 +1297,10 @@ impl NetHook for MemberHook {
             return None;
         }
         let members = agree.members();
+        if inviter.awaits_departure(&agree.awaiting_departure(), now) {
+            self.act(&members);
+            return None;
+        }
         let entry = inviter.take_entry(world.holds_scripts(), &members, now);
         self.act(&members);
         entry

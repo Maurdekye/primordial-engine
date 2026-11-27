@@ -37,6 +37,8 @@ pub struct EpochStart {
     pub heads: Vec<SignedEntry>,
     /// Each chain's highest final stamp at E (the back-stamp rule's floor).
     pub final_high: Vec<(ChainKey, Frame)>,
+    /// (S3 v1.14) The keys the silence tally removed whose `Remove{k, Departed}` isn't final at E, sorted.
+    pub awaiting: Vec<MemberKey>,
 }
 
 /// Why a start is refused.

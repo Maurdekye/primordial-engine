@@ -200,6 +200,8 @@ pub struct Inviter {
     held: BTreeMap<MemberKey, HostTime>,
     /// The `Admit` for the simulation thread to write, taken once.
     entry: Option<Vec<u8>>,
+    /// The key whose `Admit` waits for its departure to reach the world, once told ([`Inviter::awaits_departure`]).
+    awaiting_told: Option<MemberKey>,
     acts: Vec<Act>,
     notices: Vec<String>,
     pub stats: JoinStats,
@@ -223,6 +225,7 @@ impl Inviter {
             join: None,
             held: BTreeMap::new(),
             entry: None,
+            awaiting_told: None,
             acts: Vec::new(),
             notices: Vec::new(),
             stats: JoinStats::default(),
@@ -252,6 +255,22 @@ impl Inviter {
             return None;
         }
         self.entry.take()
+    }
+
+    /// Whether the `Admit` waiting must wait longer: its key is one agreement removed for silence whose departure the
+    /// world hasn't followed yet (S3 v1.14 `awaiting_departure`), so agreement would void it (coordinator). It stays queued, the join's clock doesn't fail it for the wait (about a round trip), and the
+    /// console says the player is rejoining, once.
+    pub fn awaits_departure(&mut self, awaiting: &[MemberKey], now: HostTime) -> bool {
+        let Some(j) = &mut self.join else { return false };
+        if self.entry.is_none() || !awaiting.contains(&j.key) {
+            return false;
+        }
+        j.since = now;
+        if self.awaiting_told != Some(j.key) {
+            self.awaiting_told = Some(j.key);
+            self.notices.push(rejoining(j.key));
+        }
+        true
     }
 
     /// Whether a join this machine admitted is in flight: its `Leave` waits (app.md 4, "A quit during a join").
@@ -568,6 +587,12 @@ fn refusal(why: &str) -> Refusal {
 /// The inviter's console, from the `Admit` on (app.md 4).
 pub fn joining(m: MemberKey) -> String {
     format!("{} is joining…", capitalized(player(m)))
+}
+
+/// The inviter's console, while a player agreement removed for silence waits for the world to follow before its
+/// `Admit` goes (S3 v1.14).
+pub fn rejoining(m: MemberKey) -> String {
+    format!("{} is rejoining…", capitalized(player(m)))
 }
 
 /// The inviter's console, when a join fails before its `Admit`: nothing is lost.
