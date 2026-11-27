@@ -4,12 +4,12 @@
 #
 # usage, from Windows' Git Bash, under the team's heavy.sh (one cargo build):
 #   MSYS_NO_PATHCONV=1 bash "<team folder>/heavy.sh" wsl.exe -d Ubuntu-24.04 -- \
-#     bash <repo>/scripts/friend-kit/build-linux.sh <full sha> [jobs]
+#     bash /mnt/<drive>/<path to the repo>/scripts/friend-kit/build-linux.sh <full sha> [jobs]
 #
 # The sources are a git checkout on WSL's own disk (/var/tmp/pe-friend-kit/src, or $PE_KIT_BASE/src), fetched from
 # the repo on S:, so a rebuild touches only the files that changed (an archive copy would reset every mtime, or keep
 # stale ones). The cargo target is beside it (target/). The kit is written to out/ and copied to
-# <work>\friend-kit\pe-friend-kit-<sha12>.tar.gz.
+# friend-kit/pe-friend-kit-<sha12>.tar.gz beside the main clone (or $PE_KIT_DROP).
 #
 # No path in the build machine's home goes into the binary, which the friend runs and whose messages and logs they
 # see (the friend's first run showed /home/<builder>/...; @coordinator-opus): the build folder is
@@ -24,8 +24,12 @@
 set -euo pipefail
 sha=${1:?usage: build-linux.sh <full sha> [jobs]}
 jobs=${2:-3}
-repo=${PE_KIT_REPO:-<repo>}
-drop=${PE_KIT_DROP:-<work>/friend-kit}
+# Defaults: the main clone this script belongs to (a worktree's path is cut at /.worktrees/), and friend-kit/
+# beside it.
+main=$(cd "$(dirname "$0")/../.." && pwd)
+main=${main%%/.worktrees/*}
+repo=${PE_KIT_REPO:-$main}
+drop=${PE_KIT_DROP:-$(dirname "$main")/friend-kit}
 base=${PE_KIT_BASE:-/var/tmp/pe-friend-kit}
 case "$base/" in "$HOME"/*) echo "build-linux: PE_KIT_BASE must be outside $HOME (the binary keeps its path)" >&2; exit 2 ;; esac
 # run.sh, collect-logs.sh and the README: the built commit's, or (a commit from before the kit, e.g. a trial branch)

@@ -40,6 +40,8 @@
 #      which maps them). The terms are local files that must never be published, so hosted CI skips this step;
 #      a whole-history run reports the old history's terms without failing on them (the user kept that
 #      history, 2026-10-31 11:49Z);
+#   4b. process check (scripts/process_check.py): no mail id in the tree of <rev> or in the messages of
+#      <base>..<rev> (user ruling 2026-11-27); it needs no local file, so it runs everywhere;
 #   5. tier 2's state (decision C7), where this clone asks for it (git config pe.gate.tier2, or PE_GATE_TIER2):
 #      scripts/ci_status.py --check reads the latest finished hosted run on the public main, and gives up after
 #      20 s. With "on", a red run fails the gate until it is fixed, or explained in scripts/tier2_explained.txt;
@@ -535,6 +537,18 @@ else
   else
     echo "gate: publication check of the history: not run on a whole-history check (the old history's terms are reported by publish_check.sh --history, never failed)"
   fi
+fi
+
+# 4b. The process check: no mail id in the tree of <rev> or the new commits' messages, with the base's script.
+if G show "$code:scripts/process_check.py" > "$c/scripts/process_check.py" 2> /dev/null; then
+  (cd "$c" && export GIT_DIR="$gitdir" && "$py" -I scripts/process_check.py "$sha" ${bsha:+"$range"}) > "$tmp/process.log" 2>&1; r=$?
+  case $r in
+    0) echo "gate: process check: $(tail -1 "$tmp/process.log" | sed 's/^process_check: //')" ;;
+    1) echo "gate: process check: FAIL"; grep -v "^process_check: " "$tmp/process.log" | head -40 | sed 's/^/gate:   /'; fail=1 ;;
+    *) sed 's/^/gate:   /' "$tmp/process.log" | tail -5; die "the process check could not run (exit $r)" ;;
+  esac
+else
+  echo "gate: process check skipped: ${code:0:10} has no scripts/process_check.py"
 fi
 
 # 5. Tier 2's state (C7): a red hosted run blocks the next landing until it is fixed or explained. ci_status.py

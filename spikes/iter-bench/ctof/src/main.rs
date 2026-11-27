@@ -133,7 +133,7 @@ fn main() {
     }
     let reps: usize = args.next().map_or(9, |a| a.parse().expect("reps"));
     let balls: u32 = args.next().map_or(500, |a| a.parse().expect("balls"));
-    let root = PathBuf::from(args.next().unwrap_or_else(|| "<work>/tmp/iter-bench-ctof".into()));
+    let root = PathBuf::from(args.next().unwrap_or_else(|| "target/iter-bench-ctof".into()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("the build root");
     eprintln!("ctof: {reps} reps, {balls} balls, {} Hz, build folders under {}", RATE.hz(), root.display());

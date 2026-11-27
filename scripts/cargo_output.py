@@ -3,14 +3,18 @@ import hashlib
 import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 
 
 def target_dir(source, leaf=""):
     source = Path(source).resolve()
     root = os.environ.get("PE_TARGET_ROOT")
-    if not root and os.name == "nt" and Path("<work>").is_dir():
-        root = "<work>/target"
+    if not root:
+        # A machine-wide root for this clone: git config pe.targetroot (local config, shared by worktrees).
+        r = subprocess.run(["git", "-C", str(source), "config", "--get", "pe.targetroot"],
+                           capture_output=True, text=True)
+        root = r.stdout.strip() if r.returncode == 0 else None
     if root:
         key = re.sub(r"[^A-Za-z0-9_.-]", "-", source.name) + "-" + hashlib.sha256(
             str(source).replace("\\", "/").lower().encode()).hexdigest()[:10]

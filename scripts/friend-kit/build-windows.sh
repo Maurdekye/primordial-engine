@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds the friend test's Windows side (the user's PC): pe-app.exe in release from a commit, with run-windows.ps1 and
-# README-windows.md, into <work>\friend-kit\pe-friend-win-<sha12>\ (friend-test S7).
+# README-windows.md, into friend-kit\pe-friend-win-<sha12>\ beside the main clone, or $PE_KIT_DROP (friend-test S7).
 #
 # usage, from Git Bash in a worktree of the repo, under the team's heavy.sh (one cargo build):
 #   bash "<team folder>/heavy.sh" bash scripts/friend-kit/build-windows.sh <full sha>
@@ -23,7 +23,9 @@
 # folders.
 set -euo pipefail
 sha=${1:?usage: build-windows.sh <full sha>}
-drop=${PE_KIT_DROP:-<work>/friend-kit}
+main=$(git rev-parse --show-toplevel)
+main=${main%%/.worktrees/*}
+drop=${PE_KIT_DROP:-$(dirname "$main")/friend-kit}
 [ "$(git rev-parse HEAD)" = "$sha" ] || { echo "build-windows: this worktree isn't at $sha (it's $(git rev-parse HEAD))" >&2; exit 2; }
 left=$(git status --porcelain --ignored -- crates Cargo.lock Cargo.toml scripts/friend-kit scripts/audit_steam_audio_trial.py \
   scripts/audit_native.py scripts/native_allow.txt scripts/native_allow_steam_audio.txt)

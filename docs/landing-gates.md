@@ -87,6 +87,16 @@ checks either.
    * The terms are never published, so hosted CI skips this check.
    * A `--full-history` run doesn't fail on the old history's terms: the user chose to keep that history
      (2026-10-31 11:49Z), and the cleaner replaces those terms.
+3b. **Process check:** `scripts/process_check.py`. No mail id of the team's (`m` and 12 hex digits, standing
+   alone) in the tree of `<rev>` or in the messages of `<base>..<rev>` (user ruling 2026-11-27: the agents'
+   workspaces are not part of the engine). It needs no local file, so it runs wherever the gate runs.
+   * Provenance goes to the docket and the team's notes: the code, the docs and the commit messages say what
+     changed and why, without mail ids, workspace paths or this PC's drive paths.
+   * Workspace paths, drive paths and host names are publication terms, so the publication check (3) blocks
+     them through the term file.
+   * A branch that predates the scrub of 2026-11-27 merges main (or is rebased onto it) first, then runs
+     `python -I scripts/publish_apply.py <rules file>` (the publishing step's rules) to clean its own new lines.
+     Run before the merge, it fights main's hand-made path fixes; after it, it touches only the branch's lines.
 4. **Tier 2's state** (decision C7), where the clone asks for it with `git config pe.gate.tier2`: the latest
    finished hosted run on the public main, read through `scripts/ci_status.py --check` within 20 s. A red run
    fails the gate until it is fixed or explained (below, "Tier 2: the hosted platforms").

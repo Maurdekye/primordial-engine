@@ -161,6 +161,15 @@ expect term-in-tree fail "publication check of the tree: FAIL"
 new_case; echo "see $term" > "$R/t.md"; commit -m "add"; g rm -q t.md; commit -m "remove"
 expect term-in-history fail "publication check of the tree: PASS" "publication check of the new commits: FAIL"
 
+# 11b. A mail id (built from parts, so this file holds none) in the tree, and one only in a commit message.
+mid="m$(printf '%06x%06x' 11259375 1193046)"
+new_case; echo "see $mid" >> "$R/README.md"; commit -m "mail id in the tree"
+expect mail-id-in-tree fail "process check: FAIL" "README.md:[0-9]+: a mail id"
+new_case; echo "process" >> "$R/README.md"; commit -m "after $mid"
+expect mail-id-in-message fail "process check: FAIL" "a mail id in its message"
+new_case; echo "x${mid}y and ${mid}0" >> "$R/README.md"; commit -m "longer words"
+expect mail-id-inside-a-word pass "process check: PASS"
+
 # 12. Paths a committed .gitattributes marks export-ignore are checked all the same (the export applies no
 #     attributes): a new workspace whose crate compiles C, and a secret, both under such a path.
 new_case; plant_ws hidden/ws; printf 'aws_access_key_id = %s\n' "$(fake aws)" > "$R/hidden/creds.txt"

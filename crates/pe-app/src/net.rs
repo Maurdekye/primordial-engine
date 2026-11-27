@@ -1576,10 +1576,7 @@ mod tests {
     /// epoch switch, and its confirmation reaches B over pe-net, so B's leave settles within the longest bound. Then B
     /// stops, and A goes on alone: its epoch is A alone, B's hands are gone, and its final frame keeps moving.
     #[test]
-    #[cfg_attr(
-        debug_assertions,
-        ignore = "release only, as a two-machine run (@coordinator-opus): run with --release"
-    )]
+    #[cfg_attr(debug_assertions, ignore = "release only, as a two-machine run (@coordinator-opus): run with --release")]
     fn a_member_that_leaves_over_the_network_settles_and_the_other_goes_on() {
         let host = crate::clock::shared();
         let (mut sims, _) = joined_pair(&host);
@@ -1983,10 +1980,7 @@ mod tests {
     /// final, A's console says B joined, both finalize on with equal roots, and B's world holds both member rows with
     /// their roles and B's hands.
     #[test]
-    #[cfg_attr(
-        debug_assertions,
-        ignore = "release only, as a two-machine run (@coordinator-opus): run with --release"
-    )]
+    #[cfg_attr(debug_assertions, ignore = "release only, as a two-machine run (@coordinator-opus): run with --release")]
     fn a_joiner_joins_at_the_cut_that_admits_it_and_both_finalize() {
         use crate::join::{T_JOIN, joined};
         let balls = std::env::var("PE_JOIN_BALLS").ok().and_then(|b| b.parse().ok()).unwrap_or(8);
@@ -2046,10 +2040,7 @@ mod tests {
     /// matches, both finalize past the walk with equal roots, and each machine's view has A's head well forward of
     /// where it stood.
     #[test]
-    #[cfg_attr(
-        debug_assertions,
-        ignore = "release only, as a two-machine run (@coordinator-opus): run with --release"
-    )]
+    #[cfg_attr(debug_assertions, ignore = "release only, as a two-machine run (@coordinator-opus): run with --release")]
     fn two_machines_on_the_plane_agree_on_a_walking_jumping_player() {
         use crate::join::{T_JOIN, joined};
         use std::sync::Mutex;
@@ -2122,10 +2113,7 @@ mod tests {
     /// console says the join failed and the session can't confirm changes. Then B imports, catches up and votes, and
     /// A's console says B joined after all.
     #[test]
-    #[cfg_attr(
-        debug_assertions,
-        ignore = "release only, as a two-machine run (@coordinator-opus): run with --release"
-    )]
+    #[cfg_attr(debug_assertions, ignore = "release only, as a two-machine run (@coordinator-opus): run with --release")]
     fn a_join_held_past_t_join_fails_and_joins_after_all_once_the_cut_is_final() {
         use crate::join::{T_JOIN, join_failed, joined_after_all};
         const SHORT: Duration = Duration::from_millis(1500);
