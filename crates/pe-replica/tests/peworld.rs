@@ -1643,14 +1643,14 @@ fn turn_holding(offset: f64) -> (f64, [f64; 3], [f64; 3]) {
     (top, at(&r, BALL), [2.0, 0.03, -offset])
 }
 
-/// A turn that would take a held object faster than the cap is slowed too (world-model.md 8.1; @design-reviewer's Low
-/// on cc037c10): with the ball 15 cm out, a 90-degree turn in one frame would move it 21 cm (13 m/s). Neither it nor
-/// the ball on its arc moves faster than the cap, and the spring brings it to within 1 cm of its turned place. On
-/// cc037c10 it was left 4 cm out of place.
+/// A fast turn brings what the hand holds to its turned place (world-model.md 8.1; @design-reviewer's Low on
+/// cc037c10): with the ball 15 cm out, a 90-degree turn in one frame (21 cm, 13 m/s), and the spring brings it to within
+/// 1 cm of its turned place. Until the 11-27 kit such a turn was also slowed to the cap; a holding hand has none now
+/// (@design-reviewer). On cc037c10 the ball was left 4 cm out of place.
 #[test]
-fn a_fast_turn_moves_what_the_hand_holds_no_faster_than_the_cap() {
+fn a_fast_turn_brings_what_the_hand_holds_to_its_turned_place() {
     let (top, ball, place) = turn_holding(0.15);
-    assert!(top < pe_replica::hands::MAX_HAND_PUSH_SPEED, "the held ball and the one on its arc: {top} m/s");
+    println!("RESULT a 90-degree turn in a frame, ball 15 cm out: fastest {top:.1} m/s");
     assert!(distance(ball, place) < 0.01, "the held ball is at its turned place: {ball:?}, {place:?}");
 }
 
@@ -1667,7 +1667,7 @@ fn a_held_object_springs_back_to_its_place_in_the_hand() {
 
 /// Handoffs, teleports and slowed moves are functions of the claims and the physics image, so an entry that arrives
 /// late rolls back to the same roots as a replica that had it all along: the renewing grab that hands the ball over,
-/// the teleport that carries it, and the grab before a run faster than the cap.
+/// the teleport that carries it, and the first pose of an empty hand's run faster than the cap.
 #[test]
 fn a_late_handoff_and_a_late_jump_roll_back_to_the_same_roots() {
     let run = |make: fn() -> (World, Vec<SignedEntry>), late: usize| {
@@ -1738,23 +1738,70 @@ fn a_held_object_keeps_the_rotation_it_was_grabbed_at() {
     assert_eq!(r.faults(), 0);
 }
 
-/// A closed hand holding a pit ball runs along x at 15 m/s (1.5 times the cap) for one second from frame 10, through
-/// pit balls every 0.5 m (ids from 100).
+/// A closed, empty hand runs along x at 15 m/s (1.5 times the cap) for one second from frame 10, through pit balls
+/// every 0.5 m (ids from 100), past the ball at x = -7.
 fn fast_run() -> (World, Vec<SignedEntry>) {
     let keys = keys();
     let mut b = EntryBuilder::new(&keys, 0);
     let start = [-7.0 - 0.03 - f64::from(pe_replica::world::HAND_RADIUS), 0.03, 0.0];
     let path: Vec<[f64; 3]> = (0..60).map(|k| [start[0] + 0.25 * f64::from(k + 1), 0.03, 0.0]).collect();
-    let mut entries = vec![
-        input(&mut b, 2, &hand_at(&[start; 8], true)),
-        input(&mut b, 6, &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) }),
-    ];
+    let mut entries = vec![input(&mut b, 2, &hand_at(&[start; 8], true))];
     for (i, pack) in path.chunks(pe_world::input::MAX_POSES).enumerate() {
         entries.push(input(&mut b, 10 + (i * pe_world::input::MAX_POSES) as u64, &hand_at(pack, true)));
     }
     let mut balls = vec![(BALL, [-7.0, 0.03, 0.0], pit_ball())];
     balls.extend((0..28u32).map(|i| (100 + u128::from(i), [-6.0 + 0.5 * f64::from(i), 0.03, 0.0], pit_ball())));
     (with_hands_and_balls(&[(HAND, start)], &balls), entries)
+}
+
+/// An empty hand kept faster than the cap (world-model.md 8.1's test; restored for empty hands after the 11-27 kit,
+/// @design-reviewer): through the second at 15 m/s its body trails its target, and is placed at it
+/// again whenever it would trail by more than the teleport distance, so it never trails by more (its contacts come in
+/// bursts). The balls it runs through move no faster than the cap plus the solver's push-out speed. A hand that holds
+/// something has no cap (`a_fast_swing_s_throw_leaves_at_the_hand_s_speed`).
+#[test]
+fn an_empty_hand_kept_faster_than_the_cap_trails_by_at_most_the_teleport_distance() {
+    let (world, entries) = fast_run();
+    let mut s = Source::default();
+    entries.into_iter().for_each(|e| s.add(e));
+    let mut r = replica_of(world);
+    r.advance(Frame(10), &mut s);
+    let run_through: Vec<u128> = (100..128).collect();
+    let mut last: Vec<[f64; 3]> = run_through.iter().map(|&id| at(&r, id)).collect();
+    let (mut lag, mut top) = (0.0_f64, 0.0_f64);
+    for f in 10..72u64 {
+        let target = at(&r, HAND);
+        r.advance(Frame(f + 1), &mut s);
+        lag = lag.max(distance(r.physics().pose(oid(HAND)).expect("the hand's body").position, target));
+        for (k, &id) in run_through.iter().enumerate() {
+            let p = at(&r, id);
+            top = top.max(distance(p, last[k]) * 60.0);
+            last[k] = p;
+        }
+    }
+    let teleport = pe_replica::hands::teleport_distance(pe_seams::SimRate::DEFAULT);
+    assert!(lag > 0.2 && lag <= teleport, "it trails, by at most {teleport} m: {lag} m");
+    assert!(top > 5.0 && top < pe_replica::hands::MAX_HAND_PUSH_SPEED + contact_speed(), "what it hits: {top} m/s");
+    assert_eq!(held_by(&r, BALL), None, "the hand holds nothing");
+    assert_eq!(r.faults(), 0);
+}
+
+/// A two-hand hold of a long object (@design-reviewer's L3 on adac6a4d): pe-world's pick measures to the surface of the
+/// object's bounding sphere about its centre, so a hand at either end of a 1 m plank picks it, and pe-app's hand-over
+/// (`submit_hands`) finds it for the hand still holding.
+#[test]
+fn a_hand_at_either_end_of_a_long_plank_picks_it() {
+    const PLANK: u128 = 75;
+    let mut world = with_hands_and_balls(&[(HAND, [2.0, 0.5, 0.0])], &[]);
+    let k = keys().key(0);
+    world.create(oid(PLANK), None, k, GENESIS).expect("plank");
+    world.insert(oid(PLANK), Transform::at(pos(2.5, 0.5, 0.0))).expect("its transform");
+    world.insert(oid(PLANK), dynamic()).expect("its body");
+    world.insert(oid(PLANK), cuboid([0.5, 0.05, 0.05])).expect("its shape");
+    for end in [2.04, 2.96] {
+        let picked = world.pick_grab(Frame(1), k, oid(HAND), pos(end, 0.5, 0.0));
+        assert_eq!(picked, Some(oid(PLANK)), "a hand at x {end} picks the plank");
+    }
 }
 
 /// A throw leaves at the hand's speed, with no cap (the user's ruling of 2026-11-26): the ball is

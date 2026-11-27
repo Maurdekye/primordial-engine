@@ -334,7 +334,11 @@ The rules are world-model.md 8.1's (the speed cap, the teleport distance and the
     from the hand's own motion (`hands::jump_from_motion`): how far the move lands, at the hand and at each held
     object, from where the hand's velocity (the physics', which a kinematic body keeps) would have taken it. A steady
     swing lands where its motion leads at any speed (@astra-deliberator, @fable-reviewer: a 40 m/s swing is never
-    placed); a tracking glitch, a teleport or a body made at rest under a fast hand is far from it. Past it, the body
+    placed); a tracking glitch, a teleport or a body made at rest under a fast hand is far from it. **Known limit**
+    (@design-reviewer's L1 on adac6a4d): a placement leaves the body at rest, so the frame after it predicts from rest,
+    and a holding hand still moving faster than `teleport_distance × rate` is placed again, and what it holds with
+    it, each frame until it slows: 30 m/s at 60 Hz (the kit's rate, beyond a human throw), but 20 m/s at 30 Hz. The fix,
+    after the 11-27 kit: predict from the hand's own motion after a placement. Past it, the body
     is placed at its target
     with no velocity, and each object its claims hold goes with it, keeping its rotation relative to the hand: a
     light hold (`hands::follows_tightly`, its force cap the object's mass's) to its place in the hand, a heavy one at
