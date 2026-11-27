@@ -17,6 +17,12 @@
 //!    the replaced history's at each re-stepped frame. A replay that found every frame's digest equal was caused by
 //!    entries the physics never reads: an open hand with no body, a head's rotation or height. A scripted world's
 //!    replays always count as read (its logic stages are not in the digest).
+//!
+//! And the rest of the split, so the parts add up to the replay's time (the E1 harness's split; @iter-bench, spec
+//! diverge-eng/resolve-e1-harness-spec.md): the restore (the rollback itself: the keyframe's load and the history
+//! truncated after it), each re-step's whole time, and within it the physics step and the keyframes saved. "Other" is
+//! the re-step's time less every timed part: entries, the movers, the hand sync less its grab keys, logic, hits and
+//! the world model's frame end. The digest of (4) is the probe's own cost, timed apart, so it can be taken off.
 
 use std::collections::BTreeMap;
 use std::collections::hash_map::DefaultHasher;
@@ -127,6 +133,19 @@ pub struct ReplayCosts {
     pub before_per_replay: Histogram,
     /// Frames re-stepped in all, over all replays (for the share (3) is of it).
     pub frames_replayed: u64,
+    /// The rest of the split (module docs): the restores; the re-steps' whole time, and within it the physics step,
+    /// the keyframes saved and the probe's own digest. Each over all replays.
+    pub restore_ns: u64,
+    pub restep_ns: u64,
+    pub physics_replayed_ns: u64,
+    pub keyframe_replayed_ns: u64,
+    pub digest_replayed_ns: u64,
+    /// The same parts in first-time live steps, for the share replays take of a machine's stepping.
+    pub step_live_ns: u64,
+    pub physics_live_ns: u64,
+    /// A replay's whole time (its restore and its re-steps), and its restore's, per replay.
+    pub replay_per_replay_us: Histogram,
+    pub restore_per_replay_us: Histogram,
     /// (4) Replays that re-stepped at least one frame the replaced history had stepped (so a digest was compared),
     /// and of those, the ones whose every digest was equal: the physics read nothing new.
     pub replays_compared: u64,
@@ -166,6 +185,28 @@ pub struct ReplayCostSummary {
     pub frames_replayed: u64,
     pub replays_compared: u64,
     pub replays_unread: u64,
+    pub restore_us: u64,
+    pub restep_us: u64,
+    pub physics_replayed_us: u64,
+    pub keyframe_replayed_us: u64,
+    pub digest_replayed_us: u64,
+    pub step_live_us: u64,
+    pub physics_live_us: u64,
+    pub replay_per_replay_us: PerReplay,
+    pub restore_per_replay_us: PerReplay,
+}
+
+impl ReplayCostSummary {
+    /// The re-steps' time not in any timed part (module docs): the re-steps less physics, roots, scans, keyframes
+    /// and the digest.
+    pub fn other_replayed_us(&self) -> u64 {
+        let parts = self.physics_replayed_us
+            + self.root_replayed_us
+            + self.scan_replayed_us
+            + self.keyframe_replayed_us
+            + self.digest_replayed_us;
+        self.restep_us.saturating_sub(parts)
+    }
 }
 
 impl ReplayCosts {
@@ -188,6 +229,15 @@ impl ReplayCosts {
             frames_replayed: self.frames_replayed,
             replays_compared: self.replays_compared,
             replays_unread: self.replays_unread,
+            restore_us: us(self.restore_ns),
+            restep_us: us(self.restep_ns),
+            physics_replayed_us: us(self.physics_replayed_ns),
+            keyframe_replayed_us: us(self.keyframe_replayed_ns),
+            digest_replayed_us: us(self.digest_replayed_ns),
+            step_live_us: us(self.step_live_ns),
+            physics_live_us: us(self.physics_live_ns),
+            replay_per_replay_us: PerReplay::of(&self.replay_per_replay_us),
+            restore_per_replay_us: PerReplay::of(&self.restore_per_replay_us),
         }
     }
 }
@@ -201,7 +251,9 @@ impl fmt::Debug for ReplayCostSummary {
             "replays {}; roots in replays {:.1} ms ({} roots; per replay p50 {} us, p95 {} us), discarded {:.1} ms ({}), \
              live {:.1} ms, vote/finalize roots re-stepped {:.1} ms; body scans in replays {:.1} ms (p50 {} us, p95 {} us), \
              all live {:.1} ms; frames before the change {} of {} re-stepped (p50 {}, p95 {}); physics read nothing \
-             new in {} of {} compared",
+             new in {} of {} compared; split: restore {:.1} ms (p50 {} us, p95 {} us), re-steps {:.1} ms = physics \
+             {:.1} + roots {:.1} + scans {:.1} + keyframes {:.1} + probe digest {:.1} + other {:.1}; per replay p50 {} \
+             us, p95 {} us; first-time steps {:.1} ms (physics {:.1})",
             s.replays,
             ms(s.root_replayed_us),
             s.roots_replayed,
@@ -221,6 +273,20 @@ impl fmt::Debug for ReplayCostSummary {
             s.before_per_replay.p95,
             s.replays_unread,
             s.replays_compared,
+            ms(s.restore_us),
+            s.restore_per_replay_us.p50,
+            s.restore_per_replay_us.p95,
+            ms(s.restep_us),
+            ms(s.physics_replayed_us),
+            ms(s.root_replayed_us),
+            ms(s.scan_replayed_us),
+            ms(s.keyframe_replayed_us),
+            ms(s.digest_replayed_us),
+            ms(s.other_replayed_us()),
+            s.replay_per_replay_us.p50,
+            s.replay_per_replay_us.p95,
+            ms(s.step_live_us),
+            ms(s.physics_live_us),
         )
     }
 }
@@ -230,6 +296,8 @@ impl fmt::Debug for ReplayCostSummary {
 struct Open {
     root_ns: u64,
     scan_ns: u64,
+    restore_ns: u64,
+    restep_ns: u64,
     before: u64,
     replayed: u64,
     compared: bool,
@@ -243,6 +311,11 @@ pub(crate) struct StepCost {
     pub scan_ns: u64,
     /// The digest of what the physics read ([`PhysicsReads`]); `None` for a scripted world.
     pub digest: Option<u64>,
+    /// The step's whole time, and within it the physics step, the keyframe saved and the digest's own time.
+    pub step_ns: u64,
+    pub physics_ns: u64,
+    pub keyframe_ns: u64,
+    pub digest_ns: u64,
 }
 
 /// A replica's side of the probe: the shared totals, and what it needs to attribute them.
@@ -274,9 +347,11 @@ impl Probe {
 
     /// A rewind for a change at `changed`: the keyframe at `restored` was restored, so the frames from it below
     /// `changed` are re-stepped for nothing but the keyframe spacing.
-    pub(crate) fn rewind(&mut self, changed: Frame, restored: Frame) {
+    /// `restore_ns` is the rollback's own time.
+    pub(crate) fn rewind(&mut self, changed: Frame, restored: Frame, restore_ns: u64) {
         self.close();
-        self.open = Some(Open { before: changed.0.saturating_sub(restored.0), ..Open::default() });
+        self.open = Some(Open { before: changed.0.saturating_sub(restored.0), restore_ns, ..Open::default() });
+        self.with(|t| t.restore_ns += restore_ns);
     }
 
     /// A step of frame `f` (`live` or a scratch re-step), `resimulated` if the live history had stepped it before.
@@ -290,6 +365,7 @@ impl Probe {
         if let Some(o) = self.open.as_mut().filter(|_| resimulated) {
             o.root_ns += c.root_ns;
             o.scan_ns += c.scan_ns;
+            o.restep_ns += c.step_ns;
             o.replayed += 1;
             match (c.digest, old) {
                 (Some(d), Some(o_d)) => {
@@ -312,8 +388,14 @@ impl Probe {
                 t.root_replayed_ns += c.root_ns;
                 t.scan_replayed_ns += c.scan_ns;
                 t.roots_replayed += u64::from(root_at.is_some());
+                t.restep_ns += c.step_ns;
+                t.physics_replayed_ns += c.physics_ns;
+                t.keyframe_replayed_ns += c.keyframe_ns;
+                t.digest_replayed_ns += c.digest_ns;
             } else {
                 t.root_live_ns += c.root_ns;
+                t.step_live_ns += c.step_ns;
+                t.physics_live_ns += c.physics_ns;
             }
             if let Some(ns) = discarded {
                 t.root_discarded_ns += ns;
@@ -338,6 +420,8 @@ impl Probe {
         self.with(|t| {
             t.replays += 1;
             t.root_per_replay_us.add(o.root_ns / 1_000);
+            t.replay_per_replay_us.add((o.restore_ns + o.restep_ns) / 1_000);
+            t.restore_per_replay_us.add(o.restore_ns / 1_000);
             t.scan_per_replay_us.add(o.scan_ns / 1_000);
             t.frames_before_change += o.before;
             t.before_per_replay.add(o.before);
@@ -392,18 +476,24 @@ mod tests {
         let shared = probe();
         let mut p = Probe::new(shared.clone());
         let root = |f: u64| (f % 4 == 3).then_some(Frame(f + 1));
-        let cost =
-            |f: u64, d: u64| StepCost { root_ns: if f % 4 == 3 { 1_000 } else { 0 }, scan_ns: 2_000, digest: Some(d) };
+        let cost = |f: u64, d: u64| StepCost {
+            root_ns: if f % 4 == 3 { 1_000 } else { 0 },
+            scan_ns: 2_000,
+            digest: Some(d),
+            step_ns: 10_000,
+            physics_ns: 5_000,
+            ..StepCost::default()
+        };
         for f in 0..8 {
             p.step(Frame(f), true, false, root(f), cost(f, f));
         }
         // Rewound to 4 for a change at 6: frames 4 and 5 are the spacing's; every digest equal.
-        p.rewind(Frame(6), Frame(4));
+        p.rewind(Frame(6), Frame(4), 3_000);
         for f in 4..8 {
             p.step(Frame(f), true, true, root(f), cost(f, f));
         }
         // Rewound to 4 for a change at 5; frame 6's digest differs.
-        p.rewind(Frame(5), Frame(4));
+        p.rewind(Frame(5), Frame(4), 3_000);
         for f in 4..8 {
             p.step(Frame(f), true, true, root(f), cost(f, if f == 6 { 99 } else { f }));
         }
@@ -415,8 +505,14 @@ mod tests {
         assert_eq!((t.root_replayed_ns, t.root_live_ns, t.root_discarded_ns), (2_000, 2_000, 2_000));
         assert_eq!((t.scan_replayed_ns, t.scan_live_ns), (16_000, 32_000));
         assert_eq!((t.root_per_replay_us.quantile(0.5), t.scan_per_replay_us.quantile(0.5)), (1, 8));
+        // The split: two restores of 3 us, eight re-steps of 10 us (5 of them physics), eight first-time steps.
+        assert_eq!((t.restore_ns, t.restep_ns, t.physics_replayed_ns), (6_000, 80_000, 40_000));
+        assert_eq!((t.step_live_ns, t.physics_live_ns), (80_000, 40_000));
+        assert_eq!(t.replay_per_replay_us.quantile(0.5), 43, "3 us of restore and four 10 us re-steps");
+        let s = t.summary();
+        assert_eq!(s.other_replayed_us(), 80 - 40 - 2 - 16, "the re-steps less physics, roots and scans");
         // A scripted step (no digest) counts its replay as read.
-        p.rewind(Frame(7), Frame(4));
+        p.rewind(Frame(7), Frame(4), 0);
         p.step(Frame(4), true, true, None, StepCost { digest: None, ..StepCost::default() });
         p.caught_up();
         let t = shared.lock().unwrap().clone();

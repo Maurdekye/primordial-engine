@@ -45,6 +45,7 @@
 
 use std::fmt;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::Duration;
 
 use pe_agree::NodeConfig;
@@ -688,10 +689,30 @@ pub(crate) fn settings() -> NodeConfig {
 /// sit on the cuts' frames and serve every vote without re-stepping (@world-chunks's cut grid). `ReplicaConfig::new`
 /// rounds the interval up instead, which differs wherever it isn't a whole number of frames: 0.1 s is 7.2 frames at
 /// 72 Hz, a grid of 7 for pe-agree and 8 for the rounding up.
+/// Its physics worlds step on [`physics_workers`] threads.
 pub(crate) fn replica_config(node: &NodeConfig, rate: SimRate, clock: Arc<dyn FrameClock>) -> ReplicaConfig {
     let mut config = ReplicaConfig::new(rate, Duration::from_secs_f64(node.cut_interval_s), clock);
     config.cut_every = node.cut_every(rate.hz());
+    config.physics = config.physics.with_workers(physics_workers());
     config
+}
+
+/// The physics worker threads of every replica this process opens from now on: 1 (serial, the default) unless main
+/// sets it from `PE_PHYSICS_WORKERS` (the re-solve ladder's E2 trial; docs/parallel-physics.md). A local setting: the
+/// worker count is the one physics setting that changes no result (pe-physics `PhysicsConfig::workers`), so members
+/// may run different counts.
+static PHYSICS_WORKERS: AtomicI32 = AtomicI32::new(1);
+
+/// Set [`physics_workers`], clamped to 1..=32 (pe-physics's range); returns the count set.
+pub fn set_physics_workers(n: i32) -> i32 {
+    let n = n.clamp(1, 32);
+    PHYSICS_WORKERS.store(n, Ordering::Relaxed);
+    n
+}
+
+/// The physics worker threads new replicas step with ([`set_physics_workers`]).
+pub fn physics_workers() -> i32 {
+    PHYSICS_WORKERS.load(Ordering::Relaxed)
 }
 
 /// A configuration's cut interval in whole milliseconds, as a record carries it: at least 1 and within `u32`.
@@ -952,6 +973,18 @@ mod tests {
         let at = bytes.windows(4).position(|w| w == 20u32.to_le_bytes()).expect("the delay's bytes");
         bytes[at..at + 4].copy_from_slice(&(MAX_DISPLAY_DELAY_MS + 1).to_le_bytes());
         assert!(matches!(Genesis::decode(&bytes), Err(GenesisError::Decode("display delay out of range"))));
+    }
+
+    /// `PE_PHYSICS_WORKERS`'s setting reaches the physics configuration of every replica opened after it, within
+    /// pe-physics's range (the re-solve ladder's E2 trial). Reset to the default after, since it is process-wide; the
+    /// worker count changes no result, so a test that runs meanwhile is unaffected.
+    #[test]
+    fn the_physics_worker_setting_reaches_every_new_replica_config() {
+        let config = || replica_config(&settings(), SimRate::DEFAULT, clock()).physics.workers;
+        assert_eq!((set_physics_workers(3), config()), (3, 3));
+        assert_eq!((set_physics_workers(0), set_physics_workers(99)), (1, 32), "clamped to 1..=32");
+        assert_eq!(set_physics_workers(1), 1);
+        assert_eq!(config(), 1);
     }
 
     /// A record's cut interval is this build's consensus setting, and `start` refuses a record whose interval isn't

@@ -4453,6 +4453,154 @@ pub(crate) mod tests {
         assert!(on[0].coalesce.flushed >= 1, "member 0's grasp edges found nothing held: {:?}", on[0].coalesce);
     }
 
+    /// The re-solve ladder's E2 trial, no headset (@coordinator-opus; fable-reviewer's resolve-cost-joint
+    /// 3, E2): two members on a 90 ms link, member 1's closed hand stirring the pit and member 0 holding a ball, at
+    /// each physics worker count. Prints each member's own tick time (members tick in turn on this thread, in virtual
+    /// time, so they don't compete for cores) and the ticks over 11.1 ms (90 Hz) and 16.7 ms (60 Hz); asserts the roots
+    /// are equal at every count. A tick over budget here is CPU per tick, not a missed compositor frame: the headset
+    /// half measures those. `PE_TRIAL_BALLS` (default 500, at most the preset's 500), `PE_TRIAL_WORKERS` (default
+    /// "1,2,4,8") and `PE_TRIAL_SECS` (default 20) set the run. Physics workers starve at idle priority
+    /// (docs/parallel-physics.md 7.1): run it at normal priority for figures.
+    #[test]
+    #[ignore = "a timing trial: run alone, release, normal priority"]
+    fn physics_workers_trial() {
+        use pe_agree::{Node, NodeConfig};
+        use pe_seams::agree::{Cut, CutRef};
+        use pe_seams::test_util::TestKeys;
+        type Events = Arc<std::sync::Mutex<Vec<AgreeEvent>>>;
+        type Member = (Sim, Arc<FrameSlot>, Puppet, Arc<crate::shown::DisplayLead>, Events);
+        let var = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
+        let balls: usize = var("PE_TRIAL_BALLS").and_then(|v| v.trim().parse().ok()).unwrap_or(500);
+        let secs: u64 = var("PE_TRIAL_SECS").and_then(|v| v.trim().parse().ok()).unwrap_or(20);
+        let counts: Vec<i32> = var("PE_TRIAL_WORKERS")
+            .unwrap_or_else(|| "1,2,4,8".into())
+            .split(',')
+            .filter_map(|c| c.trim().parse().ok())
+            .collect();
+        let frames = secs * u64::from(RATE.hz());
+        let warm = 2 * u64::from(RATE.hz());
+        let q = |v: &mut Vec<u64>, p: f64| -> f64 {
+            v.sort_unstable();
+            let i = ((p * v.len() as f64).ceil() as usize).clamp(1, v.len().max(1)) - 1;
+            v.get(i).copied().unwrap_or(0) as f64 / 1e6
+        };
+        let mut all_roots: Vec<(i32, BTreeMap<u64, pe_seams::Hash>)> = Vec::new();
+        for &workers in &counts {
+            assert_eq!(crate::genesis::set_physics_workers(workers), workers, "a count within 1..=32");
+            let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
+            let keys = TestKeys::new(11, 2);
+            let members = keys.sorted_keys();
+            let line = pe_world::preset::m1_line();
+            let hub = Hub::default();
+            {
+                let mut d = hub.delay.lock().expect("the delays");
+                d.insert((keys.key(0), keys.key(1)), 90_000_000);
+                d.insert((keys.key(1), keys.key(0)), 90_000_000);
+            }
+            let mut sims: Vec<Member> = Vec::new();
+            for i in 0..2 {
+                let me = keys.key(i);
+                let genesis = Cut { at: CutRef { line, height: 0, frame: Frame(0) }, heads: Vec::new() };
+                let config = NodeConfig::new(line, members.clone(), genesis);
+                let node = Node::new(config, Box::new(keys.signer(i)), Box::new(keys.clone()), HostTime(0));
+                let world = pe_world::preset::ball_pit_with(5, pe_world::BlobStore::default(), Pos::ORIGIN, balls);
+                let probe = pe_replica::costs::probe();
+                let replica = crate::world::ball_pit_replica(world, &members, me, RATE, clock.clone(), runner())
+                    .expect("a replica")
+                    .with_cost_probe(probe.clone());
+                let slot = Arc::new(FrameSlot::new());
+                let puppet = Puppet::default();
+                puppet.set([0.0, 3.0, 0.4 * i as f32], false);
+                let feed: Arc<dyn pe_seams::HandFeed> = Arc::new(Moving(puppet.clone(), [0.0; 3]));
+                let lead = Arc::new(crate::shown::DisplayLead::default());
+                let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+                let sim = Sim::new(Box::new(node), Box::new(replica), clock.clone(), slot.clone(), Budget::new(RATE))
+                    .with_local(me, keys.nonce(i, 0), feed)
+                    .with_transport(Box::new(Port::new(me, hub.clone())), None)
+                    .with_shown(lead.clone())
+                    .with_event_log(events.clone())
+                    .with_cost_probe(probe);
+                sims.push((sim, slot, puppet, lead, events));
+            }
+            let mut ticks: [Vec<u64>; 2] = [Vec::new(), Vec::new()];
+            let started = Instant::now();
+            let mut held: Option<[f32; 3]> = None;
+            for f in 1..=frames {
+                let now = clock.host_time_of(Frame(f));
+                hub.now.store(now.0, Ordering::SeqCst);
+                if f == 90 {
+                    let v = sims[0].1.newest().expect("published");
+                    held = Some(rig_at(&v, top_ball(&v)));
+                }
+                let a = f as f32 / RATE.hz() as f32 * std::f32::consts::PI;
+                for (k, (s, _, puppet, lead, _)) in sims.iter_mut().enumerate() {
+                    lead.record(now, 46_000_000);
+                    match (k, held) {
+                        // Member 0 sways above the pit, then closes on the top ball at frame 90, lifts it 20 cm and
+                        // holds it there, swaying.
+                        (0, None) => puppet.set([0.1 * a.sin(), 1.0, 0.0], false),
+                        (0, Some(b)) => {
+                            let up = if f > 100 { 0.2 } else { 0.0 };
+                            puppet.set([b[0] + 0.05 * a.sin(), b[1] + up, b[2]], true)
+                        }
+                        // Member 1's closed hand stirs the pit: a 0.8 m circle at the balls' height, every 2 s.
+                        _ => puppet.set([0.8 * a.cos(), 0.15, 0.8 * a.sin()], true),
+                    }
+                    let t = Instant::now();
+                    s.tick(now).expect("ticked");
+                    if f > warm {
+                        ticks[k].push(u64::try_from(t.elapsed().as_nanos()).unwrap_or(u64::MAX));
+                    }
+                }
+            }
+            let wall = started.elapsed();
+            let mut roots = BTreeMap::new();
+            for (i, (.., events)) in sims.iter().enumerate() {
+                for e in events.lock().expect("the events").iter() {
+                    if let AgreeEvent::CutFinal { cut, root, .. } = e {
+                        let was = roots.insert(cut.height, *root);
+                        assert!(
+                            was.is_none_or(|r| r == *root),
+                            "workers {workers}: member {i}'s root at {}",
+                            cut.height
+                        );
+                    }
+                }
+            }
+            for (i, (s, ..)) in sims.iter().enumerate() {
+                let st = s.stats();
+                assert!(st.finalized > secs && st.root_splits == 0, "workers {workers}, member {i}: {st:?}");
+                let v = &mut ticks[i];
+                let n = v.len();
+                let over = |v: &[u64], ms: f64| v.iter().filter(|&&t| t as f64 / 1e6 > ms).count();
+                let (o90, o60) = (over(v, 1000.0 / 90.0), over(v, 1000.0 / 60.0));
+                let mean = v.iter().sum::<u64>() as f64 / n.max(1) as f64 / 1e6;
+                let (p50, p95, p99, max) = (q(v, 0.5), q(v, 0.95), q(v, 0.99), q(v, 1.0));
+                println!(
+                    "trial balls {balls} workers {workers} member {i}: ticks {n}, mean {mean:.2} ms, p50 {p50:.2}, \
+                     p95 {p95:.2}, p99 {p99:.2}, max {max:.2}; over 11.1 ms {o90}, over 16.7 ms {o60}; rollbacks {}, \
+                     re-simulated {} for {} stepped, deepest {}; replay costs {:?}",
+                    st.phases.rollbacks,
+                    st.phases.resimulated,
+                    st.phases.stepped,
+                    st.deepest_rollback,
+                    s.replay_costs(),
+                );
+            }
+            println!("trial balls {balls} workers {workers}: {frames} frames in {:.1} s wall", wall.as_secs_f64());
+            all_roots.push((workers, roots));
+        }
+        crate::genesis::set_physics_workers(1);
+        let (w0, first) = &all_roots[0];
+        for (w, roots) in &all_roots[1..] {
+            let shared: Vec<&u64> = first.keys().filter(|h| roots.contains_key(h)).collect();
+            assert!(shared.len() as u64 > secs, "workers {w0} and {w}: {} heights in common", shared.len());
+            for h in shared {
+                assert_eq!(first[h], roots[h], "the root at height {h} at {w0} and {w} workers");
+            }
+        }
+    }
+
     /// A puppet hand that also reports a velocity, the same at every moment: a hand moving steadily, for a throw.
     #[derive(Clone)]
     struct Moving(Puppet, [f32; 3]);

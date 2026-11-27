@@ -746,7 +746,8 @@ impl<W: WorldModel> ReplicaImpl<W> {
         // The replay costs (crate::costs), only with a probe: what the physics reads in this step, and its timers.
         let probe = self.costs.is_some();
         let mut reads = probe.then(PhysicsReads::new);
-        let (mut root_ns, mut scan_ns) = (0u64, 0u64);
+        let step_t = probe.then(std::time::Instant::now);
+        let (mut root_ns, mut scan_ns, mut physics_ns, mut keyframe_ns, mut digest_ns) = (0u64, 0u64, 0u64, 0u64, 0u64);
         if !pe_core::fpenv::check_and_reset() {
             self.counters.fp_resets += 1;
         }
@@ -770,7 +771,9 @@ impl<W: WorldModel> ReplicaImpl<W> {
             }
             ids.push(id);
             if let Some(r) = reads.as_mut().filter(|_| !fx.is_empty()) {
+                let t = std::time::Instant::now();
                 r.add(0, &fx);
+                digest_ns += costs::since(t);
             }
             if !fx.is_empty() {
                 let done = bodies::reconcile(&self.world, &mut self.physics, self.origin, &fx.changed);
@@ -790,15 +793,19 @@ impl<W: WorldModel> ReplicaImpl<W> {
         // The player bodies (world-model.md 8.2): each walked by the mover before the hands are driven, so a hand's
         // target is where its moved body puts it.
         if let Some(r) = reads.as_mut() {
+            let t = std::time::Instant::now();
             for row in self.world.players() {
                 r.add(1, &(row.body, row.feet, players::input(&row, &pe_physics::PLAYER)));
             }
+            digest_ns += costs::since(t);
         }
         self.faults += self.move_players();
         // The hand bodies for this frame, rebuilt from the world model's hands and the physics state (3.3).
         let hands = self.world.hands();
         if let Some(r) = reads.as_mut() {
+            let t = std::time::Instant::now();
             self.physics_reads(r, &hands);
+            digest_ns += costs::since(t);
         }
         let grab_ns = probe.then_some(&mut scan_ns);
         let (faults, reaches) = hands::sync(&self.world, &mut self.physics, &hands, self.origin, self.rate, f, grab_ns);
@@ -806,7 +813,9 @@ impl<W: WorldModel> ReplicaImpl<W> {
         let t = probe.then(std::time::Instant::now);
         let awake_before = self.awake(&hands);
         scan_ns += t.map_or(0, costs::since);
+        let t = probe.then(std::time::Instant::now);
         self.faults += u64::from(self.physics.step_holding(self.dt, &reaches).is_err());
+        physics_ns += t.map_or(0, costs::since);
         let hits = self.step_hits(f, resimulated, &hands);
         let t = probe.then(std::time::Instant::now);
         self.write_back(awake_before, &hands);
@@ -839,7 +848,9 @@ impl<W: WorldModel> ReplicaImpl<W> {
             self.note_hits(f, hits);
             self.stepped.insert(f, ids);
             if self.config.policy.takes(next) || self.is_cut_frame(next) {
+                let t = probe.then(std::time::Instant::now);
                 self.keyframe(next);
+                keyframe_ns += t.map_or(0, costs::since);
             }
             if let Some(root) = root {
                 self.live.insert(next, root);
@@ -849,7 +860,9 @@ impl<W: WorldModel> ReplicaImpl<W> {
         }
         if let Some(p) = self.costs.as_deref_mut() {
             let digest = reads.map(|r| r.finish()).filter(|_| !self.world.scripted());
-            p.step(f, live, resimulated, root.is_some().then_some(next), StepCost { root_ns, scan_ns, digest });
+            let step_ns = step_t.map_or(0, costs::since);
+            let c = StepCost { root_ns, scan_ns, digest, step_ns, physics_ns, keyframe_ns, digest_ns };
+            p.step(f, live, resimulated, root.is_some().then_some(next), c);
         }
         root
     }
@@ -2079,9 +2092,10 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
                 self.faults += 1;
             }
             let to = f.max(self.rollback_floor());
+            let t = self.costs.is_some().then(std::time::Instant::now);
             if let Some(k) = (to < self.frame).then(|| self.roll_back(to)).flatten() {
                 if let Some(p) = self.costs.as_deref_mut() {
-                    p.rewind(to, k);
+                    p.rewind(to, k, t.map_or(0, costs::since));
                 }
                 out.rolled_back_to = Some(k);
                 out.changed_from = Some(f);
@@ -2097,9 +2111,10 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
         if let Some(c) = self.world.take_replay_from() {
             let to = c.max(self.rollback_floor());
             let forced = preview.is_some_and(|p| self.unpreview_base(p));
+            let t = self.costs.is_some().then(std::time::Instant::now);
             if let Some(k) = (to < self.frame || forced).then(|| self.roll_back(to)).flatten() {
                 if let Some(p) = self.costs.as_deref_mut() {
-                    p.rewind(to, k);
+                    p.rewind(to, k, t.map_or(0, costs::since));
                 }
                 out.rolled_back_to = Some(out.rolled_back_to.map_or(k, |r| r.min(k)));
                 out.replay_from = Some(c);
