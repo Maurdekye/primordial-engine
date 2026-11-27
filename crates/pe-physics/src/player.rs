@@ -593,7 +593,7 @@ impl PhysicsWorld {
         // (@vdw-physics's Low 4 on a306b59c); a crowd still settles over frames, never all at once.
         for _ in 0..3 {
             let before = out;
-            for (&other, _) in self.players.iter() {
+            for &other in self.players.keys() {
                 if other == me {
                     continue;
                 }
