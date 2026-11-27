@@ -569,6 +569,26 @@ impl Builds for Builder {
         if u128::from(b.build_ms) > self.config.margin.as_millis() {
             return Err(BuildRefused::Margin { which: Margin::Time, measured: u64::from(b.build_ms) });
         }
+        // The author's own check that the module will bind once committed, so one that would never run is refused with
+        // the reason (F5: the M1 recording's lamp listed no `Light` and never ran). Only here, never in the attester's
+        // check: in M1 binding isn't part of what is attested (@fable-reviewer). The bind calls the
+        // module, so it runs on a thread with the inbox's stack, as the build does.
+        let binds = std::thread::scope(|s| {
+            let job = std::thread::Builder::new()
+                .name("pe-bind".into())
+                .stack_size(self.inbox.thread_stack())
+                .spawn_scoped(s, || self.inbox.trial_bind(&b.script, &v));
+            match job {
+                Ok(h) => h.join().map_err(|_| BuildRefused::Unavailable("the bind check's thread panicked".into())),
+                Err(e) => Err(BuildRefused::Unavailable(format!("the bind check's thread did not start: {e}"))),
+            }
+        })?;
+        if let Err(why) = binds {
+            return Err(BuildRefused::Failed(vec![diagnostic(
+                DiagnosticKind::Manifest,
+                format!("it won't bind: {why}"),
+            )]));
+        }
         let (toolchain, sdk) = self.ids;
         // The version's tag with the module's own components: pe-api registers exactly these under the commit, and
         // pe-world refuses a `Register` without exactly one tag (world-model.md 7.9), so without it every live `code`

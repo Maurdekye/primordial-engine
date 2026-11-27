@@ -383,6 +383,8 @@ pub struct ReplicaImpl<W: WorldModel> {
     /// The collision hits of the frames `root_at_cut`'s scratch re-stepped, for a rebase on that history.
     scratch_hits: BTreeMap<Frame, Vec<Hit>>,
     script_counts: ScriptCounts,
+    /// The scripts its last live logic step didn't run, with the runner's reason ([`Replica::script_notes`]).
+    not_run: BTreeMap<[u8; 32], String>,
 }
 
 /// What the replica keeps of an entry it made a change record for, until `final_frame` passes its frame.
@@ -561,6 +563,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
             hits_low: None,
             scratch_hits: BTreeMap::new(),
             script_counts: ScriptCounts::default(),
+            not_run: BTreeMap::new(),
         };
         let root = r.is_cut_frame(Frame(0)).then(|| r.take_root());
         r.keyframe(Frame(0));
@@ -870,9 +873,22 @@ impl<W: WorldModel> ReplicaImpl<W> {
     fn logic(&mut self, f: Frame, stage: Stage, live: bool, events: &mut Vec<(ScriptEvent, Pos)>) {
         let Some(runner) = self.runner.as_deref_mut() else { return };
         if !self.world.scripted() {
+            if live {
+                self.not_run.clear();
+            }
             return;
         }
         let out = self.world.logic_stage(f, stage, runner);
+        if live {
+            if stage == Stage::LogicPrePhysics {
+                self.not_run.clear();
+            }
+            let runner = self.runner.as_deref().expect("taken above");
+            for a in &out.missing {
+                let why = runner.why_missing(a).unwrap_or_else(|| "its runner gave no reason".to_string());
+                self.not_run.insert(*a, why);
+            }
+        }
         if !out.effects.is_empty() {
             let changed = &out.effects.changed;
             let done = bodies::reconcile(&self.world, &mut self.physics, self.origin, changed);
@@ -2463,6 +2479,11 @@ impl<W: WorldModel> Replica for ReplicaImpl<W> {
     /// The metered bytes of a module its runner holds.
     fn module(&self, hash: &Hash) -> Option<Bytes> {
         self.runner.as_ref().and_then(|r| r.module(hash))
+    }
+
+    fn script_notes(&self) -> pe_seams::replica::ScriptNotes {
+        let faults = self.runner.as_ref().map(|r| r.faults()).unwrap_or_default();
+        pe_seams::replica::ScriptNotes { not_run: self.not_run.clone(), faults }
     }
 }
 

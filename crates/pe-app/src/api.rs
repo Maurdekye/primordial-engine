@@ -135,6 +135,9 @@ struct Inner {
     joining: bool,
     /// The scripts this machine can't run, as the attester last found them (`Attester::not_running`).
     scripts_not_running: Vec<(AssetId, Frame, String)>,
+    /// The scripts this machine's runner doesn't run, or that faulted, as the simulation thread last found them
+    /// (`crate::scripts::ScriptWatch::not_running`).
+    runner_not_running: Vec<(AssetId, Frame, String)>,
 }
 
 impl ApiShared {
@@ -156,6 +159,7 @@ impl ApiShared {
             caught_up_once: false,
             joining: false,
             scripts_not_running: Vec::new(),
+            runner_not_running: Vec::new(),
         };
         ApiShared { facts, keep_frames, inner: Mutex::new(inner), fresh: Condvar::new() }
     }
@@ -227,6 +231,12 @@ impl ApiShared {
     /// sets them after each pass (builds.rs).
     pub fn scripts_not_running(&self, list: Vec<(AssetId, Frame, String)>) {
         self.lock().scripts_not_running = list;
+    }
+
+    /// The scripts this machine's runner doesn't run (a bind it refused, with why) or that faulted, for session_info
+    /// with the attester's: the simulation thread sets them after each publication (crate::scripts).
+    pub fn runner_not_running(&self, list: Vec<(AssetId, Frame, String)>) {
+        self.lock().runner_not_running = list;
     }
 
     /// A member's link came up or went down (pe-net's `LinkUp`, `LinkDown`).
@@ -340,7 +350,13 @@ impl WorldSource for ApiWorld {
             tick_hz: self.0.facts.rate.hz(),
             agents_move_user: false,
             joining: g.joining,
+            // The attester's (not built here) first, then the runner's for any other script.
             scripts_not_running: (g.scripts_not_running.iter())
+                .chain(
+                    g.runner_not_running
+                        .iter()
+                        .filter(|(a, _, _)| !g.scripts_not_running.iter().any(|(b, _, _)| b == a)),
+                )
                 .map(|(script, since, why)| NotRunning {
                     script: *script,
                     object: None,

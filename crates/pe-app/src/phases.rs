@@ -175,6 +175,10 @@ impl Replica for Timed<'_> {
     fn module(&self, hash: &Hash) -> Option<Bytes> {
         self.inner.module(hash)
     }
+
+    fn script_notes(&self) -> pe_seams::replica::ScriptNotes {
+        self.inner.script_notes()
+    }
 }
 
 #[cfg(test)]

@@ -781,6 +781,26 @@ pub trait Replica: Send {
     fn module(&self, _hash: &Hash) -> Option<Bytes> {
         None
     }
+
+    /// What its runner says about the scripts of its last live step, this machine's and never world state: each
+    /// active script it didn't run, with why in a sentence (its module isn't held here, or it won't bind and why), and
+    /// each script's last fault with its system and fault, where the world keeps only the frame and the code (logic.md
+    /// 3.6). For pe-app's console and pe-api's `scripts_not_running` (S2 v1.12; M1 redo F5: the recording's lamp
+    /// never bound, and nothing said so). Empty by default.
+    fn script_notes(&self) -> ScriptNotes {
+        ScriptNotes::default()
+    }
+}
+
+/// What a replica's runner says about its scripts ([`Replica::script_notes`]), keyed by the script's asset id.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ScriptNotes {
+    /// Active scripts its last live step didn't run, with why.
+    pub not_run: std::collections::BTreeMap<[u8; 32], String>,
+    /// Each script the world marks faulted, with its fault on this machine: its system, frame and fault. From any
+    /// step, rollback re-steps included, and dropped once the world no longer marks it (a rollback undid it, or the
+    /// script left).
+    pub faults: std::collections::BTreeMap<[u8; 32], String>,
 }
 
 /// A script runner's identity, as canonical bytes rather than a hash, so that a refusal can say what differed (S2 v1.7;

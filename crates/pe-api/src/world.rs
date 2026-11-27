@@ -245,6 +245,9 @@ impl Snapshot for WorldView {
     fn frame(&self) -> Frame {
         self.snap.frame().0
     }
+    fn attached(&self, id: ObjectId) -> Vec<pe_world::script::AssetId> {
+        self.names.attached(&self.snap, id.into())
+    }
     fn final_frame(&self) -> Frame {
         self.snap.final_frame().0
     }

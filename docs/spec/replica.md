@@ -6,7 +6,7 @@ notes on the hello were brought up to date when the hello's runner comparison la
 numbers are v0.2's, because code on main cites them; what changed is the text under them. A design that is not built
 is marked **Not built**.
 
-The seams are pe-seams's: S2 (the replica) through v1.8 and S5 (the frame view) through v1.8, with their rulings in
+The seams are pe-seams's: S2 (the replica) through v1.12 and S5 (the frame view) through v1.11, with their rulings in
 `crates/pe-seams/RULINGS.md`. Where this file and a seam's doc comment differ, the seam is right, and this file is to
 fix.
 
@@ -943,7 +943,7 @@ A player's own hands are drawn from tracking (WS-render, WS-xr). The view still 
 
 ## 8. The S2 seam, as pe-seams fixed it
 
-pe-seams's `Replica` trait (`crates/pe-seams/src/replica.rs`) is S2, through v1.11. `ReplicaImpl` implements it over
+pe-seams's `Replica` trait (`crates/pe-seams/src/replica.rs`) is S2, through v1.12. `ReplicaImpl` implements it over
 a `WorldModel` (8.1) and pe-physics [V `crates/pe-replica/src/replica.rs`], and pe-replica owns the driver (pe-seams
 ruling 3). The calls, and what the replica does behind each:
 - **`Driver::drive(replica, agree, present, self_test) -> DriveReport`** is the S2/S3 glue of each simulation tick,
@@ -998,6 +998,10 @@ ruling 3). The calls, and what the replica does behind each:
   with, and a test checks it against what that runner reports (app.md 6; pe-app net.rs `build_id`,
   @item:primordial-engine/pe-app-s-hello-compares-the-script-runner-s-iden). **Not built:** the fault bundle's
   record, O18 (11); nothing calls `runner_identity()` or `module(&hash)` yet [V: no caller outside pe-replica].
+- **`script_notes()`** (S2 v1.12; M1 redo F5) is what the runner says about the scripts of the last live step, never world
+  state: each active script it didn't run, with why (its module isn't held here, or the bind's refusal), and each
+  script's last fault with its system and fault (the world keeps only its frame and code, logic.md 3.6). pe-app logs
+  each change and gives it to pe-api's `scripts_not_running` (api.md 5.1). Empty by default.
 - **The group selector:** `GroupSel::Domain` or `Objects`. Every import acts as `Domain` until history-free physics
   exists (6.3).
 - **Unchanged since the proposal:**

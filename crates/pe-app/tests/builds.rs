@@ -484,3 +484,31 @@ fn the_attesters_thread_submits_through_the_machine_lane() {
         thread.stop();
     });
 }
+
+/// M1 redo F5: the source the recording's agent committed (pe-logic tests/scripts/lamp-m1) builds but would never
+/// bind, since its system writes the engine's `Light` and its `script!` doesn't list it. The author's build refuses it,
+/// so `code_check` and the commit say why, with the fix; listed, the same source passes.
+#[test]
+fn the_author_s_build_refuses_a_script_that_would_never_bind() {
+    big_stack(|| {
+        let (builder, _) = builder("never-binds");
+        let port: &dyn Builds = &builder;
+        let deadline = Instant::now() + Duration::from_secs(300);
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../pe-logic/tests/scripts/lamp-m1/src/lib.rs");
+        let recorded = std::fs::read_to_string(dir).expect("the recorded lamp");
+        let archive = pe_api::builds::archive_of(&recorded).expect("an archive");
+        let Err(BuildRefused::Failed(d)) = port.build(&archive, deadline) else { panic!("a refusal") };
+        let want = "it won't bind: system blink uses pe.Light, which the script doesn't declare, so it would never \
+                    run: a script lists every component its systems use, the engine's too. Write \
+                    `pe_sdk::script!(components: [Blink, Light], systems: [blink]);` (Light is pe_sdk::engine::Light)";
+        assert!(
+            matches!(&d[..], [d] if d.kind == DiagnosticKind::Manifest && d.severity == Severity::Error
+                && d.message == want),
+            "{d:?}"
+        );
+        let fixed = recorded.replace("components: [Blink]", "components: [Blink, Light]");
+        let archive = pe_api::builds::archive_of(&fixed).expect("an archive");
+        let api = port.build(&archive, deadline).expect("listed, it passes");
+        assert_eq!(api.systems, ["blink"]);
+    });
+}

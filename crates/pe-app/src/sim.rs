@@ -536,6 +536,9 @@ pub struct Sim {
     /// any is open, the health this machine reports is `Repairing` from the first ([`Sim::health_of`]; divergence.md
     /// 7). A set, not the earliest alone: a revote can settle an early split before a later one (@engine-architect).
     splits: std::collections::BTreeSet<Frame>,
+    /// What each active script does here, as last logged (crate::scripts). In a cell: pe-api's feed reads the sim
+    /// behind a shared borrow.
+    scripts: std::cell::RefCell<crate::scripts::ScriptWatch>,
     /// The replica's view behind `published`: `published` is a copy with the composed health while a split is open.
     source_view: Option<Arc<FrameView>>,
     /// Ticks into the current hold.
@@ -913,6 +916,7 @@ impl Sim {
             published: None,
             rig_before: None,
             splits: std::collections::BTreeSet::new(),
+            scripts: Default::default(),
             source_view: None,
             hold: None,
             stats: SimStats::default(),
@@ -2363,6 +2367,15 @@ impl Sim {
         api.ports.log.activations(&view.activations, &view.activations_retracted);
         api.ports.log.publish(&view.changes, view.final_frame.map(|f| f.0), view.health);
         if let Some(s) = crate::api::snapshot_of(&*self.replica) {
+            // What each active script does here, logged on a change and given to pe-api (crate::scripts, F5).
+            let mut watch = self.scripts.borrow_mut();
+            for line in watch.update(&s, &self.replica.script_notes()) {
+                match line {
+                    crate::scripts::Line::Out(l) => crate::out!("{l}"),
+                    crate::scripts::Line::Err(l) => crate::err!("{l}"),
+                }
+            }
+            shared.runner_not_running(watch.not_running());
             shared.keep(s);
         }
         if let Some(s) = crate::api::agreed_of(&*self.replica) {
@@ -4960,6 +4973,10 @@ pub(crate) mod tests {
         }
         fn module(&self, hash: &pe_seams::Hash) -> Option<bytes::Bytes> {
             self.inner.module(hash)
+        }
+
+        fn script_notes(&self) -> pe_seams::replica::ScriptNotes {
+            self.inner.script_notes()
         }
     }
 

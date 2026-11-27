@@ -328,6 +328,15 @@ with `not_ready`.
   machine; S6 v1.9). For a script that writes only display state, such as a lamp's glow, which no root covers,
   this list is the only sign. One that writes simulated state also makes this machine diverge, and health then
   reads `repairing` within a cut or so.
+  Since M1 redo F5 the list also has the scripts this machine's runner holds but won't bind (`why` "it won't bind:
+  …", with the bind's refusal) and those that faulted (`since_frame` the fault's frame, `why` "it faulted and
+  stopped: …" with the system and the fault). A query's objects carry the same entries for the scripts attached to
+  them, as `scripts_not_running` on the object (`ObjectView`, left out when empty), so a reader of the object sees
+  it there (@fable-reviewer). In the M1 recording the lamp's bind refusal reached only a count, and the
+  agent read the Lamp for a minute without a word of why it never changed.
+  On the author's machine, while its own commit is predicted (logic.md 6.2a's option (i)), an entry's
+  `since_frame` can move if the prediction is resumed after a rebase (F3 C4's fallback: it activates again at a later
+  frame). pe-app's console says each script version's state once, so a resumed prediction adds no line.
 
 ### 5.2 `query`
 
@@ -1230,6 +1239,9 @@ advice):
   - **S6 v1.11** (agent tooling, user ruling): `Query.summary: bool`, `QueryResult.cut: Option<String>`
     and `QueryResult.summary: Option<QuerySummary { count, types, bounds: Option<Bounds { relative_to, min, max }>,
     objects: Vec<ObjectBrief> }>` (5.2); `Op::Duplicate.count: Option<u32>` and `step: Option<[f64; 3]>` (5.3).
+  - **S6 v1.12** (M1 redo F5, @iter-bench): `ObjectView.scripts_not_running: Vec<ScriptNotRunning>`, the session
+    list's entries for the scripts attached to the object, left out when empty (5.1). With S2 v1.12: the replica's
+    `script_notes()` (`ScriptNotes { not_run, faults }`, empty by default) gives pe-app the runner's reasons.
 
 ## 12. Open points, and whose they are
 

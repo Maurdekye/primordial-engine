@@ -1591,6 +1591,11 @@ mod lamp {
             let row = r.world().world().modules()[&asset()].clone();
             assert!(row.faulted.is_some_and(|(f, _)| f == Frame(1)), "its first frame: {:?}", row.faulted);
             assert_eq!(r.script_counts().host_faults, 0);
+            // The runner's sentence for it names the frame the world marks (F5), and stays while the world marks it.
+            let notes = r.script_notes();
+            let what = notes.faults.get(&asset()).expect("the runner's note");
+            assert!(what.contains("faulted at frame 1:"), "{what}");
+            assert_eq!(notes.faults.len(), 1, "{:?}", notes.faults);
             let view = r.view();
             let kind = EffectKind::Script(event_kind(&asset(), "spawned"));
             let key = EffectKey { frame: Frame(1), cause: EffectCause::Logic, object: oid(SPAWNER), kind, ordinal: 0 };
@@ -1815,6 +1820,64 @@ mod lamp {
             let out = r.run_stage(Stage::LogicPrePhysics, &fx.scripts, &mut fx.store.clone(), &world);
             assert!(!r.holds(&d.module));
             assert_eq!(out.missing, vec![asset(), [8; 32]]);
+        });
+    }
+
+    /// The M1 recording's lamp (pe-logic tests/scripts/lamp-m1, M1 redo F5), built once: its system writes the engine's
+    /// `Light`, which its `script!` doesn't list, so it never binds.
+    fn lamp_m1() -> &'static [u8] {
+        static W: OnceLock<Vec<u8>> = OnceLock::new();
+        W.get_or_init(|| {
+            let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../pe-logic/tests/scripts/lamp-m1");
+            let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("scripts");
+            pe_logic::build::build(&toolchain(), &dir, &pe_logic::build::engine_sdk(), &target, true)
+                .unwrap_or_else(|e| panic!("{e}"))
+        })
+    }
+
+    /// A row whose module won't bind is missing at every stage, as before, and the runner now says why: the bind's
+    /// refusal, with the fix. In the recording that reason was dropped, so nothing said why the lamp never ran.
+    #[test]
+    fn a_script_that_won_t_bind_is_missing_and_the_runner_says_why() {
+        big_stack(|| {
+            let mut r = LogicRunner::new(Settings::default(), RunSettings::default()).expect("a runner");
+            let module = r.insert(lamp_m1()).expect("the recorded lamp loads");
+            let s = Settings::default();
+            let script = Script::load(&runtime::engine(&s).unwrap(), s, lamp_m1()).unwrap();
+            let m = run::read_manifest(&script).unwrap();
+            let mut registry = pe_world::components::engine_registry();
+            let mut ids = vec![tag_desc(&v()).id()];
+            registry.register(tag_desc(&v())).unwrap();
+            for c in m.components.iter().filter(|c| !c.name.starts_with("pe.")) {
+                let fields = run::component_desc(c, ComponentId(0)).unwrap().fields().to_vec();
+                let d = run::component_desc(c, script_component_id(&v(), &c.name, fields).unwrap()).unwrap();
+                ids.push(d.id());
+                registry.register(d).unwrap();
+            }
+            ids.sort();
+            let row = ScriptRow { asset: [8; 32], module, version: v(), components: ids };
+            let mut store = SimStore::new(Arc::new(registry), 1);
+            let faulted = BTreeSet::new();
+            let guard = |_: ObjectId| false;
+            let check = |_: ComponentId, _: ObjectId, _: &[u8]| -> Result<(), String> { Ok(()) };
+            let world = StageWorld {
+                frame: Frame(0),
+                line: LineId::origin(),
+                rate_hz: 60,
+                guard: &guard,
+                faulted: &faulted,
+                check: &check,
+            };
+            for stage in [Stage::LogicPrePhysics, Stage::LogicPostPhysics] {
+                let out = r.run_stage(stage, std::slice::from_ref(&row), &mut store, &world);
+                assert_eq!(out.missing, vec![[8; 32]], "{stage:?}");
+                let why = r.why_missing(&[8; 32]).expect("a reason");
+                assert!(why.contains("system blink uses pe.Light, which the script doesn't declare"), "{why}");
+                assert!(why.contains("`pe_sdk::script!(components: [Blink, Light], systems: [blink]);`"), "{why}");
+            }
+            // Gone from the rows, it has no reason either.
+            r.run_stage(Stage::LogicPrePhysics, &[], &mut store, &world);
+            assert_eq!(r.why_missing(&[8; 32]), None);
         });
     }
 }
