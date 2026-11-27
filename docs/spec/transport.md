@@ -747,14 +747,61 @@ its frame this way (seam S3).
     moving [V, the test above: 98 kB in 4 s];
   - **the fallback**, if two machines show the probe isn't enough: a vendored quinn-proto with the probe wait
     capped (a `TransportConfig` setting, off by default), not a redial (@coordinator-opus's ruling).
-- **Outages** (@coordinator-opus): a link silent for less than `T_idle` resumes on the same
-  connection, and the reliable lanes resend what it missed (3.2), within about a round trip of the link's return:
-  the outage probe keeps both sides probing (below), and the first acknowledgement resets the lanes' backoff (3.3). A longer silence closes it, and in M1 nothing dials
-  again: the session is over for that pair, and a new invite starts another. So M1 sets `T_idle` to 30 s, a
-  stated setting (`T_IDLE_M1`) rather than QUIC's usual few seconds. Once pe-agree lets a member return (model
-  v1), a redial replaces this, and `T_idle` can shrink. Nothing else in pe-net gives up sooner: `T_degraded`
-  only reports, `T_welcome` applies before the link is first Up, the clock drops samples older than `W_clock`
-  (30 s) and then holds its offset, and the lanes resend without a limit while the connection stands.
+- **Outages** (@coordinator-opus): a link silent for less than `T_idle` resumes on the same connection,
+  and the reliable lanes resend what it missed (3.2), within about a round trip of the link's return:
+  the outage probe keeps both sides probing (below), and the first acknowledgement resets the lanes' backoff (3.3). A
+  longer silence closes it, and a member's link is then redialled (below). `T_idle` stays 30 s, a stated setting
+  (`T_IDLE_M1`) rather than QUIC's usual few seconds: an outage under it costs no handshake and loses nothing in
+  flight. Nothing else in pe-net gives up sooner: `T_degraded` only reports, `T_welcome` applies before the link
+  is first Up, the clock drops samples older than `W_clock` (30 s) and then holds its offset, and the lanes resend
+  without a limit while the connection stands.
+- **The redial** (M2, @ticket:primordial-engine/pe-net-pe-app-redial-a-member-s-link-after-an-ou; @coordinator-opus's option (b)): a member's link that closed for silence is dialled again, so an outage longer than
+  `T_idle` no longer ends the session while both processes run. Neither member left, so agreement needs no return:
+  each node still holds its chain and its votes, and goes on over the new connection as after a short outage. What
+  the old connection's lanes still held is lost with it; pe-agree asks again for what it misses, as it does after
+  any loss (agreement.md 4, "Catching up after an outage": timeouts re-sent each period, heads in votes and
+  timeouts, block and entry fetches).
+  - **When:** the link was Up (or Degraded) to a key the app names a member (`set_clock_members`), this side is a
+    member, and it closed for silence: QUIC's idle timeout or a stateless reset, or a peer's `duplicate connection`
+    close of the only connection (the peer holds another, which comes up or is lost in turn). Any other close (`Left`
+    from a peer that stopped, a refusal, a fault) means it, and is never redialled. pe-net reports
+    `Lifecycle::Redialling { peer, until }`.
+  - **How:** both sides dial the peer's last addresses (those its hello listed, and where its packets came from) with
+    no token, at once and then `T_redial_first` doubling up to `T_redial_max` apart (0.5, 1, 2, 4, 4 s...). Each
+    attempt still connecting when the next is due is closed, so a handshake's own Initial backoff into a dead path never
+    sets the pace. While a connection to the peer is confirmed and awaiting its welcome, no new attempt starts. Both
+    sides dialling is also the simultaneous open (2.4); the duplicate rule (6.2) keeps one of the connections.
+  - **The other end:** both are members, so each raises `JoinRequest` and each admits the other (6.4's two members);
+    pe-app's hook welcomes a member's new connection (app.md 4). One side may still hold the old link, quiet, when the
+    other's attempt arrives: its first packet on the old connection reaches a side that no longer knows it, which
+    answers with a stateless reset, so it closes at once rather than at its own `T_idle` [V `pe-net/tests/core.rs`
+    `a_one_way_outage_past_t_idle_comes_back_within_a_second`: up within 0.1-0.2 s of the return, for either side].
+  - **Its end:** a `LinkUp` to the peer ends it. Past `T_redial` (90 s) it ends, reported `Lifecycle::Lost { peer }`,
+    as is a member's link that closed any other way. So is a redial the peer refuses (a close that isn't a duplicate):
+    its app no longer takes this key. Not `Overloaded`: the peer's app didn't decide within `T_welcome`, as when it is
+    busy catching up after the outage, so the redial carries on at its next gap (@chunks-reviewer's Low on 540eaacf;
+    `a_redial_carries_on_past_the_peer_s_overloaded_close`). With several addresses, one attempt's refusal ends it
+    only once no other attempt to that peer is live. A key no longer a member (`set_clock_members`) is dropped, unreported, and an
+    endpoint that stops ends them all. Ending one closes its attempts still connecting.
+  - **What it costs:** a handful of Initial packets per attempt, about 3 kB/s per side and peer address [V, the test
+    below: 42.5 kB from both sides in 7 s of redial at the test's 2 s cap], against about 25 kB/s for a link inside `T_idle` with
+    hands moving (above). Once the path is back, the next attempt is at most `T_redial_max` away, then a round trip
+    and the welcomes [V, the test below: up 0.58 s after the return].
+  - **How long, measured** [V, pe-app's `a_blackout_past_t_idle_is_redialled_and_every_entry_becomes_final` on
+    loopback, release, `t_idle` 3 s, both machines' hands moving (120 entries a second each), its measurement mode
+    `PE_REDIAL_BLACKOUT_S` for the longer ones]. Finality resumed 1.1-1.9 s after the path's return at every length.
+    The whole backlog became final 2.7 s after an 8 s blackout, 7.9 s after 30 s, 15.1 s after 60 s and 29.2 s after
+    120 s. After 290 s it hadn't, 400 s after the return: the redial and the new cuts work, but some of the
+    outage's entries stay unfinal, for a reason in agreement or the replica not yet found. So `T_redial` is 90 s:
+    with `T_idle`, 2 min dark in all, the longest measured to recover whole. Past 120 s of this test's entries
+    pe-api no longer remembers an edit's fate (its `CAPACITY`, 10,000 entries), though the edit is final.
+  - **Not covered:** a process that restarted (`Rechain`, agreement.md 8): its peers' attempts reach a new session or
+    nothing. At n >= 3 a member away longer than the others' kept window (256 blocks, about 25 s of cuts) needs an
+    import to catch up (agreement.md 9), not built.
+  - Tests (`pe-net/tests/core.rs`): `a_member_s_link_closed_by_silence_is_redialled_and_comes_back_up`, the one-way
+    case above, `a_redial_gives_up_after_its_window_and_reports_the_link_lost`,
+    `a_closed_link_is_lost_at_once_and_never_redialled`, `a_peer_that_refuses_a_redial_ends_it`,
+    `a_non_member_s_link_is_not_redialled`. pe-app's loopback test of a blackout past `T_idle` is app.md 4's.
 - **Stopping:** an endpoint that stops (its thread told to stop, or its handle dropped, as pe-app's session drops
   its transport) first closes every connection with code 0 (`Left`, 6.6) and sends the closes. Its peers see the
   link go Down at once instead of after `T_idle` [V `pe-net/tests/thread.rs`: within microseconds on loopback,
@@ -1023,7 +1070,9 @@ Every one is a starting value to measure against [I], in seconds or bytes.
 | `T_keepalive` | 0.25 s | QUIC PING after this long with nothing received; an outage's probe (6.5) |
 | `T_trip` | max(0.3 s, 3 × srtt) | No acknowledgement with packets in flight before the outage probe opens the window (6.5) |
 | `T_degraded` | 1 s | Nothing heard before Degraded |
-| `T_idle` | 30 s (M1) | QUIC idle timeout: Down. The longest outage a session survives (6.5) |
+| `T_idle` | 30 s | QUIC idle timeout: Down. The longest outage a link survives on one connection (6.5) |
+| `T_redial` | 90 s | How long after a member's link closed for silence pe-net dials it again; with `T_idle`, 2 min dark in all (6.5) |
+| `T_redial_first` / `T_redial_max` | 0.5 s / 4 s | First gap between redial attempts, doubling up to the last (6.5) |
 | `T_queue` | 1 s | Outgoing queue capacity, in traffic time |
 
 ## 11. Open questions

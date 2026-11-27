@@ -262,6 +262,10 @@ pub struct SimStats {
     pub diverge: pe_diverge::Counters,
     /// The transport's events (links, join requests), each passed to the net-event hook if one is set.
     pub net_events: u64,
+    /// Links that went down (S4's `LinkDown`), and links pe-net lost for good (its `Lost`, transport.md 6.5: a close,
+    /// or a redial that ran out).
+    pub links_down: u64,
+    pub links_lost: u64,
     /// Messages agreement made that went to the transport (step 3).
     pub sent: u64,
     /// Messages agreement made that had nowhere to go: no transport is wired (a world alone).
@@ -583,11 +587,12 @@ pub struct Sim {
     leave_wait: Option<Duration>,
     /// The members whose link is down (S4's `LinkDown`, until a `LinkUp`).
     down: std::collections::BTreeSet<MemberKey>,
-    /// The members whose link went quiet (S4's `LinkDegraded`) and was said to have dropped, until a `LinkUp` or a
-    /// `LinkDown`.
+    /// The members whose link went quiet (S4's `LinkDegraded`) or closed with no `Leave`, and was said to have dropped,
+    /// until a `LinkUp` or pe-net's `Lost`.
     quiet: std::collections::BTreeSet<MemberKey>,
-    /// The members whose link closed with no `Leave`: nobody comes back into this session, so the console says nothing
-    /// more about their link (@chunks-reviewer's Low).
+    /// The members whose link pe-net lost for good with no `Leave` (`Lost`): nobody comes back into this session
+    /// unless the other side's redial still reaches this one, so the console says nothing more about their link
+    /// until then (@chunks-reviewer's Low).
     closed: std::collections::BTreeSet<MemberKey>,
     /// The menu's note about a member's link ([`Sim::with_link_notes`]), and whether this machine opened the session.
     link_notes: Option<(crate::leave::LinkNotes, bool)>,
@@ -735,6 +740,11 @@ pub trait NetHook: Send {
     }
     /// What the console should say since the last call (the join's lines, app.md 4).
     fn take_notices(&mut self) -> Vec<String> {
+        Vec::new()
+    }
+    /// The members whose links the transport lost for good since the last call: closed with a close, or redialled
+    /// for `T_redial` in vain (pe-net's `Lost`, transport.md 6.5). Asked once a tick, after [`NetHook::on_tick`].
+    fn take_lost(&mut self) -> Vec<MemberKey> {
         Vec::new()
     }
 }
@@ -1002,6 +1012,12 @@ impl Sim {
     /// The network (app.md 2): step 1 drains `net` into agreement and step 3 sends agreement's messages through it.
     /// `hook` gets each of its events after they are counted, and a call once a tick; without it events are only
     /// counted.
+    /// Replace the network hook, for tests that drive one themselves.
+    #[cfg(test)]
+    pub(crate) fn set_net_hook(&mut self, hook: Box<dyn NetHook>) {
+        self.net_hook = Some(hook);
+    }
+
     pub fn with_transport(mut self, net: Box<dyn Transport + Send>, hook: Option<Box<dyn NetHook>>) -> Sim {
         self.net = Some(net);
         self.net_hook = hook;
@@ -1112,26 +1128,52 @@ impl Sim {
     }
 
     /// A link went down (S4): the console says why, at once (app.md 4). A member still in this epoch whose `Leave` is
-    /// in hand left before the session confirmed it; one with no `Leave` dropped and may come back; one already out of
-    /// the epoch left as it should.
+    /// in hand left before the session confirmed it; one already out of the epoch left as it should. One with no
+    /// `Leave` dropped: pe-net dials it again (transport.md 6.5), so it may still come back, and the console and the
+    /// menu say it dropped (as [`Sim::link_quiet`] does, if it hadn't already) until it is back or
+    /// [`Sim::link_lost`].
     fn link_down(&mut self, peer: MemberKey, present: Frame) {
-        self.quiet.remove(&peer);
+        self.stats.links_down += 1;
         // A member that is leaving itself says only how its own quit ended (`SimThread::leave_and_stop`).
         if !self.down.insert(peer) || self.local_member() == Some(peer) || self.leaving != Leaving::Staying {
+            self.quiet.remove(&peer);
             return;
         }
-        let (notice, note) = if !self.agree.members().contains(&peer) {
-            (crate::leave::left(peer), None)
+        let notice = if !self.agree.members().contains(&peer) {
+            crate::leave::left(peer)
         } else if self.holds_leave_of(peer, present) {
-            (crate::leave::stranded(peer), None)
+            crate::leave::stranded(peer)
         } else {
-            // Closed at `T_idle` with no `Leave`: nobody can come back into this session (app.md 4, step 3).
-            self.closed.insert(peer);
-            let opener = self.link_notes.as_ref().is_some_and(|(_, o)| *o);
-            (crate::leave::gone(peer, opener), Some(crate::leave::LinkNote::gone(peer, opener)))
+            if !self.closed.contains(&peer) && self.quiet.insert(peer) {
+                self.notices.push(crate::leave::dropped(peer));
+                self.set_link_note(Some(crate::leave::LinkNote::dropped(peer)));
+            }
+            return;
         };
+        self.quiet.remove(&peer);
         self.notices.push(notice);
-        self.set_link_note(note);
+        self.set_link_note(None);
+    }
+
+    /// The transport lost a member's link for good (pe-net's `Lost`: it closed with a close, or its redial ran out
+    /// of `T_redial`). With no `Leave` from it in hand, nobody can come back into this session at n = 2: the member
+    /// stays a member and every cut needs its vote, so no `Admit` can be final, and a restarted process can't rechain
+    /// yet (agreement.md 8). The opener makes a new session; a joiner asks for its new invite (app.md 4, step 3).
+    fn link_lost(&mut self, peer: MemberKey, present: Frame) {
+        self.stats.links_lost += 1;
+        if self.closed.contains(&peer)
+            || self.local_member() == Some(peer)
+            || self.leaving != Leaving::Staying
+            || !self.agree.members().contains(&peer)
+            || self.holds_leave_of(peer, present)
+        {
+            return;
+        }
+        self.quiet.remove(&peer);
+        self.closed.insert(peer);
+        let opener = self.link_notes.as_ref().is_some_and(|(_, o)| *o);
+        self.notices.push(crate::leave::gone(peer, opener));
+        self.set_link_note(Some(crate::leave::LinkNote::gone(peer, opener)));
     }
 
     /// A member's link went quiet (S4's `LinkDegraded`): the console and the menu say it dropped, and for how long it
@@ -1150,13 +1192,26 @@ impl Sim {
         self.set_link_note(Some(crate::leave::LinkNote::dropped(peer)));
     }
 
-    /// A member's link came up (S4's `LinkUp`): after [`Sim::link_quiet`], it is back.
+    /// A member's link came up (S4's `LinkUp`): after [`Sim::link_quiet`] or [`Sim::link_down`], on the same
+    /// connection or a redialled one, it is back. After [`Sim::link_lost`] too, if the other side's redial still
+    /// reached this one: the note that it can't rejoin comes down.
     fn link_up(&mut self, peer: MemberKey) {
         self.down.remove(&peer);
-        if !self.closed.contains(&peer) && self.quiet.remove(&peer) {
+        let was_lost = self.closed.remove(&peer);
+        if self.quiet.remove(&peer) || was_lost {
             self.notices.push(crate::leave::back(peer));
-            if self.quiet.is_empty() {
-                self.set_link_note(None);
+            if self.quiet.is_empty() && self.closed.is_empty() {
+                self.clear_link_note();
+            }
+        }
+    }
+
+    /// The menu's note comes down, a lost link's too.
+    fn clear_link_note(&mut self) {
+        if let Some((notes, _)) = &self.link_notes {
+            let mut n = notes.lock().unwrap_or_else(|e| e.into_inner());
+            if n.is_some() {
+                *n = None;
             }
         }
     }
@@ -1736,6 +1791,7 @@ impl Sim {
         // 1. Messages in. Protocol and Action go to agreement, Repair to pe-diverge; a refusal is a peer's fault,
         // counted and never fatal. TODO(blob store): Bulk; Pose is display-only.
         let mut links = Vec::new();
+        let mut lost = Vec::new();
         if let Some(net) = &mut self.net {
             for _ in 0..MAX_IN_PER_TICK {
                 let Some(r) = net.poll() else { break };
@@ -1780,6 +1836,7 @@ impl Sim {
             }
             if let Some(hook) = &mut self.net_hook {
                 hook.on_tick(now, &mut *self.agree, &ReplicaFacts(&*self.replica, self.diverge.as_ref()));
+                lost = hook.take_lost();
             }
         }
         for (peer, up) in links {
@@ -1788,6 +1845,9 @@ impl Sim {
                 None => self.link_quiet(peer),
                 Some(false) => self.link_down(peer, p),
             }
+        }
+        for peer in lost {
+            self.link_lost(peer, p);
         }
         self.stats.phases.ingest_ns += lap(&mut mark);
         // 2. Local input: both hands at frame `p`'s host time, through the newest view's rig, one input entry each.
@@ -7146,6 +7206,16 @@ pub(crate) mod tests {
         pair
     }
 
+    /// A hook that only reports the links a test says pe-net lost (`Lost`, transport.md 6.5).
+    struct LostHook(Arc<std::sync::Mutex<Vec<MemberKey>>>);
+
+    impl NetHook for LostHook {
+        fn on_event(&mut self, _: &NetEvent, _: &mut dyn Agreement, _: &dyn WorldFacts) {}
+        fn take_lost(&mut self) -> Vec<MemberKey> {
+            std::mem::take(&mut *self.0.lock().expect("the lost links"))
+        }
+    }
+
     /// Ticks the members `who` of `pair` at frame `f`'s host time, with the network's time set to it.
     #[allow(clippy::type_complexity)]
     fn tick_at(
@@ -7205,8 +7275,9 @@ pub(crate) mod tests {
 
     /// The remaining member is told at once why the other went (app.md 4, @coordinator-opus). B signs its
     /// `Leave` and vanishes before A can confirm E: when B's link drops, A, holding the `Leave` with B still in its
-    /// epoch, says B left before the session could confirm it. Without a `Leave` in hand, a closed link says nobody can
-    /// come back into this session (@coordinator-opus).
+    /// epoch, says B left before the session could confirm it, and pe-net's `Lost` adds nothing. Without a `Leave` in
+    /// hand, a closed link says B dropped and may be back (pe-net redials it, transport.md 6.5), and only `Lost` says
+    /// nobody can come back into this session (@coordinator-opus).
     #[test]
     fn the_remaining_member_hears_at_once_why_the_other_went() {
         let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
@@ -7229,20 +7300,30 @@ pub(crate) mod tests {
             }
             let b = pair[1].2;
             assert_eq!(pair[0].0.other_members(), vec![b], "E isn't final at A: B is still in its epoch");
+            let lost: Arc<std::sync::Mutex<Vec<MemberKey>>> = Default::default();
+            pair[0].0.set_net_hook(Box::new(LostHook(lost.clone())));
             pair[0].3.lock().expect("the events").push(NetEvent::LinkDown { peer: b });
             f += 1;
             tick_at(&mut pair, &clock, &hub, &[0], f);
-            let want = if leaves { crate::leave::stranded(b) } else { crate::leave::gone(b, false) };
+            let want = if leaves { crate::leave::stranded(b) } else { crate::leave::dropped(b) };
             assert_eq!(pair[0].0.take_notices(), vec![want], "with a Leave in hand: {leaves}");
+            lost.lock().expect("the lost links").push(b);
+            f += 1;
+            tick_at(&mut pair, &clock, &hub, &[0], f);
+            let want = if leaves { vec![] } else { vec![crate::leave::gone(b, false)] };
+            assert_eq!(pair[0].0.take_notices(), want, "lost, with a Leave in hand: {leaves}");
         }
     }
 
-    /// @ticket:primordial-engine/friend-test-rejoining-after-a-drop-is-refused-wi (@coordinator-opus): at
-    /// n = 2 a member that drops without a `Leave` can't come back into the session once its link closes. The opener's
-    /// console and menu say so as it happens: a quiet link "dropped" with `T_idle` to come back, "back" if it does, and
-    /// once it closes, that the other can't rejoin and New session makes a new invite. That last note stays.
+    /// @ticket:primordial-engine/friend-test-rejoining-after-a-drop-is-refused-wi (@coordinator-opus), with
+    /// the redial (@ticket:primordial-engine/pe-net-pe-app-redial-a-member-s-link-after-an-ou): at n = 2 a member that
+    /// drops without a `Leave` comes back if its link does, on the same connection or a redialled one, and can't once
+    /// pe-net has lost it. The opener's console and menu say so as it happens: a quiet link "dropped" with the time it
+    /// has to come back, "back" if it does, nothing new when the link closes and pe-net redials it, "back" again on
+    /// the redialled link, and once pe-net loses it, that the other can't rejoin and New session makes a new invite.
+    /// That note stays, unless the other side's redial still reaches this one.
     #[test]
-    fn a_dropped_member_is_told_on_the_console_and_the_menu_and_a_closed_link_says_to_start_a_new_session() {
+    fn a_dropped_member_is_told_on_the_console_and_the_menu_and_a_lost_link_says_to_start_a_new_session() {
         let clock: Arc<dyn FrameClock> = Arc::new(LocalClock::new(HostTime(0), RATE));
         let hub = Hub::default();
         let mut pair = agreeing_pair(&clock, &hub);
@@ -7257,6 +7338,8 @@ pub(crate) mod tests {
         }
         let b = pair[1].2;
         let _ = pair[0].0.take_notices();
+        let lost: Arc<std::sync::Mutex<Vec<MemberKey>>> = Default::default();
+        pair[0].0.set_net_hook(Box::new(LostHook(lost.clone())));
         type Pair = Vec<(Sim, Arc<FrameSlot>, MemberKey, Arc<std::sync::Mutex<Vec<NetEvent>>>)>;
         let push = |p: &mut Pair, e: NetEvent, f: &mut u64| {
             p[0].3.lock().expect("the events").push(e);
@@ -7269,13 +7352,24 @@ pub(crate) mod tests {
         assert_eq!(note(), Some(crate::leave::LinkNote::dropped(b)));
         assert_eq!(push(&mut pair, NetEvent::LinkUp { peer: b }, &mut f), vec![crate::leave::back(b)]);
         assert_eq!(note(), None, "back: the note comes down");
-        assert_eq!(push(&mut pair, NetEvent::LinkDegraded { peer: b }, &mut f), vec![dropped]);
+        assert_eq!(push(&mut pair, NetEvent::LinkDegraded { peer: b }, &mut f), vec![dropped.clone()]);
+        assert!(
+            push(&mut pair, NetEvent::LinkDown { peer: b }, &mut f).is_empty(),
+            "closed and redialled: still dropped"
+        );
+        assert_eq!(note(), Some(crate::leave::LinkNote::dropped(b)));
+        assert_eq!(push(&mut pair, NetEvent::LinkUp { peer: b }, &mut f), vec![crate::leave::back(b)], "redialled");
+        assert_eq!(note(), None);
+        // A close with no quiet before it (a stateless reset) says it dropped too.
+        assert_eq!(push(&mut pair, NetEvent::LinkDown { peer: b }, &mut f), vec![dropped]);
+        lost.lock().expect("the lost links").push(b);
         let gone = crate::leave::gone(b, true);
-        assert_eq!(push(&mut pair, NetEvent::LinkDown { peer: b }, &mut f), vec![gone.clone()]);
+        assert_eq!(push(&mut pair, NetEvent::LinkDegraded { peer: b }, &mut f), vec![gone], "lost: can't rejoin");
         assert_eq!(note(), Some(crate::leave::LinkNote::gone(b, true)));
-        assert!(push(&mut pair, NetEvent::LinkUp { peer: b }, &mut f).is_empty(), "a closed link isn't back");
         assert!(push(&mut pair, NetEvent::LinkDegraded { peer: b }, &mut f).is_empty(), "nor does it drop again");
-        assert_eq!(note(), Some(crate::leave::LinkNote::gone(b, true)), "the closed link's note stays");
+        assert_eq!(note(), Some(crate::leave::LinkNote::gone(b, true)), "the lost link's note stays");
+        assert_eq!(push(&mut pair, NetEvent::LinkUp { peer: b }, &mut f), vec![crate::leave::back(b)], "B's redial");
+        assert_eq!(note(), None, "the note comes down");
     }
 
     /// F3 S1 (@engine-architect's M1 on fc24bc9c): at n = 2, B stalls for 20 s, past the receivers' pending cap for A's

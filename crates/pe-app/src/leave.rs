@@ -128,15 +128,23 @@ pub fn stranded(m: MemberKey) -> String {
     ))
 }
 
-/// The remaining member, when `m`'s link goes quiet (pe-net's `LinkDegraded`, nothing heard for `T_degraded`) while
-/// `m` is in its epoch: the link resumes on the same connection within `T_idle` (transport.md 6.5;
-/// @coordinator-opus).
+/// How long a dropped member's link may stay dark and still come back (transport.md 6.5): `T_idle` on the same
+/// connection, then pe-net's redial for `T_redial`.
+pub fn rejoin_window() -> Duration {
+    pe_net::core::T_IDLE_M1 + pe_net::core::RedialParams::default().window
+}
+
+/// [`rejoin_window`] as the console and the menu say it: whole minutes from 2 min, else seconds.
+pub fn window_text() -> String {
+    let s = rejoin_window().as_secs();
+    if s >= 120 { format!("{} min", s / 60) } else { format!("{s} s") }
+}
+
+/// The remaining member, when `m`'s link goes quiet (pe-net's `LinkDegraded`, nothing heard for `T_degraded`) or
+/// closes (`T_idle`) while `m` is in its epoch with no `Leave` in hand: the link resumes on the same connection within
+/// `T_idle`, or on a redialled one within `T_redial` (transport.md 6.5; @coordinator-opus).
 pub fn dropped(m: MemberKey) -> String {
-    format!(
-        "{}'s connection dropped. If they're back within {} s, play goes on.",
-        capitalized(player(m)),
-        pe_net::core::T_IDLE_M1.as_secs()
-    )
+    format!("{}'s connection dropped. If they're back within {}, play goes on.", capitalized(player(m)), window_text())
 }
 
 /// The member's link is back after [`dropped`].
@@ -144,8 +152,8 @@ pub fn back(m: MemberKey) -> String {
     format!("{}'s connection is back.", capitalized(player(m)))
 }
 
-/// The remaining member, when `m`'s link closes (`T_idle`) with no `Leave` from it in hand. At n = 2 nobody can come
-/// back into this session: `m` stays a member and every cut needs its vote, so no `Admit` can be final, and a member
+/// The remaining member, when pe-net lost `m`'s link for good (`Lost`: a close, or a redial that ran out) with no
+/// `Leave` from it in hand. At n = 2 nobody can come back into this session: `m` stays a member and every cut needs its vote, so no `Admit` can be final, and a member
 /// whose process restarted can't rechain yet (agreement.md 8). The opener (`opener`) makes a new session; a joiner
 /// asks for its new invite (@coordinator-opus).
 pub fn gone(m: MemberKey, opener: bool) -> String {
@@ -178,7 +186,7 @@ impl LinkNote {
         LinkNote {
             lines: vec![
                 format!("{}'s link dropped", capitalized(player(m))),
-                format!("Back within {} s: play goes on", pe_net::core::T_IDLE_M1.as_secs()),
+                format!("Back within {}: play goes on", window_text()),
             ],
             gone: false,
         }
@@ -266,7 +274,8 @@ mod tests {
     fn the_messages_name_the_player() {
         let m = MemberKey([0xab; 32]);
         assert!(stranded(m).starts_with("Player abababab left before the session could confirm it."));
-        assert_eq!(dropped(m), "Player abababab's connection dropped. If they're back within 30 s, play goes on.");
+        assert_eq!(dropped(m), "Player abababab's connection dropped. If they're back within 2 min, play goes on.");
+        assert_eq!(window_text(), "2 min", "T_idle 30 s and T_redial 90 s: 120 s");
         assert_eq!(back(m), "Player abababab's connection is back.");
         assert!(gone(m, true).starts_with("Player abababab can't rejoin this session: press New session"));
         assert!(gone(m, false).ends_with("ask them for a new invite (their New session)."));

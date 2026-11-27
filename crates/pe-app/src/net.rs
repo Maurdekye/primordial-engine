@@ -1117,6 +1117,8 @@ fn log_lifecycle(l: &Lifecycle) {
             )
         }
         Lifecycle::ClockFault(f) => crate::err!("net: clock fault {f:?}"),
+        Lifecycle::Redialling { peer, .. } => crate::err!("net: link to {} closed: dialling it again", short(peer)),
+        Lifecycle::Lost { peer } => crate::err!("net: link to {} lost: no more dialling", short(peer)),
         Lifecycle::ClockReady | Lifecycle::Welcomed { .. } => {}
     }
 }
@@ -1130,7 +1132,8 @@ fn short(k: &MemberKey) -> String {
 /// - On a machine that opened alone ([`Endpoint::open_alone`]), the inviter takes the joiner's ([`Inviter`]), and its
 ///   decisions become pe-net commands here.
 /// - Anyone else is refused, "not admitted".
-/// - Once a tick it drains the lifecycle's outcomes, logging faults and refusals.
+/// - Once a tick it drains the lifecycle's outcomes, logging faults and refusals, and keeps the members' links pe-net
+///   lost for good (`Lost`: closed with a close, or its redial ran out; transport.md 6.5) for the simulation.
 pub struct MemberHook {
     control: NetControl,
     /// The session's welcome as this machine sends it: the genesis record, the epoch and the rate. Its members are the
@@ -1148,6 +1151,8 @@ pub struct MemberHook {
     pub faults: u64,
     /// pe-app's own messages taken from the Protocol lane (the join's).
     pub app_messages: u64,
+    /// Links pe-net lost for good since the last [`NetHook::take_lost`].
+    lost: Vec<MemberKey>,
 }
 
 impl MemberHook {
@@ -1155,7 +1160,17 @@ impl MemberHook {
     pub fn new(control: NetControl, me: MemberKey, addrs: Vec<SocketAddr>, welcome: Welcome) -> MemberHook {
         let mut book: BTreeMap<MemberKey, Vec<SocketAddr>> = welcome.members.iter().cloned().collect();
         book.insert(me, addrs);
-        MemberHook { control, welcome, book, inviter: None, now: HostTime(0), refused: 0, faults: 0, app_messages: 0 }
+        MemberHook {
+            control,
+            welcome,
+            book,
+            inviter: None,
+            now: HostTime(0),
+            refused: 0,
+            faults: 0,
+            app_messages: 0,
+            lost: Vec::new(),
+        }
     }
 
     /// The inviter's side of joins, when this machine opened alone.
@@ -1250,8 +1265,10 @@ impl NetHook for MemberHook {
     fn on_tick(&mut self, now: HostTime, agree: &mut dyn Agreement, world: &dyn WorldFacts) {
         self.now = now;
         while let Some(l) = self.control.poll_lifecycle() {
-            if matches!(l, Lifecycle::Fault { .. }) {
-                self.faults += 1;
+            match l {
+                Lifecycle::Fault { .. } => self.faults += 1,
+                Lifecycle::Lost { peer } => self.lost.push(peer),
+                _ => {}
             }
             log_lifecycle(&l);
         }
@@ -1303,6 +1320,10 @@ impl NetHook for MemberHook {
 
     fn take_notices(&mut self) -> Vec<String> {
         self.inviter.as_mut().map(Inviter::take_notices).unwrap_or_default()
+    }
+
+    fn take_lost(&mut self) -> Vec<MemberKey> {
+        std::mem::take(&mut self.lost)
     }
 }
 
@@ -2361,6 +2382,37 @@ mod tests {
     #[test]
     #[ignore = "16-25 s in release, longer under load or if it fails (debug simulates too slowly to finalize in time): run with --release --include-ignored"]
     fn a_ten_second_blackout_resumes_and_every_entry_becomes_final() {
+        // Under T_IDLE_M1 (30 s): the same connections, never closed.
+        blackout_resumes(Duration::from_secs(10), |_| {}, false);
+    }
+
+    /// pe-net's settings for [`a_blackout_past_t_idle_is_redialled_and_every_entry_becomes_final`]: `T_idle` 3 s, and
+    /// redial attempts 0.5 s doubling to 2 s apart, for 5 min: past the default `T_redial`, so that the measurement
+    /// mode can run longer blackouts than it.
+    fn short_idle(c: &mut Config) {
+        c.t_idle = Duration::from_secs(3);
+        c.redial = Some(pe_net::core::RedialParams {
+            window: Duration::from_secs(300),
+            first: Duration::from_millis(500),
+            max: Duration::from_secs(2),
+        });
+    }
+
+    #[test]
+    #[ignore = "about 15-25 s in release, longer under load or if it fails (debug simulates too slowly to finalize in time): run with --release --include-ignored"]
+    fn a_blackout_past_t_idle_is_redialled_and_every_entry_becomes_final() {
+        // @ticket:primordial-engine/pe-net-pe-app-redial-a-member-s-link-after-an-ou (the superseded item's
+        // requirement): a blackout longer than `t_idle` closes both links; pe-net redials them (transport.md 6.5),
+        // and the session resumes on the new connections with every entry final on both members, as after a short
+        // outage. `t_idle` is 3 s here so that an 8 s blackout outlasts it in a test's time.
+        // `PE_REDIAL_BLACKOUT_S` lengthens it, to measure how long an outage the session survives.
+        let secs = std::env::var("PE_REDIAL_BLACKOUT_S").ok().and_then(|s| s.parse().ok()).unwrap_or(8);
+        blackout_resumes(Duration::from_secs(secs), short_idle, true);
+    }
+
+    /// The blackout tests' body: two machines dark for `blackout`, with pe-net's settings changed by `tweak`, and
+    /// whether their links close and are redialled meanwhile (`redialled`) or stay open.
+    fn blackout_resumes(blackout: Duration, tweak: fn(&mut Config), redialled: bool) {
         // @coordinator-opus, @design-reviewer, @world-chunks: two
         // machines with hands moving (two entries a frame) lose their path for 10 s, under T_IDLE_M1 (30 s). After
         // it, the session resumes on the same connections: finality comes back within RESUME_VIEWS views of each
@@ -2376,7 +2428,7 @@ mod tests {
         use pe_seams::{AgreeEvent, VoidReason};
         use pe_world::edit::{Actor, Op, Target, Transaction};
         use std::sync::atomic::Ordering;
-        const BLACKOUT: Duration = Duration::from_secs(10);
+        let blackout_for = blackout;
         const EDIT_AT: Duration = Duration::from_secs(3);
         // Views, not seconds (@coordinator-opus): a loaded machine's ticks and roots run late, so its views
         // time out and back off and last longer, but their count doesn't grow with the load. A 25 s wall-time bound
@@ -2390,7 +2442,7 @@ mod tests {
         // Only a hang guard: the bound is in views.
         const HANG: Duration = Duration::from_secs(90);
         let host = crate::clock::shared();
-        let DarkPair { mut sims, logs, ports, clocks, dark, relays } = dark_pair(&host);
+        let DarkPair { mut sims, logs, ports, clocks, dark, relays } = dark_pair_with(&host, tweak);
         let run = |sims: &mut Vec<(Sim, MemberKey)>, until: &mut dyn FnMut(&Machines) -> bool, max: Duration| {
             run_pair(&host, sims, until, max)
         };
@@ -2441,7 +2493,7 @@ mod tests {
                 other => panic!("machine {i}'s edit was not submitted during the blackout: {other:?}"),
             })
             .collect();
-        run(&mut sims, &mut |_| false, BLACKOUT.saturating_sub(dark_since.elapsed()));
+        run(&mut sims, &mut |_| false, blackout_for.saturating_sub(dark_since.elapsed()));
         dark.store(false, Ordering::Relaxed);
         let back = Instant::now();
         // Counted from the path's return, not from before the blackout: a cut voted just before it went dark can
@@ -2471,9 +2523,22 @@ mod tests {
                     sim.final_cut().is_some_and(|c| heads.iter().all(|(chain, seq)| c.includes(chain, *seq)))
                 })
             },
-            Duration::from_secs(30),
+            // `PE_REDIAL_FINAL_WAIT_S` lengthens it, for the measurement of long blackouts.
+            Duration::from_secs(
+                std::env::var("PE_REDIAL_FINAL_WAIT_S").ok().and_then(|s| s.parse().ok()).unwrap_or(30),
+            ),
         );
         let all_final_after = back.elapsed();
+        if std::env::var("PE_REDIAL_MEASURE").is_ok() {
+            // A measurement only: past about 80 s of this test's entries pe-api no longer remembers the edits' fates
+            // (its CAPACITY, 10,000 entries), so the edit checks below can't pass, and aren't about the link.
+            println!(
+                "measured, {blackout:?} dark: finality resumed {resumed} ({resumed_after:?}); every entry final {all_final} ({all_final_after:?}); links down {:?}, lost {:?}",
+                sims.iter().map(|(s, _)| s.stats().links_down).collect::<Vec<_>>(),
+                sims.iter().map(|(s, _)| s.stats().links_lost).collect::<Vec<_>>()
+            );
+            return;
+        }
         // Both edits' fates on both machines. In M1 a machine decides finality only for its own changes (api.md 5.4,
         // `mine`), so its own edit must settle as final, and the other's must be stepped here; the final cuts above
         // include both, and the Late count below shows neither was voided.
@@ -2574,6 +2639,17 @@ mod tests {
             "finality took {views_to_resume:?} views to resume, over {RESUME_VIEWS} ({resumed_after:?})"
         );
         assert!(all_final, "not every entry made became final on both sides");
+        // The links: closed and redialled, or never closed.
+        for (i, (sim, _)) in sims.iter().enumerate() {
+            let st = sim.stats();
+            println!("machine {i}: links down {}, lost {}", st.links_down, st.links_lost);
+            assert_eq!(st.links_lost, 0, "machine {i} lost its link for good");
+            if redialled {
+                assert!(st.links_down >= 1, "machine {i}'s link never closed: the blackout didn't outlast t_idle");
+            } else {
+                assert_eq!(st.links_down, 0, "machine {i}'s link closed under t_idle");
+            }
+        }
         drop(relays);
     }
 
@@ -2590,13 +2666,18 @@ mod tests {
     }
 
     fn dark_pair(host: &crate::clock::HostClock) -> DarkPair {
+        dark_pair_with(host, |_| {})
+    }
+
+    /// [`dark_pair`] with both machines' pe-net settings changed by `tweak`.
+    fn dark_pair_with(host: &crate::clock::HostClock, tweak: fn(&mut Config)) -> DarkPair {
         let dark = Arc::new(std::sync::atomic::AtomicBool::new(false));
         // Each machine advertises its relay; the relays are started once the machines' own addresses are known.
         let (sa_sock, sb_sock) = (UdpSocket::bind(loopback()).unwrap(), UdpSocket::bind(loopback()).unwrap());
         let (ra_addr, rb_addr) = (sa_sock.local_addr().unwrap(), sb_sock.local_addr().unwrap());
         drop((sa_sock, sb_sock));
-        let a = Endpoint::bind([21; 32], loopback(), vec![ra_addr], true, host.clone(), None).unwrap();
-        let mut b = Endpoint::bind([22; 32], loopback(), vec![rb_addr], false, host.clone(), None).unwrap();
+        let a = Endpoint::bind_with([21; 32], loopback(), vec![ra_addr], true, host.clone(), None, tweak).unwrap();
+        let mut b = Endpoint::bind_with([22; 32], loopback(), vec![rb_addr], false, host.clone(), None, tweak).unwrap();
         let ra = Relay::start_on(ra_addr, a.local_addr(), dark.clone());
         let rb = Relay::start_on(rb_addr, b.local_addr(), dark.clone());
         let invite = a.invite(Duration::from_secs(600), None).unwrap();

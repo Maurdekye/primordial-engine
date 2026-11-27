@@ -86,9 +86,11 @@ pub struct Config {
     /// `T_stagger`: the gap between dials to an invite's addresses.
     pub t_stagger: Duration,
     /// `T_keepalive` and `T_idle` (6.5). `T_idle` is how long a silent link survives: an outage shorter than it
-    /// resumes on the same connection; a longer one closes the link, and in M1 nothing redials.
+    /// resumes on the same connection; a longer one closes the link, and a member's is then redialled (`redial`).
     pub t_keepalive: Duration,
     pub t_idle: Duration,
+    /// The redial (6.5): a member's link that closed for silence is dialled again. `None`: never (M1's behaviour).
+    pub redial: Option<RedialParams>,
     /// `T_trip`'s floor (6.5, [`crate::outage`]): the outage probe opens the window after this long with no ACK.
     /// `None`: quinn's plain Cubic, whose probe backoff keeps a link dark for up to twice an outage.
     pub t_trip: Option<Duration>,
@@ -120,6 +122,7 @@ impl Config {
             // M1 (@coordinator-opus): 30 s, so Wi-Fi or Tailscale hiccups don't end a session while
             // pe-agree has no return. Shorter again once a member can return (model v1).
             t_idle: T_IDLE_M1,
+            redial: Some(RedialParams::default()),
             t_trip: Some(Duration::from_millis(300)),
             n_streams_in: 64,
             n_dgram_buf: 4,
@@ -127,6 +130,40 @@ impl Config {
             random: pe_net_crypto::random::os(),
         }
     }
+}
+
+/// The redial's settings (transport.md 6.5, 10).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RedialParams {
+    /// `T_redial`: how long after the close pe-net keeps dialling, before it reports the link lost.
+    pub window: Duration,
+    /// `T_redial_first` and `T_redial_max`: the first gap between attempts, doubling up to the last. An attempt still
+    /// connecting when the next is due is closed, so a handshake's own backoff into a dead path never sets the pace.
+    pub first: Duration,
+    pub max: Duration,
+}
+
+impl Default for RedialParams {
+    fn default() -> Self {
+        // 90 s, so with `T_idle` (30 s) a member may be dark for 2 min in all: the longest outage after which the
+        // whole backlog was measured to become final again (pe-app's blackout test: 120 s dark, every entry final
+        // 29 s after the return; 290 s dark resumed finality but left part of the backlog unfinal 400 s later;
+        // transport.md 6.5). 4 s apart at most: once the path is back, the next attempt reaches it within about 4 s
+        // plus a round trip.
+        Self { window: Duration::from_secs(90), first: Duration::from_millis(500), max: Duration::from_secs(4) }
+    }
+}
+
+/// A member's link being redialled (6.5).
+#[derive(Debug)]
+struct Redial {
+    /// Its last addresses: the ones its hello listed, and where its packets came from.
+    addrs: Vec<SocketAddr>,
+    /// `T_redial` after the close.
+    until: HostTime,
+    /// The next attempt, and the gap after it.
+    next: HostTime,
+    gap: Duration,
 }
 
 /// A packet to send.
@@ -150,6 +187,12 @@ pub enum Lifecycle {
     ClockReady,
     /// A clock fault (5.6).
     ClockFault(ClockFault),
+    /// A member's link closed for silence (`T_idle`, or a stateless reset), with no close from either side: pe-net
+    /// dials it again until `until` (6.5). A `LinkUp` ends it.
+    Redialling { peer: PeerId, until: HostTime },
+    /// A member's link is down and pe-net won't dial it again (6.5): it closed with a close, its redial ran out of
+    /// `T_redial`, or the peer refused a redial.
+    Lost { peer: PeerId },
 }
 
 #[derive(Debug)]
@@ -231,6 +274,8 @@ pub struct Core {
     members: BTreeSet<PeerId>,
     /// Dials not yet made: (when, address, pinned key, token).
     dials: Vec<(HostTime, SocketAddr, PeerId, Vec<u8>)>,
+    /// Members' links being redialled (6.5).
+    redials: BTreeMap<PeerId, Redial>,
     out: VecDeque<Transmit>,
     received: VecDeque<Received>,
     events: Vec<NetEvent>,
@@ -319,6 +364,7 @@ impl Core {
             conns: HashMap::new(),
             peers: BTreeMap::new(),
             members: BTreeSet::new(),
+            redials: BTreeMap::new(),
             dials: Vec::new(),
             out: VecDeque::new(),
             received: VecDeque::new(),
@@ -357,6 +403,12 @@ impl Core {
     /// The members whose clocks count (5.3, 5.4): the start cut's list, then the current members.
     pub fn set_clock_members(&mut self, members: Vec<PeerId>) {
         self.members = members.iter().copied().collect();
+        // A key that is no longer a member isn't redialled (6.5).
+        let gone: Vec<PeerId> = self.redials.keys().filter(|k| !self.members.contains(k)).copied().collect();
+        let now = self.now;
+        for k in gone {
+            self.end_redial(now, k);
+        }
         self.clock.set_members(members);
     }
 
@@ -433,6 +485,7 @@ impl Core {
     /// This endpoint stops: every open connection closes with code 0 (`Left`), so each peer learns at once rather
     /// than after `T_idle` (6.5). The close packets are in `poll_transmit` when this returns.
     pub fn close_all(&mut self, now: HostTime) {
+        self.redials.clear();
         let t = self.inst(now);
         for c in self.conns.values_mut().filter(|c| !c.closed) {
             close(c, t, &Refusal { code: CloseCode::Left, detail: "stopped".into() });
@@ -497,6 +550,7 @@ impl Core {
         let quinn = self.conns.values_mut().filter_map(|c| c.q.poll_timeout()).min().map(|t| self.host(t));
         let lanes = self.conns.values().filter(|c| c.open_send).filter_map(|c| c.link.next_timeout()).min();
         let dial = self.dials.iter().map(|d| d.0).min();
+        let redial = self.redials.values().map(|r| r.next.min(r.until)).min();
         let ping = (!self.conns.is_empty()).then_some(self.next_ping);
         let t_degraded = self.cfg.t_degraded;
         let degraded =
@@ -508,7 +562,7 @@ impl Core {
             .filter(|c| !c.closed && c.state != LinkState::Up)
             .filter_map(|c| c.confirmed_at.map(|at| at.plus(t_welcome)))
             .min();
-        [quinn, lanes, dial, ping, degraded, welcome].into_iter().flatten().min()
+        [quinn, lanes, dial, redial, ping, degraded, welcome].into_iter().flatten().min()
     }
 
     /// The lifecycle's outcomes since the last call.
@@ -530,6 +584,7 @@ impl Core {
     fn drive(&mut self, now: HostTime) {
         self.dirty = false;
         let t = self.inst(now);
+        self.redial(now, t);
         let due: Vec<_> = {
             let (due, later): (Vec<_>, Vec<_>) = self.dials.drain(..).partition(|d| d.0 <= now);
             self.dials = later;
@@ -568,6 +623,62 @@ impl Core {
                 self.drive_conn(now, t, h);
             }
         }
+    }
+
+    /// The redials (6.5). A link up again ends its redial. Past `T_redial` it ends, reported `Lost`. Otherwise, when an
+    /// attempt is due, the one still connecting is closed and every address is dialled again, the gap doubling up to
+    /// `T_redial_max`; while a connection to the peer is confirmed and awaiting its welcome, no new attempt starts.
+    fn redial(&mut self, now: HostTime, t: Instant) {
+        if self.redials.is_empty() {
+            return;
+        }
+        let max = self.cfg.redial.map_or(Duration::ZERO, |p| p.max);
+        let keys: Vec<PeerId> = self.redials.keys().copied().collect();
+        for k in keys {
+            let held = self.peers.get(&k).and_then(|h| self.conns.get(h)).filter(|c| !c.closed).map(|c| c.state);
+            if matches!(held, Some(LinkState::Up | LinkState::Degraded)) {
+                self.redials.remove(&k);
+                continue;
+            }
+            let Some(r) = self.redials.get_mut(&k) else { continue };
+            let ended = now >= r.until;
+            if !ended && now < r.next {
+                continue;
+            }
+            r.next = now.plus(r.gap);
+            if held.is_some() && !ended {
+                continue;
+            }
+            if ended {
+                self.end_redial(now, k);
+                self.lifecycle.push_back(Lifecycle::Lost { peer: k });
+                continue;
+            }
+            r.gap = (r.gap * 2).min(max);
+            let addrs = r.addrs.clone();
+            self.drop_attempts(t, k);
+            self.dials.extend(addrs.into_iter().map(|a| (now, a, k, Vec::new())));
+        }
+    }
+
+    /// A redial ends without a link: its attempts still connecting are closed, and its dials not yet made dropped.
+    fn end_redial(&mut self, now: HostTime, k: PeerId) {
+        if self.redials.remove(&k).is_some() {
+            let t = self.inst(now);
+            self.drop_attempts(t, k);
+            self.dirty = true;
+        }
+    }
+
+    /// Close my attempts to `k` that are still connecting, and drop the dials to it no invite or reply asked for.
+    fn drop_attempts(&mut self, t: Instant, k: PeerId) {
+        let attempt = |c: &Conn| {
+            !c.closed && c.state == LinkState::Connecting && matches!(&c.role, Role::Dialler { pin } if *pin == k)
+        };
+        for c in self.conns.values_mut().filter(|c| attempt(c)) {
+            close(c, t, &Refusal { code: CloseCode::Left, detail: "redial".into() });
+        }
+        self.dials.retain(|d| d.2 != k || !d.3.is_empty());
     }
 
     /// A member introduces each newly up peer to its other up peers, and them to it (6.7). `true` if it did.
@@ -1040,8 +1151,12 @@ impl Core {
     }
 
     fn on_lost(&mut self, h: ConnectionHandle, reason: ConnectionError) {
+        let now = self.now;
         let Some(c) = self.conns.get_mut(&h) else { return };
         let was = c.state;
+        // A Degraded link was up: its loss is a loss, not a refusal.
+        let was_up = matches!(was, LinkState::Up | LinkState::Degraded);
+        let addrs = addresses(c);
         c.state = LinkState::Down;
         if c.superseded {
             return;
@@ -1068,7 +1183,36 @@ impl Core {
         // The peer kept another connection that is still opening here: its duplicate close is not a refusal.
         let duplicate = matches!(&reason, ConnectionError::ApplicationClosed(a)
             if a.error_code.into_inner() == CloseCode::Left as u64 && a.reason.as_ref() == DUPLICATE.as_bytes());
-        if was != LinkState::Up && !(duplicate && other_live) {
+        // A member's link that was up (6.5): closed for silence, with no close from either side, it is redialled;
+        // closed any other way, it is lost. A peer's close of a redial attempt (a refusal, not a duplicate and not
+        // `Overloaded`) ends the redial: its app no longer takes this key.
+        if primary && was_up && self.members.contains(&peer) {
+            // A duplicate close of the only link isn't meant to end it either: the peer holds another connection
+            // to me, which comes up or is lost in turn.
+            let silent = duplicate || matches!(reason, ConnectionError::TimedOut | ConnectionError::Reset);
+            match self.cfg.redial.filter(|_| silent && self.cfg.member) {
+                Some(p) => {
+                    let r = Redial { addrs, until: now.plus(p.window), next: now, gap: p.first };
+                    self.lifecycle.push_back(Lifecycle::Redialling { peer, until: r.until });
+                    self.redials.insert(peer, r);
+                    self.dirty = true;
+                }
+                None => {
+                    self.end_redial(now, peer);
+                    self.lifecycle.push_back(Lifecycle::Lost { peer });
+                }
+            }
+        } else if matches!(&reason, ConnectionError::ApplicationClosed(a)
+                if a.error_code.into_inner() != CloseCode::Overloaded as u64)
+            && !duplicate
+            && self.redials.contains_key(&peer)
+        {
+            // `Overloaded` isn't a refusal of this key: the peer's app didn't decide within `T_welcome`, as when it is
+            // busy catching up after the outage, so the redial carries on at its next gap (@chunks-reviewer's Low).
+            self.end_redial(now, peer);
+            self.lifecycle.push_back(Lifecycle::Lost { peer });
+        }
+        if !was_up && !(duplicate && other_live) {
             // A close before the link was up counts as a refusal (9.4), unless I closed it myself (and said so).
             let refusal = match reason {
                 ConnectionError::ApplicationClosed(a) => Some(Refusal {

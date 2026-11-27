@@ -771,19 +771,26 @@ with @fable-reviewer's refinements, and):
    - this machine holds the member's signed `Leave`, but E isn't final here: "<player> left before the session could
      confirm it. You can keep playing, but changes from now on won't be shared, and this world ends when you quit."
      Once every other member has left this way, its hands are no longer paced (section 3, step 2);
-   - no `Leave` from it is in hand: "<player> can't rejoin this session: press New session and send them the new
-     invite." (a joiner: "<player>'s connection closed, and this session can't go on: ask them for a new invite (their
-     New session)."). At n = 2 nobody can come back into the session: the member is still in it, every cut needs its
-     vote, so no `Admit` can be final, and a restarted process can't rechain yet (agreement.md 8). A member that comes
-     back by its invite anyway is refused, told "this session can't take you back after a drop: ask them for a new
-     invite (their New session)" (@coordinator-opus;
-     @item:primordial-engine/friend-test-rejoining-after-a-drop-is-refused-wi).
+   - no `Leave` from it is in hand: "<player>'s connection dropped. If they're back within 2 min, play goes on."
+     pe-net dials the link again (transport.md 6.5, the redial), and "<player>'s connection is back." comes when the
+     redialled link is up: neither member left, so agreement goes on over the new connection as after a short outage.
+     Only once pe-net has lost the link for good (`Lost`: its redial ran out of `T_redial`, 90 s, or the link closed
+     with a close, such as the other machine's New session) does the console say "<player> can't rejoin this session:
+     press New session and send them the new invite." (a joiner: "<player>'s connection closed, and this session can't
+     go on: ask them for a new invite (their New session)."). At n = 2 nobody can come back into the session then: the
+     member is still in it, every cut needs its vote, so no `Admit` can be final, and a restarted process can't rechain
+     yet (agreement.md 8). A member that comes back by its invite anyway is refused, told "this session can't take you
+     back after a drop: ask them for a new invite (their New session)" (@coordinator-opus;
+     @item:primordial-engine/friend-test-rejoining-after-a-drop-is-refused-wi;
+     @ticket:primordial-engine/pe-net-pe-app-redial-a-member-s-link-after-an-ou).
 
    Before that, when a member's link goes quiet (pe-net's `LinkDegraded`, nothing heard for `T_degraded`, 1 s), the
-   console says "<player>'s connection dropped. If they're back within 30 s, play goes on." (`T_idle`), and "<player>'s
-   connection is back." if it comes back on the same connection (transport.md 6.5). The menu shows the latest of these
-   under its status (4.1), and once a link closed, the opener's New session comes first. That note stays, and the
-   console says nothing more about that member's link.
+   console says the same "<player>'s connection dropped. If they're back within 2 min, play goes on." (`T_idle` on
+   the same connection, then `T_redial`), and "<player>'s connection is back." if it comes back, on the same
+   connection or a redialled one (transport.md 6.5). The link's close in between adds nothing. The menu shows the
+   latest of these under its status (4.1), and once a link is lost, the opener's New session comes first. That note
+   stays, and the console says nothing more about that member's link, unless the other side's redial still reaches
+   this one: then it is back, and the note comes down.
 
    M1 keeps no world past any quit (saves are M5), so a stranded member loses nothing a normal quit doesn't; "delayed,
    never lost" is about edits within a live session. In M1 these lines go to the console only, in
@@ -1097,10 +1104,14 @@ final on either, though both keep simulating their predictions.
   (section 3, step 2), and its edits are delayed, never lost, and final once a cut covers them. An entry stamped
   below a cut that was already final when it arrived is void as late; at n = 2 that is rare, since no cut becomes
   final while one member is cut off.
-- **A longer outage ends the session for both.** pe-net closes a link silent for more than `t_idle`, and in M1
-  nothing dials again: pe-net and pe-app have no redial. It is as if a process had ended, and going on takes a new
-  session with a new invite. The redial comes once pe-agree has return (model v1); the hook already welcomes a
-  member that connects again.
+- **A longer outage is redialled** (M2, transport.md 6.5). pe-net closes a link silent for more than `t_idle`, and
+  then both members dial each other again, at most `T_redial_max` (4 s) apart, for `T_redial` (90 s; 2 min dark in all, the longest measured to recover whole, transport.md 6.5). The hook
+  welcomes a member's new connection, and agreement goes on over it as after a short outage: each node kept its chain
+  and votes, and asks again for what was lost with the old connection (agreement.md 4, "Catching up after an
+  outage"). Past `T_redial`, or if the link closed with a close, it ends the session for that pair, as a process
+  that ended does, and going on takes a new session with a new invite. Tested on loopback (net.rs
+  `a_blackout_past_t_idle_is_redialled_and_every_entry_becomes_final`, `t_idle` 3 s, 8 s dark): both links close and
+  are redialled, finality resumes 1.4 s after the path's return and every entry is final 2.7 s after it.
 - **pe-agree has no return or restart** (agreement.md 8; `Leave` and `Admit` are built). Once either process ends
   without leaving, the other never finalizes again. Restarting the ended process does not help: its key is still a
   member, so it can't be admitted again (an `Admit` of a member is void as `NoChange`). Start a new session.

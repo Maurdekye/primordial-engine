@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 
 use bytes::Bytes;
-use pe_net::core::{Config, Core, CoreError, Lifecycle};
+use pe_net::core::{Config, Core, CoreError, Lifecycle, RedialParams};
 use pe_net::lifecycle::{CloseCode, Hello, HelloError, MAX_BUILD, Refusal, Welcome, encode_rendezvous};
 use pe_net_crypto::identity::{Identity, Invite, Reply};
 use pe_seams::{FrameClock, HostTime, Lane, LinkState, NetEvent, PeerId, Received, SimRate, Transport};
@@ -1053,4 +1053,268 @@ fn an_idle_link_on_a_long_path_is_never_silent() {
         net.run(400 + 37 * i);
     }
     assert!(waits.iter().all(|w| *w <= 120 + 16), "Repair waits on an idle 120 ms link, ms: {waits:?}");
+}
+
+// The redial (transport.md 6.5): a member's link that closed for silence, past `T_idle`, is dialled again by both
+// sides until `T_redial`, and comes back up on a new connection.
+
+const T_IDLE_TEST: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Short settings, so a test's outage outlasts `T_idle` in seconds: `T_idle` 3 s, attempts 0.5 s doubling to 2 s,
+/// for `window_ms`.
+fn redialling(window_ms: u64) -> impl Fn(&mut Config) {
+    move |c: &mut Config| {
+        c.t_idle = T_IDLE_TEST;
+        c.redial = Some(RedialParams {
+            window: std::time::Duration::from_millis(window_ms),
+            first: std::time::Duration::from_millis(500),
+            max: std::time::Duration::from_secs(2),
+        });
+    }
+}
+
+/// [`joined_with`], then both are members of one session, as pe-app's join leaves them (`set_member`,
+/// `set_clock_members`).
+fn members_with(tweak: impl Fn(&mut Config)) -> (Net, usize, usize) {
+    let (mut net, a, b) = joined_with(tweak);
+    let (ka, kb) = (net.nodes[a].key, net.nodes[b].key);
+    net.nodes[b].core.set_member(true);
+    net.nodes[a].core.set_clock_members(vec![kb]);
+    net.nodes[b].core.set_clock_members(vec![ka]);
+    (net, a, b)
+}
+
+/// Run `ms`, admitting every join request on both sides every 10 ms, as pe-app's hook admits a member.
+fn run_admitting(net: &mut Net, a: usize, b: usize, ms: u32) {
+    for _ in 0..ms / 10 {
+        net.run(10);
+        net.admit_all(a);
+        net.admit_all(b);
+    }
+}
+
+fn redialling_events(n: &Node) -> usize {
+    n.life.iter().filter(|l| matches!(l, Lifecycle::Redialling { .. })).count()
+}
+
+fn lost(n: &Node, peer: PeerId) -> bool {
+    n.life.contains(&Lifecycle::Lost { peer })
+}
+
+#[test]
+fn a_member_s_link_closed_by_silence_is_redialled_and_comes_back_up() {
+    let (mut net, a, b) = members_with(redialling(60_000));
+    let (ka, kb) = (net.nodes[a].key, net.nodes[b].key);
+    net.dead = vec![net.nodes[a].addr, net.nodes[b].addr];
+    net.run(10_000);
+    for (i, peer) in [(a, kb), (b, ka)] {
+        let n = &net.nodes[i];
+        assert!(n.events.contains(&NetEvent::LinkDown { peer }), "closed at T_idle: {:?}", n.events);
+        assert_eq!(redialling_events(n), 1, "{:?}", n.life);
+        assert!(!lost(n, peer), "{:?}", n.life);
+    }
+    // 7 s dark after the close: attempts at 0, 0.5, 1.5, 3.5, 5.5 s, each a handful of Initials: no tight loop.
+    eprintln!("swallowed {} bytes in 10 s dark, 7 s of them redialling", net.swallowed);
+    assert!(net.swallowed < 60_000, "{} bytes into the outage", net.swallowed);
+    net.dead.clear();
+    for n in &mut net.nodes {
+        n.events.clear();
+    }
+    let back = net.now;
+    let mut up_at = None;
+    for _ in 0..600 {
+        run_admitting(&mut net, a, b, 10);
+        if up_at.is_none() && net.up(a, kb) && net.up(b, ka) {
+            up_at = Some((net.now.0 - back.0) / 1_000_000);
+        }
+    }
+    eprintln!("redial: both up {up_at:?} ms after the path's return");
+    // The next attempt is at most `T_redial_max` (2 s) away, then a round trip or two and the welcomes.
+    assert!(up_at.is_some_and(|t| t <= 2_500), "up {up_at:?} ms after the return: {:?}", net.nodes[a].events);
+    net.nodes[a].core.send(kb, Lane::Action, Bytes::from_static(b"back"));
+    net.nodes[b].core.send(ka, Lane::Action, Bytes::from_static(b"back too"));
+    net.run(200);
+    assert!(net.nodes[b].got.iter().any(|r| r.from == ka && r.bytes == Bytes::from_static(b"back")));
+    assert!(net.nodes[a].got.iter().any(|r| r.from == kb && r.bytes == Bytes::from_static(b"back too")));
+    for i in [a, b] {
+        assert_eq!(net.nodes[i].core.peers().len(), 1, "one connection per pair");
+        assert!(refused(&net.nodes[i]).is_none(), "{:?}", net.nodes[i].life);
+        assert_eq!(redialling_events(&net.nodes[i]), 1, "and the redial ended: {:?}", net.nodes[i].life);
+    }
+    // Ended: nothing more is dialled.
+    let before = net.stray.len();
+    run_admitting(&mut net, a, b, 3_000);
+    assert_eq!(net.stray.len(), before);
+}
+
+#[test]
+fn a_one_way_outage_past_t_idle_comes_back_within_a_second() {
+    // Only one direction dies, the packets to one side X: X hears nothing and closes at T_idle, and starts its
+    // redial; the other side Y heard X until then, so it holds the old link, quiet (Degraded) but not closed, when
+    // the path returns and X's attempt reaches it. It comes up within a second, long before Y's own T_idle: Y's
+    // packets on the old connection reach X, which no longer knows it and answers with a stateless reset, so Y
+    // closes it (and redials too) at once. Measured: Y's old link ends that way in both cases, before X's attempt
+    // is confirmed; a rule preferring the new connection over a quiet one, tried first, never fired. Both choices
+    // of X, as the duplicate rule's keys differ.
+    for x_is_a in [true, false] {
+        let (mut net, a, b) = members_with(redialling(60_000));
+        let (x, y) = if x_is_a { (a, b) } else { (b, a) };
+        let (kx, ky) = (net.nodes[x].key, net.nodes[y].key);
+        net.dead = vec![net.nodes[x].addr];
+        // X closes at about 3 s; Y's link has been quiet since (X sends nothing once closed).
+        net.run(3_000 + 1_800);
+        assert!(net.nodes[x].events.contains(&NetEvent::LinkDown { peer: ky }), "X closed");
+        assert!(!net.nodes[y].events.iter().any(|e| matches!(e, NetEvent::LinkDown { .. })), "Y still holds it");
+        net.dead.clear();
+        for n in &mut net.nodes {
+            n.events.clear();
+        }
+        let back = net.now;
+        let mut up_at = None;
+        for _ in 0..300 {
+            run_admitting(&mut net, a, b, 10);
+            if up_at.is_none() && net.up(x, ky) && net.up(y, kx) {
+                up_at = Some((net.now.0 - back.0) / 1_000_000);
+            }
+        }
+        eprintln!(
+            "one-way outage, X = {}: up {up_at:?} ms after the return; Y's events {:?}",
+            if x_is_a { "A" } else { "B" },
+            net.nodes[y].events
+        );
+        // Y's own T_idle would close the old link about 1.2 s after the return: up before that means Y took X's
+        // attempt. (Y's old link may also end sooner by X's stateless reset, once X hears Y's packets for it.)
+        assert!(up_at.is_some_and(|t| t < 1_000), "X = A: {x_is_a}, up {up_at:?}: {:?}", net.nodes[y].events);
+        assert_eq!(net.nodes[y].core.peers(), vec![kx]);
+        net.nodes[y].core.send(kx, Lane::Action, Bytes::from_static(b"on the new one"));
+        net.run(200);
+        assert!(net.nodes[x].got.iter().any(|r| r.from == ky && r.bytes == Bytes::from_static(b"on the new one")));
+    }
+}
+
+#[test]
+fn a_redial_gives_up_after_its_window_and_reports_the_link_lost() {
+    let (mut net, a, b) = members_with(redialling(5_000));
+    let (ka, kb) = (net.nodes[a].key, net.nodes[b].key);
+    net.dead = vec![net.nodes[a].addr, net.nodes[b].addr];
+    net.run(3_000 + 5_000 + 200);
+    assert!(lost(&net.nodes[a], kb) && lost(&net.nodes[b], ka), "{:?} / {:?}", net.nodes[a].life, net.nodes[b].life);
+    net.dead.clear();
+    for n in &mut net.nodes {
+        n.events.clear();
+    }
+    run_admitting(&mut net, a, b, 5_000);
+    for (i, peer) in [(a, kb), (b, ka)] {
+        assert!(!net.up(i, peer), "nothing dials once it gave up: {:?}", net.nodes[i].events);
+        assert!(net.nodes[i].core.peers().is_empty());
+    }
+}
+
+#[test]
+fn a_closed_link_is_lost_at_once_and_never_redialled() {
+    // A close says the peer meant it (it stopped, or refused): no redial, and the app hears `Lost` at once.
+    let (mut net, a, b) = members_with(redialling(60_000));
+    let kb = net.nodes[b].key;
+    let now = net.now;
+    net.nodes[b].core.close_all(now);
+    net.run(200);
+    assert!(net.nodes[a].events.contains(&NetEvent::LinkDown { peer: kb }));
+    assert!(lost(&net.nodes[a], kb), "{:?}", net.nodes[a].life);
+    assert_eq!(redialling_events(&net.nodes[a]), 0);
+    net.nodes[a].events.clear();
+    run_admitting(&mut net, a, b, 3_000);
+    assert!(net.nodes[a].core.peers().is_empty());
+    assert!(!net.nodes[b].events.iter().any(|e| matches!(e, NetEvent::JoinRequest { .. })), "A dialled nothing");
+    assert!(!net.nodes[a].events.iter().any(|e| matches!(e, NetEvent::LinkUp { .. })));
+}
+
+#[test]
+fn a_peer_that_refuses_a_redial_ends_it() {
+    // B's attempt reaches an A whose app no longer takes B (say B was removed meanwhile): A refuses, and B stops.
+    let (mut net, a, b) = members_with(redialling(60_000));
+    let (ka, kb) = (net.nodes[a].key, net.nodes[b].key);
+    net.dead = vec![net.nodes[a].addr, net.nodes[b].addr];
+    net.run(4_000);
+    net.nodes[a].core.set_clock_members(vec![]);
+    net.dead.clear();
+    let mut requests = 0;
+    for _ in 0..300 {
+        net.run(10);
+        let now = net.now;
+        let reqs: Vec<PeerId> = net.nodes[a]
+            .events
+            .drain(..)
+            .filter_map(|e| match e {
+                NetEvent::JoinRequest { peer, .. } => Some(peer),
+                _ => None,
+            })
+            .collect();
+        for p in reqs {
+            requests += 1;
+            net.nodes[a].core.refuse(now, p, Refusal { code: CloseCode::NotAdmitted, detail: "not a member".into() });
+        }
+    }
+    assert!(lost(&net.nodes[b], ka), "{:?}", net.nodes[b].life);
+    assert_eq!(redialling_events(&net.nodes[a]), 1, "A started one too, ended when B stopped being a member");
+    assert!(!lost(&net.nodes[a], kb), "a key that is no longer a member isn't reported");
+    assert_eq!(requests, 1, "B stopped at the first refusal");
+    net.run(5_000);
+    assert!(net.nodes[b].core.peers().is_empty());
+    assert!(!net.nodes[a].events.iter().any(|e| matches!(e, NetEvent::JoinRequest { .. })));
+}
+
+#[test]
+fn a_non_member_s_link_is_not_redialled() {
+    // pe-net redials only keys the app names as members (`set_clock_members`): a joiner's link to its inviter that
+    // closes mid-join isn't, nor one of a peer that was never a member.
+    let (mut net, a, b) = joined_with(redialling(60_000));
+    net.dead = vec![net.nodes[a].addr, net.nodes[b].addr];
+    net.run(5_000);
+    for i in [a, b] {
+        assert_eq!(redialling_events(&net.nodes[i]), 0, "{:?}", net.nodes[i].life);
+        assert!(!net.nodes[i].life.iter().any(|l| matches!(l, Lifecycle::Lost { .. })));
+    }
+}
+
+#[test]
+fn a_redial_carries_on_past_the_peer_s_overloaded_close() {
+    // @chunks-reviewer's Low on 540eaacf: A's app doesn't decide on B's attempt within T_welcome (busy catching up
+    // after the outage), so A closes it `Overloaded`. That isn't a refusal of B: B's redial carries on, and the link
+    // comes up once A's app admits it.
+    // Only A's T_welcome is short, so A's close reaches B before B's own T_welcome closes the attempt.
+    let mut net = Net::new();
+    let a = net.add_with(1, "10.0.0.1:4433", true, "pe 0.1", |c: &mut Config| {
+        redialling(60_000)(c);
+        c.t_welcome = std::time::Duration::from_secs(1);
+    });
+    let b = net.add_with(2, "10.0.0.2:4433", false, "pe 0.1", redialling(60_000));
+    let inv = net.invite(a);
+    let now = net.now;
+    net.nodes[b].core.dial(now, &inv);
+    net.run(100);
+    net.admit_all(a);
+    net.run(100);
+    let (ka, kb) = (net.nodes[a].key, net.nodes[b].key);
+    assert!(net.up(a, kb) && net.up(b, ka));
+    net.nodes[b].core.set_member(true);
+    net.nodes[a].core.set_clock_members(vec![kb]);
+    net.nodes[b].core.set_clock_members(vec![ka]);
+    net.dead = vec![net.nodes[a].addr, net.nodes[b].addr];
+    net.run(4_000);
+    net.dead.clear();
+    for n in &mut net.nodes {
+        n.events.clear();
+    }
+    // 3 s with A's app deciding nothing (only B admits); A's T_welcome closes the attempts it holds.
+    for _ in 0..300 {
+        net.run(10);
+        net.admit_all(b);
+    }
+    let overloaded = |n: &Node| {
+        n.life.iter().any(|l| matches!(l, Lifecycle::Refused { refusal, .. } if refusal.code == CloseCode::Overloaded))
+    };
+    assert!(overloaded(&net.nodes[b]), "A closed an attempt Overloaded: {:?}", net.nodes[b].life);
+    assert!(!lost(&net.nodes[b], ka), "and B's redial carried on: {:?}", net.nodes[b].life);
+    run_admitting(&mut net, a, b, 6_000);
+    assert!(net.up(a, kb) && net.up(b, ka), "up once A admits: {:?}", net.nodes[b].events);
 }
