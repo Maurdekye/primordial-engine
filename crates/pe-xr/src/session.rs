@@ -15,7 +15,7 @@
 //! bad frames alternating (that is reported as degraded).
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use pe_render::HandJoints;
 
@@ -23,6 +23,7 @@ use crate::backend::{Backend, DepthInfo, EyePose, FrameTiming, ImageIndex, Layer
 use crate::diag::{self, Diag};
 use crate::hands::{GraspConfig, HandState};
 use crate::locomotion::{MoveRing, MoveState};
+use crate::phases::{FrameTimes, Phase, Phases};
 use crate::pointer::{Pointer, PointerState};
 use crate::ring::HandRing;
 use crate::seam::{Hand, HostTime, RigPose};
@@ -179,13 +180,24 @@ pub struct XrSession<B: Backend> {
     diag: Diag,
     /// Whether the interaction profiles were logged at the first focused frame.
     profiles_logged: bool,
+    /// Each frame step's CPU time, logged with `PE_XR_LOG=1` (spec 10.3).
+    phases: Phases,
 }
 
-/// How far a frame got, so an error can close it cleanly.
+/// How far a frame got, so an error can close it cleanly, and its steps' times so far (the frame-phase log).
 #[derive(Default)]
 struct FrameProgress {
     began: bool,
     acquired: bool,
+    times: FrameTimes,
+}
+
+/// The time since `mark`, moving `mark` to now.
+fn lap(mark: &mut Instant) -> Duration {
+    let now = Instant::now();
+    let d = now.saturating_duration_since(*mark);
+    *mark = now;
+    d
 }
 
 impl<B: Backend> XrSession<B> {
@@ -214,6 +226,7 @@ impl<B: Backend> XrSession<B> {
             counters: Counters::default(),
             diag: Diag::from_env(),
             profiles_logged: false,
+            phases: Phases::new(diag::enabled()),
         }
     }
 
@@ -306,6 +319,9 @@ impl<B: Backend> XrSession<B> {
     pub fn teardown(&mut self, sink: &mut dyn FrameSink) {
         if self.ended.is_some() && !self.destroyed {
             if let Some(line) = self.diag.ended(self.ended, &self.counters) {
+                diag::emit(&line);
+            }
+            if let Some(line) = self.phases.run_line() {
                 diag::emit(&line);
             }
             let maxima = self.hands.each_ref().map(|h| (h.max_squeeze, h.max_curl));
@@ -421,9 +437,14 @@ impl<B: Backend> XrSession<B> {
         if !self.running {
             return Step::Idle;
         }
+        let start = Instant::now();
         let mut progress = FrameProgress::default();
+        progress.times.add(Phase::Outside, self.phases.outside(start));
         match self.frame(sink, &mut progress) {
             Ok(()) => {
+                if let Some(line) = self.phases.frame(progress.times, start, Instant::now()) {
+                    diag::emit(&line);
+                }
                 self.last_good = Some(self.backend.now());
                 self.previous_failed = false;
                 Step::Frame
@@ -462,12 +483,15 @@ impl<B: Backend> XrSession<B> {
     }
 
     fn frame(&mut self, sink: &mut dyn FrameSink, progress: &mut FrameProgress) -> Result<(), XrError> {
+        let mut mark = Instant::now();
         // Steps 1 and 2.
         let timing = self.backend.wait_frame()?;
+        progress.times.add(Phase::Wait, lap(&mut mark));
         // If xrBeginFrame fails short of a loss after xrWaitFrame succeeded, OpenXR may block the next xrWaitFrame
         // until a frame is begun, and the loop would stall there. That takes a runtime fault or a call-order bug
         // (review 1 recheck, nit); the session still ends by the error limit only if xrWaitFrame returns.
         self.backend.begin_frame()?;
+        progress.times.add(Phase::Begin, lap(&mut mark));
         progress.began = true;
         self.counters.display_frames += 1;
         let period = timing.predicted_display_period_ns;
@@ -569,13 +593,19 @@ impl<B: Backend> XrSession<B> {
             moves.push(self.locomotion.step(at, &reading, focused));
         }
 
+        progress.times.add(Phase::Input, lap(&mut mark));
         // Steps 4 to 7, only when the runtime wants a frame and the session is shown.
         let shown = matches!(self.state, SessionState::Visible | SessionState::Focused);
         let mut layers = Layers::None;
         if timing.should_render && shown {
             let image = self.backend.acquire_image()?;
+            progress.times.add(Phase::Acquire, lap(&mut mark));
+            if let Some(waited) = self.backend.image_wait() {
+                progress.times.split(Phase::Acquire, Phase::ImageWait, waited);
+            }
             progress.acquired = true;
             let located = self.space.located(self.backend.locate_views(timing.predicted_display_time)?);
+            progress.times.add(Phase::Locate, lap(&mut mark));
             if located.valid {
                 // The own hands at the display time, for drawing only (spec 5.6).
                 let at = timing.predicted_display_time;
@@ -595,6 +625,7 @@ impl<B: Backend> XrSession<B> {
                 let depth_image = self.backend.depth_image();
                 let pointers = if focused { self.pointer_now } else { [None, None] };
                 let menu_toggled = self.menu_toggled;
+                progress.times.add(Phase::Locate, lap(&mut mark));
                 let drawn = sink.render(&FrameRequest {
                     timing,
                     eyes: &located.eyes,
@@ -605,6 +636,7 @@ impl<B: Backend> XrSession<B> {
                     pointers,
                     menu_toggled,
                 });
+                progress.times.add(Phase::Render, lap(&mut mark));
                 // Handed over: the sink saw these clicks and toggles.
                 self.menu_toggled = false;
                 for p in &mut self.pointers {
@@ -619,6 +651,7 @@ impl<B: Backend> XrSession<B> {
                 self.counters.invalid_view_frames += 1;
             }
             self.backend.release_image()?;
+            progress.times.add(Phase::Release, lap(&mut mark));
             progress.acquired = false;
         }
         let drawn = !matches!(layers, Layers::None);
@@ -630,8 +663,10 @@ impl<B: Backend> XrSession<B> {
         // Step 8. If xrEndFrame itself fails, the frame is over all the same: it is never ended twice.
         progress.began = false;
         self.backend.end_frame(timing.predicted_display_time, layers)?;
+        progress.times.add(Phase::End, lap(&mut mark));
         // Step 9: the sink's work after the frame.
         sink.after_frame(drawn);
+        progress.times.add(Phase::After, lap(&mut mark));
         Ok(())
     }
 }

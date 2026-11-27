@@ -231,3 +231,57 @@ fn several_overlays_draw_in_order() {
     let mid = px(&img, 160, 90);
     assert!(mid[2] > 200 && mid[1] < 60, "order decides: {mid:?}");
 }
+
+/// Overlay textures are reused (the friend test's hover stall, 2026-11-26): an image already shown keeps its texture
+/// wherever it moves in the list, a new image of a free slot's size is written into that slot's texture, and only
+/// otherwise is a texture made. The written image is the one drawn.
+#[test]
+fn overlays_keep_their_textures_by_image_then_by_size() {
+    use pe_render::scene::{EyeView, Overlay, OverlayImage};
+    let Some(mut r) = renderer(RenderSettings::default()) else { return };
+    let cam = Camera::placed(
+        WorldPose { pos: Pos::ORIGIN, rot: DQuat::IDENTITY },
+        Fov::symmetric(1.0, 16.0 / 9.0),
+        DepthRange::DESKTOP,
+    );
+    let solid = |n: u32, c: [u8; 3]| {
+        Arc::new(OverlayImage { width: n, height: n, rgba: [c[0], c[1], c[2], 255].repeat((n * n) as usize) })
+    };
+    let quad = |image: &Arc<OverlayImage>, x: f64| Overlay {
+        image: image.clone(),
+        pose: WorldPose { pos: at([x, 0.0, -1.0]), rot: DQuat::IDENTITY },
+        size: [0.2, 0.2],
+    };
+    let tex = r.context().device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d { width: SIZE[0], height: SIZE[1], depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let view = tex.create_view(&Default::default());
+    let frame = |r: &mut Renderer, overlays: Vec<Overlay>| {
+        let s = Scene { items: vec![wall()], overlays, ..Scene::default() };
+        let eye = EyeView { camera: cam, color: &view, format: wgpu::TextureFormat::Rgba8UnormSrgb, size: SIZE };
+        let st = r.render_views(&s, &[eye]);
+        (st.overlay_uploads, st.overlay_writes)
+    };
+    let (blue, green, cursor, red) =
+        (solid(4, [0, 0, 255]), solid(4, [0, 255, 0]), solid(8, [255, 255, 255]), solid(4, [255, 0, 0]));
+    assert_eq!(frame(&mut r, vec![quad(&blue, -0.25), quad(&green, 0.25)]), (2, 0), "two new textures");
+    assert_eq!(frame(&mut r, vec![quad(&blue, -0.25), quad(&green, 0.25)]), (0, 0), "the same images: nothing");
+    // A cursor comes in first: the two keep their textures, though their places in the list moved.
+    let three = vec![quad(&cursor, 0.0), quad(&blue, -0.25), quad(&green, 0.25)];
+    assert_eq!(frame(&mut r, three), (1, 0), "only the cursor is new");
+    // The cursor goes and the green panel changes (a hover): written into the free 4x4 texture, the green one's.
+    assert_eq!(frame(&mut r, vec![quad(&blue, -0.25), quad(&red, 0.25)]), (0, 1), "written in place");
+    let s = Scene { items: vec![wall()], overlays: vec![quad(&blue, -0.25), quad(&red, 0.25)], ..Scene::default() };
+    let img = r.capture(&s, cam, SIZE).expect("capture").wait(&r.context().device, Duration::from_secs(60)).unwrap();
+    let (left, right) = (px(&img, 160 - 41, 90), px(&img, 160 + 41, 90));
+    eprintln!("left {left:?}, right {right:?}");
+    assert!(left[2] > 200 && left[0] < 60, "blue stays on the left: {left:?}");
+    assert!(right[0] > 200 && right[1] < 60, "the written texture shows red, not the old green: {right:?}");
+}

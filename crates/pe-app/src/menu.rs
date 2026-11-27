@@ -433,11 +433,20 @@ impl Ui for Menu {
         self.head = Some(input.head);
         self.hands =
             input.rays.iter().filter(|r| r.pointer < 2).map(|r| (r.origin - pe_seams::Pos::ORIGIN).0).collect();
-        // The wrist button follows the left hand; it is gone while that hand isn't tracked.
-        self.wrist = input.wrist.map(|w| {
-            let spec = PanelSpec { title: None, buttons: vec![Button::new(id::WRIST, "Menu")], lines: Vec::new() };
-            MenuPanel::new(spec, wrist_place(&w, input.scale), WRIST_SCALE * input.scale)
-        });
+        // The wrist button follows the left hand; it is gone while that hand isn't tracked. The panel is kept while it
+        // shows, so its image is made once, not every frame: a new image each frame was a new GPU texture each frame
+        // (friend test 2026-11-26, the VR stall on NVIDIA 620.73 with the menu closed).
+        match (input.wrist, self.wrist.as_mut()) {
+            (Some(w), Some(p)) => {
+                p.pose = wrist_place(&w, input.scale);
+                p.scale = WRIST_SCALE * input.scale;
+            }
+            (Some(w), None) => {
+                let spec = PanelSpec { title: None, buttons: vec![Button::new(id::WRIST, "Menu")], lines: Vec::new() };
+                self.wrist = Some(MenuPanel::new(spec, wrist_place(&w, input.scale), WRIST_SCALE * input.scale));
+            }
+            (None, _) => self.wrist = None,
+        }
         // Each ray: the nearest panel it meets, its button, and its presses.
         let mut hover: [Option<u32>; 3] = [None; 3];
         // A panel's button shows pressed only while a ray on that panel holds its select.

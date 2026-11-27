@@ -846,8 +846,13 @@ drawn frame's eyes and display period, the first tracked pose of each hand (or t
 the optional extensions enabled, each hand's current interaction profile at the first focused frame and on each
 change, each close and open of a grasp with both signals, the one that decided it and whether the squeeze action was
 active, each hand's largest squeeze and curl, and the end reason with the counters at teardown (`crate::diag`).
-It is off by default and changes nothing the
-session does.
+It also writes the frame phases (`crate::phases`): every 5 s, each step of the display frame's CPU time as its
+median, 95th percentile and maximum. The steps are the time outside the frame (events, the caller's loop),
+`xrWaitFrame`, `xrBeginFrame`, the input reads, the image acquire, `xrWaitSwapchainImage`, the views and hands at
+the display time, the sink's drawing, the release, `xrEndFrame` and the sink's after-frame work. At teardown a line
+gives the run's mean and maximum per step, with how many frames each took 5 ms or more. A slow frame then shows
+which call waited (the friend's 55 ms frames on Linux/WiVRn, 2026-11-26). It is off by default and changes nothing
+the session does.
 
 From plan M1:
 - the frame time per period, at the rate Virtual Desktop gives, with 500 balls and one remote hand at 60 ms one-way

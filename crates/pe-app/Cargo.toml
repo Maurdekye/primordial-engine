@@ -7,11 +7,10 @@ publish.workspace = true
 description = "The application: threads, wiring, invites, configuration, the demo script"
 
 [features]
-steam-audio-trial = ["pe-render/audio-trial", "dep:cpal", "dep:glam", "dep:libloading", "dep:sha2"]
+steam-audio-trial = ["pe-render/audio-trial", "dep:cpal", "dep:libloading", "dep:sha2"]
 
 [target.'cfg(all(any(windows, target_os = "linux"), target_arch = "x86_64"))'.dependencies]
 cpal = { version = "=0.18.2", optional = true }
-glam = { version = "0.33", optional = true }
 libloading = { version = "=0.8.9", optional = true }
 sha2 = { version = "0.10", optional = true }
 
@@ -20,6 +19,8 @@ sha2 = { version = "0.10", optional = true }
 # The menu's copy and paste (friend-test S3, ruling (b)): the system clipboard, text only; Wayland
 # through the data-control protocol (KDE Plasma has it), X11 otherwise. A file is always written too.
 arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"] }
+# Poses for the frame-rate label (crate::fps) and the Steam Audio trial: pe-render's own version.
+glam = "0.33"
 pe-seams = { path = "../pe-seams", features = ["world-api"] }
 pe-world = { path = "../pe-world" }
 pe-log = { path = "../pe-log" }

@@ -29,6 +29,7 @@ pub mod console;
 pub mod cutlog;
 pub mod diverge;
 pub mod fault;
+pub mod fps;
 pub mod genesis;
 pub mod handfeel;
 pub mod join;

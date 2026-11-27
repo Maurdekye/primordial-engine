@@ -66,6 +66,108 @@ pub struct VrSink {
     moves: Option<Arc<dyn pe_seams::MoveFeed>>,
     #[cfg(feature = "steam-audio-trial")]
     audio_trial_render_ms: Option<(Histogram, Histogram)>,
+    /// pe-render's CPU time split and the simulation's work per drawn frame, logged with `PE_XR_LOG=1`.
+    render_log: RenderLog,
+}
+
+/// pe-render's CPU time per drawn frame, split, and the simulation's work behind each one: one line every
+/// [`RenderLog::WINDOW_S`] with `PE_XR_LOG=1` (the kit sets it), beside pe-xr's frame phases, and one for the run at
+/// the end (the friend's VR stall on NVIDIA 620.73, @ticket:primordial-engine/pe-app-on-linux-wivrn-55-ms-per-frame-stall-afte).
+/// The simulation runs on its own thread, so its share here is what reached the frame: the views it published since
+/// the last frame and the frames they re-simulated after rollbacks. The tick trace has its time per second.
+struct RenderLog {
+    on: bool,
+    since: Option<Instant>,
+    window: [Histogram; RenderLog::N],
+    run: [Histogram; RenderLog::N],
+    /// Overlay textures made and written over the window and the run.
+    uploads: [u64; 2],
+    writes: [u64; 2],
+    /// The newest view's `frames_resimulated` at the last drawn frame: a replica's counters are totals since it
+    /// started, so a frame's share is the difference (@shader-reviewer's Medium on 14f12b0b).
+    resimulated_total: Option<u64>,
+}
+
+impl RenderLog {
+    const WINDOW_S: f64 = 5.0;
+    const N: usize = 8;
+    const NAMES: [&'static str; RenderLog::N] =
+        ["cpu", "harvest", "prepare", "encode", "submit", "gpu", "views", "resimulated"];
+
+    fn new(on: bool) -> RenderLog {
+        RenderLog {
+            on,
+            since: None,
+            window: Default::default(),
+            run: Default::default(),
+            uploads: [0; 2],
+            writes: [0; 2],
+            resimulated_total: None,
+        }
+    }
+
+    /// One drawn frame: `views` published since the last, the newest with the replica's total of frames re-simulated
+    /// (`None` without a new view). A total below the last (a replica made again at a rejoin) counts from zero.
+    fn frame(&mut self, st: &pe_render::scene::FrameStats, views: usize, total: Option<u64>) -> Option<String> {
+        if !self.on {
+            return None;
+        }
+        let resimulated = match (total, self.resimulated_total) {
+            (Some(t), Some(prev)) if t >= prev => t - prev,
+            (Some(t), Some(_)) => t,
+            _ => 0,
+        };
+        if total.is_some() {
+            self.resimulated_total = total;
+        }
+        let encode = (st.cpu_record_ms - st.harvest_ms - st.prepare_ms - st.submit_ms).max(0.0);
+        let v = [st.cpu_record_ms, st.harvest_ms, st.prepare_ms, encode, st.submit_ms];
+        for h in [&mut self.window, &mut self.run] {
+            for (k, x) in v.iter().enumerate() {
+                h[k].record(*x);
+            }
+            if let Some(g) = st.gpu_ms {
+                h[5].record(g);
+            }
+            h[6].record(views as f64);
+            h[7].record(resimulated as f64);
+        }
+        for k in 0..2 {
+            self.uploads[k] += u64::from(st.overlay_uploads);
+            self.writes[k] += u64::from(st.overlay_writes);
+        }
+        let now = Instant::now();
+        let since = *self.since.get_or_insert(now);
+        if now.duration_since(since).as_secs_f64() < Self::WINDOW_S {
+            return None;
+        }
+        let line = Self::line("over", &self.window, self.uploads[0], self.writes[0]);
+        self.window = Default::default();
+        (self.uploads[0], self.writes[0]) = (0, 0);
+        self.since = Some(now);
+        Some(line)
+    }
+
+    fn line(what: &str, h: &[Histogram; RenderLog::N], uploads: u64, writes: u64) -> String {
+        let parts: Vec<String> = Self::NAMES
+            .iter()
+            .zip(h)
+            .map(|(name, h)| {
+                let s = h.summary();
+                format!("{name} {:.2}/{:.2}/{:.2}", s.p50, s.p95, s.max)
+            })
+            .collect();
+        format!(
+            "XR render {what} {} frames, p50/p95/max (ms; views and resimulated per frame): {}; overlay textures made {uploads}, written {writes}",
+            h[0].summary().count,
+            parts.join(", ")
+        )
+    }
+
+    fn run_line(&self) -> Option<String> {
+        (self.on && self.run[0].summary().count > 0)
+            .then(|| Self::line("over the run,", &self.run, self.uploads[1], self.writes[1]))
+    }
 }
 
 /// What a VR run reports at its end (@coordinator-opus): the presenter's counters for
@@ -107,6 +209,7 @@ impl VrSink {
             moves: None,
             #[cfg(feature = "steam-audio-trial")]
             audio_trial_render_ms: pe_xr::diag::enabled().then(Default::default),
+            render_log: RenderLog::new(pe_xr::diag::enabled()),
         }
     }
 
@@ -217,6 +320,9 @@ impl CaptureMisses {
 
 impl Drop for VrSink {
     fn drop(&mut self) {
+        if let Some(line) = self.render_log.run_line() {
+            crate::out!("{line}");
+        }
         let r = VrReport { render: self.presenter.counters().run(), lead_ms: self.lead_ms.summary() };
         if let Ok(mut slot) = self.report.lock() {
             *slot = Some(r);
@@ -328,11 +434,15 @@ impl FrameSink for VrSink {
         let Some(target) = self.targets.stereo(frame.image, frame.depth_image, self.extent) else {
             return false;
         };
-        let _stats = self.renderer.render_stereo(&presented.scene, cameras, &target);
+        let stats = self.renderer.render_stereo(&presented.scene, cameras, &target);
+        let total = batch.views.last().map(|v| v.counters.frames_resimulated);
+        if let Some(line) = self.render_log.frame(&stats, batch.views.len(), total) {
+            crate::out!("{line}");
+        }
         #[cfg(feature = "steam-audio-trial")]
         if let Some((cpu, gpu)) = &mut self.audio_trial_render_ms {
-            cpu.record(_stats.cpu_record_ms);
-            if let Some(ms) = _stats.gpu_ms {
+            cpu.record(stats.cpu_record_ms);
+            if let Some(ms) = stats.gpu_ms {
                 gpu.record(ms);
             }
         }
@@ -630,6 +740,21 @@ fn shared(gpu: &GpuContext) -> GpuContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A replica's `frames_resimulated` is a total since it started: the log records each frame's share of it, and a
+    /// smaller total (a replica made again) counts from zero (@shader-reviewer's Medium on 14f12b0b).
+    #[test]
+    fn the_render_log_records_each_frames_share_of_the_resimulated_total() {
+        let mut log = RenderLog::new(true);
+        let st = pe_render::scene::FrameStats::default();
+        for total in [Some(10), Some(25), None, Some(25), Some(4)] {
+            let _ = log.frame(&st, 1, total);
+        }
+        // Shares: 0 (no earlier total), 15, 0, 0, 4.
+        let s = log.run[7].summary();
+        assert_eq!((s.count, s.max), (5, 15.0));
+        assert!((s.mean - 19.0 / 5.0).abs() < 1e-9, "{s:?}");
+    }
     use std::sync::atomic::AtomicU32;
 
     use pe_render::display::DisplaySettings;

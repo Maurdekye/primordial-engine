@@ -120,10 +120,14 @@ pub fn button_at(spec: &PanelSpec, uv: [f64; 2]) -> Option<u32> {
     })
 }
 
-/// A panel image as made: its content, hover and press, and the image.
-type Cached = (PanelSpec, Option<u32>, Option<u32>, Arc<OverlayImage>);
+/// A panel image as made for one hover and press of the cached content.
+type Cached = (Option<u32>, Option<u32>, Arc<OverlayImage>);
 
-/// A panel in the world: its content, where it sits, and its image, rebuilt only on a change.
+/// The hover and press states a panel keeps images of, for one content: a pointer moving across the buttons and back
+/// draws each state once.
+const CACHED_STATES: usize = 16;
+
+/// A panel in the world: its content, where it sits, and its images, made once per content and hover and press.
 #[derive(Clone, Debug)]
 pub struct MenuPanel {
     pub spec: PanelSpec,
@@ -131,12 +135,14 @@ pub struct MenuPanel {
     pub pose: WorldPose,
     /// The rig's scale: the panel is `METRES_PER_PX` per pixel times this.
     pub scale: f64,
-    cache: Option<Cached>,
+    /// The content the images were made for, and the images, newest last.
+    cached_spec: Option<PanelSpec>,
+    cache: Vec<Cached>,
 }
 
 impl MenuPanel {
     pub fn new(spec: PanelSpec, pose: WorldPose, scale: f64) -> MenuPanel {
-        MenuPanel { spec, pose, scale, cache: None }
+        MenuPanel { spec, pose, scale, cached_spec: None, cache: Vec::new() }
     }
 
     /// Its size in metres.
@@ -147,12 +153,21 @@ impl MenuPanel {
 
     /// The overlay this frame, with `hover` and `pressed` shown.
     pub fn overlay(&mut self, hover: Option<u32>, pressed: Option<u32>) -> Overlay {
-        let fresh = self.cache.as_ref().is_some_and(|(s, h, p, _)| *s == self.spec && *h == hover && *p == pressed);
-        if !fresh {
-            let img = Arc::new(render(&self.spec, hover, pressed));
-            self.cache = Some((self.spec.clone(), hover, pressed, img));
+        if self.cached_spec.as_ref() != Some(&self.spec) {
+            self.cached_spec = Some(self.spec.clone());
+            self.cache.clear();
         }
-        let image = self.cache.as_ref().map(|c| c.3.clone()).expect("just made");
+        let image = match self.cache.iter().find(|(h, p, _)| *h == hover && *p == pressed) {
+            Some((_, _, img)) => img.clone(),
+            None => {
+                let img = Arc::new(render(&self.spec, hover, pressed));
+                if self.cache.len() == CACHED_STATES {
+                    self.cache.remove(0);
+                }
+                self.cache.push((hover, pressed, img.clone()));
+                img
+            }
+        };
         let s = self.size();
         Overlay { image, pose: self.pose, size: [s[0] as f32, s[1] as f32] }
     }
@@ -500,7 +515,7 @@ mod tests {
     }
 
     #[test]
-    fn the_image_shows_hover_and_press_and_is_rebuilt_only_on_a_change() {
+    fn the_image_shows_hover_and_press_and_is_made_once_per_content_and_state() {
         let s = spec();
         let l = layout(&s);
         let px = |img: &OverlayImage, r: [u32; 4]| {
@@ -518,9 +533,13 @@ mod tests {
         let mut p = MenuPanel::new(s, WorldPose { pos: at([0.0, 1.5, -1.0]), rot: DQuat::IDENTITY }, 1.0);
         let a = p.overlay(None, None).image;
         assert!(Arc::ptr_eq(&a, &p.overlay(None, None).image), "unchanged: the same image");
-        assert!(!Arc::ptr_eq(&a, &p.overlay(Some(2), None).image), "hover: a new image");
+        let h = p.overlay(Some(2), None).image;
+        assert!(!Arc::ptr_eq(&a, &h), "hover: a new image");
+        assert!(Arc::ptr_eq(&a, &p.overlay(None, None).image), "hover off again: the first image, not a new one");
+        assert!(Arc::ptr_eq(&h, &p.overlay(Some(2), None).image), "and on again: the hover's");
         p.spec.lines = vec!["Joining…".into()];
         assert!(!Arc::ptr_eq(&a, &p.overlay(None, None).image), "new content: a new image");
+        assert!(!Arc::ptr_eq(&h, &p.overlay(Some(2), None).image), "new content: the hover's image too");
     }
 
     #[test]
