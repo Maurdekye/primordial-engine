@@ -519,6 +519,8 @@ impl World {
             }
             table::PUSH_WINDOWS => Arc::make_mut(&mut self.inputs).pushes.clear(),
             table::LINES => self.branch = Arc::default(),
+            table::FIELD_MODES => Arc::make_mut(&mut self.per_player).modes.clear(),
+            table::FEED => Arc::make_mut(&mut self.per_player).feed.clear(),
             _ => {}
         }
     }
@@ -529,6 +531,10 @@ impl World {
         let entries = table_entries(bytes)?;
         match t {
             table::LINES => self.branch = Arc::new(crate::branch::BranchTable::from_entries(&entries)?),
+            table::FIELD_MODES => {
+                Arc::make_mut(&mut self.per_player).modes = crate::per_player::Tables::modes_from(&entries)?
+            }
+            table::FEED => Arc::make_mut(&mut self.per_player).feed = crate::per_player::Tables::feed_from(&entries)?,
             table::MODULES => {
                 let (mut m, mut p) = (BTreeMap::new(), BTreeMap::new());
                 for (k, v) in entries {
@@ -580,7 +586,8 @@ impl World {
             table::TOMBSTONES => {
                 let mut m = BTreeMap::new();
                 for (k, v) in entries {
-                    m.insert(key_id(k)?, self.read_tombstone(v)?);
+                    let id = key_id(k)?;
+                    m.insert(id, self.read_tombstone(id, v)?);
                 }
                 self.tombstones = Arc::new(m);
             }
@@ -646,7 +653,7 @@ impl World {
         Some(Ok(()))
     }
 
-    fn read_tombstone(&self, v: &[u8]) -> Option<Tombstone> {
+    fn read_tombstone(&self, id: ObjectId, v: &[u8]) -> Option<Tombstone> {
         let mut r = Rd(v);
         let by = EntryRef(Hash(r.arr()?));
         let frame = Frame(r.u64()?);
@@ -672,15 +679,102 @@ impl World {
             let d = self.store.registry().get(c)?;
             rows.push((c, stored_row(d, r.lp()?)?, version));
         }
+        // Per-player field modes (logic.md 7.4): present only when there are some.
+        let mut modes = Vec::new();
+        if !r.0.is_empty() {
+            let n = r.u32()?;
+            if n == 0 || n as usize > crate::per_player::MAX_PER_OBJECT {
+                return None;
+            }
+            let mut raw = Vec::with_capacity(n as usize);
+            for _ in 0..n {
+                raw.push((r.take(35)?, r.take(34)?));
+            }
+            modes = crate::per_player::Tables::modes_from(&raw)?.into_iter().collect();
+            // Only its own object's rows: an undelete puts them back in the live table, so a component-wide row or
+            // another object's would change modes it never had (@world-model's M2).
+            if modes.iter().any(|(k, _)| k.object != Some(id)) {
+                return None;
+            }
+        }
         r.end()?;
-        Some(Tombstone { by, frame, expires, parent, place, world, node, rows })
+        Some(Tombstone { by, frame, expires, parent, place, world, node, rows, modes })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::decode_config;
+    use crate::per_player::{MAX_PER_OBJECT, Mode, ModeKey, ModeRow, Selector};
+    use crate::tree::{table, table_record};
+    use crate::world::Tombstone;
     use crate::{BlobStore, World};
+    use pe_core::{EntryRef, Frame, Hash, ObjectId};
+    use pe_sim::ComponentId;
+    use std::sync::Arc;
+
+    fn mode(component: u128, field: u16, object: Option<u128>) -> (ModeKey, ModeRow) {
+        (
+            ModeKey { component: ComponentId(component), field, object: object.map(ObjectId::from_u128) },
+            ModeRow { mode: Mode::Decoupled, selector: Selector::Latest },
+        )
+    }
+
+    /// A world's tombstones table as a record, with one stone for object 5 holding `modes`, imported into a fresh world.
+    fn import_stone(modes: Vec<(ModeKey, ModeRow)>) -> bool {
+        let mut w = World::new(3, BlobStore::default());
+        let stone = Tombstone {
+            by: EntryRef(Hash([1; 32])),
+            frame: Frame(1),
+            expires: Frame(100),
+            parent: None,
+            place: 0,
+            world: None,
+            node: Default::default(),
+            rows: Vec::new(),
+            modes,
+        };
+        Arc::make_mut(&mut w.tombstones).insert(ObjectId::from_u128(5), stone);
+        let record = table_record(&w.table_entries(table::TOMBSTONES));
+        let mut fresh = World::new(3, BlobStore::default());
+        matches!(fresh.import_table(table::TOMBSTONES, &record), Some(Ok(())))
+    }
+
+    /// A tombstone holds only its own object's mode rows: an undelete puts them back in the live table, so another
+    /// object's row, or a component-wide one, would change modes it never had (@world-model's M2).
+    #[test]
+    fn a_tombstone_with_another_objects_mode_rows_is_refused() {
+        assert!(import_stone(vec![mode(2000, 0, Some(5)), mode(2000, 1, Some(5))]), "its own rows");
+        assert!(!import_stone(vec![mode(2000, 0, Some(5)), mode(2000, 1, Some(6))]), "another object's row");
+        assert!(!import_stone(vec![mode(2000, 0, None)]), "a component-wide row");
+    }
+
+    /// The field modes table holds at most 16 rows per object at import, as a live one does, so a delete never makes
+    /// a tombstone the decoder refuses (@world-model's M3).
+    #[test]
+    fn the_field_modes_table_holds_the_per_object_cap_at_import() {
+        let table_of = |n: u16, object: u128| {
+            let mut w = World::new(3, BlobStore::default());
+            let t = Arc::make_mut(&mut w.per_player);
+            for f in 0..n {
+                let (k, r) = mode(2000, f, Some(object));
+                t.modes.insert(k, r);
+            }
+            // Component-wide rows don't count against an object's cap.
+            for f in 0..20 {
+                let (k, r) = mode(2001, f, None);
+                t.modes.insert(k, r);
+            }
+            table_record(&w.table_entries(table::FIELD_MODES))
+        };
+        let cap = MAX_PER_OBJECT as u16;
+        let mut fresh = World::new(3, BlobStore::default());
+        assert!(matches!(fresh.import_table(table::FIELD_MODES, &table_of(cap, 5)), Some(Ok(()))));
+        assert!(fresh.import_table(table::FIELD_MODES, &table_of(cap + 1, 5)).is_none());
+        // With the cap held, a delete's stone decodes again.
+        let full: Vec<_> = (0..cap).map(|f| mode(2000, f, Some(5))).collect();
+        assert!(import_stone(full));
+    }
 
     /// Config item 8 (6.6): the last byte is 0 or 1; any other value, a missing byte or one after it is refused.
     #[test]

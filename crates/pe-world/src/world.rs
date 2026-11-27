@@ -64,6 +64,9 @@ pub struct Tombstone {
     pub node: Node,
     /// Its rows and their versions, in component-id order, `Node` excluded.
     pub rows: Vec<(ComponentId, Vec<u8>, RowVersion)>,
+    /// Its object-scope per-player field modes (logic.md 7.4), in key order: an undelete puts them back. Its feed
+    /// rows are not kept (they are inputs; the next publish refills them).
+    pub modes: Vec<(crate::per_player::ModeKey, crate::per_player::ModeRow)>,
 }
 
 /// Why a world operation was refused. Nothing was changed.
@@ -167,6 +170,8 @@ pub struct World {
     /// The store as a logic stage started (9.2a), for its removed objects' tombstones. Not state: taken by
     /// `after_logic`.
     pub(crate) stage_start: Option<SimStore>,
+    /// The per-player tables (logic.md 7.4): field modes and the feed of published values.
+    pub(crate) per_player: Arc<crate::per_player::Tables>,
 }
 
 impl World {
@@ -194,6 +199,7 @@ impl World {
             pending: Arc::new(BTreeMap::new()),
             script_ids: Arc::new(BTreeMap::new()),
             stage_start: None,
+            per_player: Arc::default(),
         }
     }
 

@@ -175,7 +175,7 @@ impl World {
     /// The root of the current state. A STAND-IN until the BLAKE3 tree (6.2) replaces it behind this call:
     /// `BLAKE3("pe.root.v0" ‖ …)` over the store's state hash (frame, seed, objects, every column and row version)
     /// and every world table pe-world keeps (claims, members, tombstones, the rate, the depth limit, the settings,
-    /// `physics_global`, the input tables and settings of 8.1), so equal roots mean equal outcomes from here (12.11).
+    /// `physics_global`, the input tables and settings of 8.1, the per-player tables), so equal roots mean equal outcomes from here (12.11).
     /// Deterministic on every machine.
     /// Its strength for the store is that of the 64-bit `state_hash` inside it: enough against accidents, not
     /// against an adversary, until the tree lands (@chunks-reviewer's Low 3).
@@ -210,6 +210,12 @@ impl World {
             for (c, bytes, v) in &t.rows {
                 h.write_u128(c.0).write_len_prefixed(bytes).write(bytemuck::bytes_of(v));
             }
+            // Its per-player field modes (logic.md 7.4), only when it has some, as in its record.
+            if !t.modes.is_empty() {
+                let mut b = Vec::new();
+                crate::per_player::tombstone_modes_bytes(&mut b, &t.modes);
+                h.write_len_prefixed(&b);
+            }
         }
         let mut origin = Vec::new();
         self.origin.encode(&mut origin);
@@ -226,6 +232,13 @@ impl World {
         // a script exists, so a world without scripts keeps the root it had.
         if !self.modules.is_empty() || !self.pending.is_empty() || !self.script_ids.is_empty() {
             for t in [crate::tree::table::REGISTRY, crate::tree::table::MODULES] {
+                h.write_len_prefixed(&crate::tree::table_record(&self.table_entries(t)));
+            }
+        }
+        // The per-player tables (logic.md 7.4). Appended only when either has a row, so a world without per-player
+        // fields keeps the root it had.
+        if !self.per_player.modes.is_empty() || !self.per_player.feed.is_empty() {
+            for t in [crate::tree::table::FIELD_MODES, crate::tree::table::FEED] {
                 h.write_len_prefixed(&crate::tree::table_record(&self.table_entries(t)));
             }
         }

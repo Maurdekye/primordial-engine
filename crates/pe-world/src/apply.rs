@@ -1002,6 +1002,7 @@ impl World {
             stones.push((d, tombstone_of(&self.store, d, cx.entry, cx.frame, expires, up, place)));
         }
         self.store.destroy(o).map_err(|_| invalid())?;
+        crate::per_player::bury(&mut self.per_player, &mut stones);
         let t = Arc::make_mut(&mut self.tombstones);
         for (d, s) in stones {
             t.insert(d, s);
@@ -1190,6 +1191,8 @@ impl World {
                 self.store.insert_raw(*c, x, &bytes).map_err(|e| self.store_reason(*c, e))?;
                 self.store.set_row_version(*c, x, *rv);
             }
+            // Its per-player field modes come back with it; its published values don't (logic.md 7.4).
+            crate::per_player::unbury(&mut self.per_player, &t.modes);
         }
         let stones = Arc::make_mut(&mut self.tombstones);
         for x in &order {
@@ -1576,7 +1579,8 @@ pub(crate) fn tombstone_of(
             Some((desc.id(), row.to_vec(), store.row_version(desc.id(), d).unwrap_or_default()))
         })
         .collect();
-    Tombstone { by, frame, expires, parent, place, world: store.world_transform(d), node: store.node(d), rows }
+    let modes = Vec::new();
+    Tombstone { by, frame, expires, parent, place, world: store.world_transform(d), node: store.node(d), rows, modes }
 }
 
 fn node_version(n: &Node) -> Version {

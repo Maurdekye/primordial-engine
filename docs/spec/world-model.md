@@ -20,7 +20,7 @@ ruling, cited by message id. Where this file and a user ruling disagree, the rul
   referenced by a 256-bit hash. The ball-pit template is a set of edits, not code.
 - **Everything that matters is hashed** in one tree: objects, their components, edit versions and physics state, and
   the world tables (the component registry, script versions and their pending commits, governance, claims,
-  cooldowns, tombstones, pending hand packs and push windows). The root goes in every cut. A mismatch descends to
+  cooldowns, tombstones, pending hand packs, push windows, field modes and the feed). The root goes in every cut. A mismatch descends to
   the objects that differ, in a few rounds.
 - **One edit entry, three conflict rules,** applied in the agreed order:
   1. *exclusive holds* (grabs): the first wins;
@@ -1194,7 +1194,8 @@ World
     ├── claims, cooldowns  exclusive holds (7.2)
     ├── tombstones         deleted objects, for the delete rule (7.5)
     ├── hand packs         pending hand input (8.1)
-    └── push windows       each member's recent pushes, for the push budget (8.1)
+    ├── push windows       each member's recent pushes, for the push budget (8.1)
+    └── field modes, feed  per-player fields (logic.md 7.4)
 (the tables' order and bytes: 6.6)
 (edit versions are kept beside each row, 3.2; Local objects are outside the world, 3.1)
 ```
@@ -1292,7 +1293,7 @@ world root   = H("pe.root"   ‖ frame u64 ‖ config hash ‖ tables root ‖ c
                                in DomainId order)
   config hash  = the hash of the world's canonical config bytes
   tables root  = H("pe.tables" ‖ count u64 ‖ each table's hash, in this order: registry, lines, modules, governance,
-                               claims, cooldowns, tombstones, hand packs, push windows)
+                               claims, cooldowns, tombstones, hand packs, push windows, field modes, feed)
                                                    each table hash is a sorted-map hash (6.6)
   domain root  = H("pe.domain" ‖ domain id u64 ‖ objects root ‖ physics_global)
                  physics_global is pe-physics's hash of that domain's physics image (6.3); per domain, so M4's
@@ -1534,8 +1535,10 @@ bytes. `H(ctx ‖ …)` and the integer conventions are 6.2's; `lp(b)` is a `u64
     the host's; and one test that sets every simulation setting to a non-default value, imports into a bare joiner,
     steps both sides and compares roots.
 - **The tables**, in this order (the `LeafKey::Table` index is the position): 0 registry, 1 lines, 2 modules,
-  3 governance, 4 claims, 5 cooldowns, 6 tombstones, 7 hand packs, 8 push windows. 6.2's list gains the last two,
-  which 8.1 already puts in the root. The lines table is empty unless the world branched (2.4), as in all of M1's
+  3 governance, 4 claims, 5 cooldowns, 6 tombstones, 7 hand packs, 8 push windows, 9 field modes, 10 feed. 6.2's list
+  gains hand packs and push windows, which 8.1 already puts in the root, and the last two (logic.md 7.4, per-player
+  fields): both are empty in a world with no per-player field, but they are always in the tables node, so adding
+  them moved every world's root once (@logic-eng, U3). The lines table is empty unless the world branched (2.4), as in all of M1's
   sessions.
 - **A table's hash** (the "sorted-map hash") = `H("pe.table" ‖ index u8 ‖ count u64 ‖ for each entry in key order:
   lp(key bytes) ‖ lp(value bytes))`. An empty table hashes the same way with count 0; it is never omitted, because
@@ -1601,7 +1604,17 @@ bytes. `H(ctx ‖ …)` and the integer conventions are 6.2's; `lp(b)` is a `u64
   - hand packs: key the hand id; value `stamp u64 ‖ hold u8 ‖ pose count u32 ‖ per pose: canonical Pos ‖ rot 4 ×
     f32 ‖ grip f32 ‖ engaged u8`;
   - push windows: key the member key (32); value `pair count u32 ‖ per pair, oldest first: frame u64 ‖ |impulse|
-    as f64 bits`, in N·s exactly as stored (@chunks-reviewer's M2: no conversion to mN·s).
+    as f64 bits`, in N·s exactly as stored (@chunks-reviewer's M2: no conversion to mN·s);
+  - field modes: key `component u128 ‖ field index u16 ‖ scope u8 (0 component-wide, 1 one object) ‖ object id
+    (zeros when scope is 0)`, big-endian like every key, 35 bytes; value `mode u8 (1 decoupled, 2 desynchronized) ‖
+    selector u8 (0 latest, 1 any, 2 all, 3 sum, 4 average, 5 min, 6 max, 7 member, 8 holder, 9 owner) ‖ member (32,
+    zeros unless the selector is 7)`, 34 bytes. A decoder refuses any other code, and member bytes on a selector
+    that names no member. At most 16 object rows per object;
+  - feed: key `object id ‖ component u128 ‖ field index u16 ‖ member (32)`, 66 bytes; value `the published bytes
+    (the field's size, at most 64) ‖ frame u64 ‖ index u32` (the input's place in that frame's applied order,
+    little-endian).
+  - tombstones' value gains, only when the object had object-scope field modes: `‖ mode count u32 (≥ 1) ‖ per mode
+    row, in key order: key (35) ‖ value (34)`. A tombstone without any keeps its old bytes.
 - **The schema hash** in an object leaf and the registry is `H("pe.schema" ‖ description)`, the same description
   bytes the registry value carries after it. BLAKE3 like every commitment; pe-sim's `u64` schema hash is XXH64 and
   stays out of the tree (6.1).

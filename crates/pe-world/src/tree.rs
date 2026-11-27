@@ -50,7 +50,10 @@ pub mod table {
     pub const TOMBSTONES: u8 = 6;
     pub const HAND_PACKS: u8 = 7;
     pub const PUSH_WINDOWS: u8 = 8;
-    pub const COUNT: usize = 9;
+    /// Per-player fields (logic.md 7.4): which fields are per-player, and each member's published values.
+    pub const FIELD_MODES: u8 = 9;
+    pub const FEED: u8 = 10;
+    pub const COUNT: usize = 11;
 }
 
 /// One table: its entries as (key bytes, value bytes), in key order.
@@ -212,6 +215,7 @@ pub fn tombstones_record_len(w: &World) -> usize {
         for (c, bytes, _) in &t.rows {
             v += 16 + VERSION_LEN + 8 + reg.get(*c).map_or(bytes.len(), |d| canonical_len(d, bytes));
         }
+        v += crate::per_player::tombstone_modes_len(&t.modes);
         n += 8 + 16 + 8 + v;
     }
     n
@@ -444,6 +448,9 @@ impl World {
                             None => lp(&mut v, bytes),
                         }
                     }
+                    // Its per-player field modes (logic.md 7.4), only when it had any, so a tombstone without them
+                    // has the bytes it always had: a count (at least 1), then each row's key and value bytes.
+                    crate::per_player::tombstone_modes_bytes(&mut v, &t.modes);
                     e.push((id_be(*id).to_vec(), v));
                 }
             }
@@ -490,6 +497,8 @@ impl World {
             }
             // The branch record (F3's n = 2 branch); empty for a world that never branched, as in all of M1's sessions.
             table::LINES => e = self.branch.entries(),
+            table::FIELD_MODES => e = self.per_player.mode_entries(),
+            table::FEED => e = self.per_player.feed_entries(),
             _ => {}
         }
         e.sort();

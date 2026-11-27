@@ -188,8 +188,9 @@ fn a_session_s_frame_0_root_is_the_same_on_every_machine() {
     // Regenerated when the engine's colour fields were marked (3.6; @coordinator-opus): the marks
     // are in the registry's hashed descriptions; and again when the hand row gained its strength (8.1, the tight hold),
     // which changes both hands' rows and the row's hashed description; and again when the config gained item 8, the
-    // blob-shapes byte (6.6, @coordinator-opus).
-    assert_eq!(r.to_string(), "0af64a99e68ad90b5d4fee8ebb7d4d4c0997d1b11c42a6cafdaf1a07d74c5b33");
+    // blob-shapes byte (6.6, @coordinator-opus); and again when the tables node gained the two per-player tables
+    // (logic.md 7.4), empty here.
+    assert_eq!(r.to_string(), "24d3057af29493ffc3495169355e4a181ace9d01218a686187ed241d60aef283");
     let w = m1_session(&session, BlobStore::default()).expect("a session");
     assert_eq!((w.line(), w.m1_marker()), (session.line, Some(m1_line())));
     assert_eq!(

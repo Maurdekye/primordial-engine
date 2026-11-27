@@ -795,6 +795,7 @@ impl World {
             };
             stones.push((d, crate::apply::tombstone_of(&start, d, EntryRef(Hash::ZERO), frame, expires, up, place)));
         }
+        crate::per_player::bury(&mut self.per_player, &mut stones);
         if !stones.is_empty() {
             let t = Arc::make_mut(&mut self.tombstones);
             for (d, s) in stones {

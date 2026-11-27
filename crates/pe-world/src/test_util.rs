@@ -43,13 +43,17 @@ pub enum Kind {
     HandPack,
     /// The push windows table (8.1): a member's pushes in the last second.
     PushWindow,
+    /// The field modes table (logic.md 7.4): a per-player field's selector.
+    FieldMode,
+    /// The feed table (logic.md 7.4): a member's published value's place in its frame.
+    Feed,
     /// A row's edit version alone (7.3), its bytes unchanged: hashed in the object's leaf, read by preconditions and
     /// merges, and the damage a repair comparing only row bytes would miss (@chunks-reviewer).
     RowVersion,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 13] = [
+    pub const ALL: [Kind; 15] = [
         Kind::Field,
         Kind::Governance,
         Kind::Claim,
@@ -62,6 +66,8 @@ impl Kind {
         Kind::Tombstone,
         Kind::HandPack,
         Kind::PushWindow,
+        Kind::FieldMode,
+        Kind::Feed,
         Kind::RowVersion,
     ];
 }
@@ -72,8 +78,9 @@ pub const ASSET: [u8; 32] = [0xA5; 32];
 /// A small world with something of every [`Kind`], built by trusted construction: two members, an object with a
 /// `Transform` and a `BodyState`, a hand holding it (a claim), and a script version (its modules row, tag and one
 /// component with a row on the object, both registered by the asset) with a next version pending, attested by its
-/// author; a tombstone of a deleted third object; and an input record of each kind: a cooldown, the hand's pending
-/// pack and a push window. For hashing tests only:
+/// author; a tombstone of a deleted third object; an input record of each kind: a cooldown, the hand's pending
+/// pack and a push window; and a per-player field (logic.md 7.4): the script component's `phase` decoupled on the
+/// object, with member B's published value. For hashing tests only:
 /// the pending commit reuses the current version's component ids under another V, which no real commit can (ids
 /// derive from V), so don't activate it (@chunks-reviewer's note).
 pub fn five_kinds() -> World {
@@ -151,6 +158,16 @@ pub fn five_kinds() -> World {
     };
     Arc::make_mut(&mut w.modules).insert(ASSET, module);
     Arc::make_mut(&mut w.pending).insert(ASSET, pending);
+    use crate::per_player::{FeedKey, FeedValue, Mode, ModeKey, ModeRow, Selector};
+    let t = Arc::make_mut(&mut w.per_player);
+    t.modes.insert(
+        ModeKey { component: id, field: 1, object: Some(lamp) },
+        ModeRow { mode: Mode::Decoupled, selector: Selector::Latest },
+    );
+    t.feed.insert(
+        FeedKey { object: lamp, component: id, field: 1, member: b },
+        FeedValue { value: 0.75f32.to_le_bytes().to_vec(), frame: Frame(4), index: 0 },
+    );
     w
 }
 
@@ -169,6 +186,8 @@ pub fn five_kinds() -> World {
 /// - `Tombstone`: the first tombstone expires one frame later;
 /// - `HandPack`: the first pending hand pack's stamp is one frame later;
 /// - `PushWindow`: the first member's newest push grows by 0.001 N·s;
+/// - `FieldMode`: the first field modes row's selector becomes the owner;
+/// - `Feed`: the first feed row's index grows by one;
 /// - `RowVersion`: the first object with a `Transform` has that row's version name the next op of its entry.
 pub fn divergence(w: &mut World, kind: Kind) -> Option<LeafKey> {
     match kind {
@@ -241,6 +260,16 @@ pub fn divergence(w: &mut World, kind: Kind) -> Option<LeafKey> {
             let m = *w.inputs.pushes.iter().find(|(_, q)| !q.is_empty())?.0;
             Arc::make_mut(&mut w.inputs).pushes.get_mut(&m)?.back_mut()?.1 += 0.001;
             Some(LeafKey::Table(table::PUSH_WINDOWS))
+        }
+        Kind::FieldMode => {
+            let k = *w.per_player.modes.keys().next()?;
+            Arc::make_mut(&mut w.per_player).modes.get_mut(&k)?.selector = crate::per_player::Selector::Owner;
+            Some(LeafKey::Table(table::FIELD_MODES))
+        }
+        Kind::Feed => {
+            let k = *w.per_player.feed.keys().next()?;
+            Arc::make_mut(&mut w.per_player).feed.get_mut(&k)?.index += 1;
+            Some(LeafKey::Table(table::FEED))
         }
         Kind::RowVersion => {
             let c = ComponentId::TRANSFORM;

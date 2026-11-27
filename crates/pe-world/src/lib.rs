@@ -19,6 +19,7 @@ mod import;
 pub mod inline;
 pub mod input;
 mod leave;
+pub mod per_player;
 pub mod player;
 pub mod preset;
 mod read;
