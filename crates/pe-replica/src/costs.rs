@@ -23,6 +23,13 @@
 //! truncated after it), each re-step's whole time, and within it the physics step and the keyframes saved. "Other" is
 //! the re-step's time less every timed part: entries, the movers, the hand sync less its grab keys, logic, hits and
 //! the world model's frame end. The digest of (4) is the probe's own cost, timed apart, so it can be taken off.
+//!
+//! The re-step's other stages are timed too ([`Stages`]: entries applied, logic, movers, the hand sync less its grab
+//! keys, hits, the frame's end), and every root's parts: the physics rows and transfer, the write into the world model
+//! with its tree cache, and the hash. A probe made with [`probe_bodies`] also compares every body's digest after each
+//! re-stepped frame with the replaced history's (work a replay redid with the same result: an opportunity, not a
+//! saving, since a body can hit something and come back to the same state), and records the keyframe ring's physics
+//! image bytes. That costs a digest of every body per step, counted as the probe's own.
 
 use std::collections::BTreeMap;
 use std::collections::hash_map::DefaultHasher;
@@ -31,6 +38,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use pe_physics::{BodyDigest, ObjectId};
 use pe_seams::Frame;
 
 /// What a driver attaches, and reads: the totals one replica (or every replica given it) adds to.
@@ -39,6 +47,28 @@ pub type CostProbe = Arc<Mutex<ReplayCosts>>;
 /// A new probe.
 pub fn probe() -> CostProbe {
     Arc::new(Mutex::new(ReplayCosts::default()))
+}
+
+/// A new probe that also compares bodies and records ring bytes (module docs), at the cost of a digest of every body
+/// per step. It keeps every body's digest for every frame down to the floor, so it is for test-scale runs (the E1
+/// harness), not a session at the body limits (@design-reviewer's nit on deb444ed).
+pub fn probe_bodies() -> CostProbe {
+    Arc::new(Mutex::new(ReplayCosts { track_bodies: true, ..ReplayCosts::default() }))
+}
+
+/// A step's stages beyond the timed parts, in nanoseconds (module docs); each less the timed parts inside it. The
+/// root's parts are the step's own root's: rows, write, hash.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Stages {
+    pub entries: u64,
+    pub logic: u64,
+    pub movers: u64,
+    pub hands: u64,
+    pub hits: u64,
+    pub end: u64,
+    pub root_rows: u64,
+    pub root_write: u64,
+    pub root_hash: u64,
 }
 
 /// Nanoseconds since `t`.
@@ -146,6 +176,19 @@ pub struct ReplayCosts {
     /// A replay's whole time (its restore and its re-steps), and its restore's, per replay.
     pub replay_per_replay_us: Histogram,
     pub restore_per_replay_us: Histogram,
+    /// The re-steps' other stages ([`Stages`]), over all replays.
+    pub stages_replayed_ns: Stages,
+    /// Every root's parts in first-time live steps ([`Stages`]'s root fields; the others stay 0).
+    pub roots_live_parts_ns: Stages,
+    /// Whether this probe compares bodies and records ring bytes ([`probe_bodies`]).
+    pub track_bodies: bool,
+    /// Bodies re-stepped, summed over re-stepped frames the replaced history had stepped, and of those, the ones whose
+    /// digest came out equal ([`probe_bodies`] only).
+    pub bodies_restepped: u64,
+    pub bodies_equal: u64,
+    /// The keyframe ring's physics image bytes and the owed keyframes' (E3), at their peak ([`probe_bodies`] only).
+    pub ring_bytes_peak: u64,
+    pub owed_bytes_peak: u64,
     /// (4) Replays that re-stepped at least one frame the replaced history had stepped (so a digest was compared),
     /// and of those, the ones whose every digest was equal: the physics read nothing new.
     pub replays_compared: u64,
@@ -194,18 +237,61 @@ pub struct ReplayCostSummary {
     pub physics_live_us: u64,
     pub replay_per_replay_us: PerReplay,
     pub restore_per_replay_us: PerReplay,
+    /// [`ReplayCosts::stages_replayed_ns`] and [`ReplayCosts::roots_live_parts_ns`], in microseconds.
+    pub stages_replayed_us: Stages,
+    pub roots_live_parts_us: Stages,
+    pub bodies_restepped: u64,
+    pub bodies_equal: u64,
+    pub ring_bytes_peak: u64,
+    pub owed_bytes_peak: u64,
 }
 
 impl ReplayCostSummary {
-    /// The re-steps' time not in any timed part (module docs): the re-steps less physics, roots, scans, keyframes
-    /// and the digest.
+    /// The re-steps' time not in any timed part (module docs): the re-steps less physics, roots, scans, keyframes,
+    /// the digest and the other stages.
     pub fn other_replayed_us(&self) -> u64 {
+        let g = &self.stages_replayed_us;
         let parts = self.physics_replayed_us
             + self.root_replayed_us
             + self.scan_replayed_us
             + self.keyframe_replayed_us
-            + self.digest_replayed_us;
+            + self.digest_replayed_us
+            + g.entries
+            + g.logic
+            + g.movers
+            + g.hands
+            + g.hits
+            + g.end;
         self.restep_us.saturating_sub(parts)
+    }
+}
+
+impl Stages {
+    fn add(&mut self, o: &Stages) {
+        self.entries += o.entries;
+        self.logic += o.logic;
+        self.movers += o.movers;
+        self.hands += o.hands;
+        self.hits += o.hits;
+        self.end += o.end;
+        self.root_rows += o.root_rows;
+        self.root_write += o.root_write;
+        self.root_hash += o.root_hash;
+    }
+
+    fn us(&self) -> Stages {
+        let us = |ns: u64| ns / 1_000;
+        Stages {
+            entries: us(self.entries),
+            logic: us(self.logic),
+            movers: us(self.movers),
+            hands: us(self.hands),
+            hits: us(self.hits),
+            end: us(self.end),
+            root_rows: us(self.root_rows),
+            root_write: us(self.root_write),
+            root_hash: us(self.root_hash),
+        }
     }
 }
 
@@ -238,6 +324,12 @@ impl ReplayCosts {
             physics_live_us: us(self.physics_live_ns),
             replay_per_replay_us: PerReplay::of(&self.replay_per_replay_us),
             restore_per_replay_us: PerReplay::of(&self.restore_per_replay_us),
+            stages_replayed_us: self.stages_replayed_ns.us(),
+            roots_live_parts_us: self.roots_live_parts_ns.us(),
+            bodies_restepped: self.bodies_restepped,
+            bodies_equal: self.bodies_equal,
+            ring_bytes_peak: self.ring_bytes_peak,
+            owed_bytes_peak: self.owed_bytes_peak,
         }
     }
 }
@@ -253,7 +345,10 @@ impl fmt::Debug for ReplayCostSummary {
              all live {:.1} ms; frames before the change {} of {} re-stepped (p50 {}, p95 {}); physics read nothing \
              new in {} of {} compared; split: restore {:.1} ms (p50 {} us, p95 {} us), re-steps {:.1} ms = physics \
              {:.1} + roots {:.1} + scans {:.1} + keyframes {:.1} + probe digest {:.1} + other {:.1}; per replay p50 {} \
-             us, p95 {} us; first-time steps {:.1} ms (physics {:.1})",
+             us, p95 {} us; first-time steps {:.1} ms (physics {:.1}); re-step stages: entries {:.1} + logic {:.1} + \
+             movers {:.1} + hands {:.1} + hits {:.1} + frame end {:.1} ms; roots' parts in replays rows {:.1} + write \
+             {:.1} + hash {:.1}, first-time rows {:.1} + write {:.1} + hash {:.1} ms; bodies equal {} of {} re-stepped; \
+             ring peak {:.1} MB, owed peak {:.1} MB",
             s.replays,
             ms(s.root_replayed_us),
             s.roots_replayed,
@@ -287,6 +382,22 @@ impl fmt::Debug for ReplayCostSummary {
             s.replay_per_replay_us.p95,
             ms(s.step_live_us),
             ms(s.physics_live_us),
+            ms(s.stages_replayed_us.entries),
+            ms(s.stages_replayed_us.logic),
+            ms(s.stages_replayed_us.movers),
+            ms(s.stages_replayed_us.hands),
+            ms(s.stages_replayed_us.hits),
+            ms(s.stages_replayed_us.end),
+            ms(s.stages_replayed_us.root_rows),
+            ms(s.stages_replayed_us.root_write),
+            ms(s.stages_replayed_us.root_hash),
+            ms(s.roots_live_parts_us.root_rows),
+            ms(s.roots_live_parts_us.root_write),
+            ms(s.roots_live_parts_us.root_hash),
+            s.bodies_equal,
+            s.bodies_restepped,
+            s.ring_bytes_peak as f64 / 1e6,
+            s.owed_bytes_peak as f64 / 1e6,
         )
     }
 }
@@ -316,6 +427,10 @@ pub(crate) struct StepCost {
     pub physics_ns: u64,
     pub keyframe_ns: u64,
     pub digest_ns: u64,
+    pub stage: Stages,
+    /// Every body's digest after the step, and the ring's (image, owed) bytes ([`probe_bodies`] only).
+    pub bodies: Option<Vec<(ObjectId, BodyDigest)>>,
+    pub ring: Option<(usize, usize)>,
 }
 
 /// A replica's side of the probe: the shared totals, and what it needs to attribute them.
@@ -327,12 +442,28 @@ pub(crate) struct Probe {
     digests: BTreeMap<Frame, u64>,
     /// The time each live root took, by the frame it was taken at.
     roots: BTreeMap<Frame, u64>,
+    /// The live history's body digests after each frame it stepped, by id ([`probe_bodies`] only).
+    bodies: BTreeMap<Frame, BTreeMap<ObjectId, BodyDigest>>,
+    track_bodies: bool,
     open: Option<Open>,
 }
 
 impl Probe {
     pub(crate) fn new(shared: CostProbe) -> Probe {
-        Probe { shared, digests: BTreeMap::new(), roots: BTreeMap::new(), open: None }
+        let track_bodies = shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner).track_bodies;
+        Probe {
+            shared,
+            digests: BTreeMap::new(),
+            roots: BTreeMap::new(),
+            bodies: BTreeMap::new(),
+            track_bodies,
+            open: None,
+        }
+    }
+
+    /// Whether this probe compares bodies ([`probe_bodies`]).
+    pub(crate) fn tracks_bodies(&self) -> bool {
+        self.track_bodies
     }
 
     fn with<R>(&self, f: impl FnOnce(&mut ReplayCosts) -> R) -> R {
@@ -377,6 +508,15 @@ impl Probe {
             }
         }
         let discarded = root_at.and_then(|at| self.roots.insert(at, c.root_ns));
+        let mut compared = None;
+        if let Some(now) = c.bodies.as_ref() {
+            let now: BTreeMap<ObjectId, BodyDigest> = now.iter().copied().collect();
+            if let Some(old) = self.bodies.get(&f).filter(|_| resimulated) {
+                let equal = now.iter().filter(|(id, d)| old.get(id) == Some(d)).count() as u64;
+                compared = Some((now.len() as u64, equal));
+            }
+            self.bodies.insert(f, now);
+        }
         if let Some(d) = c.digest {
             self.digests.insert(f, d);
         } else {
@@ -384,7 +524,16 @@ impl Probe {
         }
         self.with(|t| {
             t.scan_live_ns += c.scan_ns;
+            if let Some((n, equal)) = compared {
+                t.bodies_restepped += n;
+                t.bodies_equal += equal;
+            }
+            if let Some((image, owed)) = c.ring {
+                t.ring_bytes_peak = t.ring_bytes_peak.max(image as u64);
+                t.owed_bytes_peak = t.owed_bytes_peak.max(owed as u64);
+            }
             if resimulated {
+                t.stages_replayed_ns.add(&c.stage);
                 t.root_replayed_ns += c.root_ns;
                 t.scan_replayed_ns += c.scan_ns;
                 t.roots_replayed += u64::from(root_at.is_some());
@@ -393,6 +542,13 @@ impl Probe {
                 t.keyframe_replayed_ns += c.keyframe_ns;
                 t.digest_replayed_ns += c.digest_ns;
             } else {
+                let roots = Stages {
+                    root_rows: c.stage.root_rows,
+                    root_write: c.stage.root_write,
+                    root_hash: c.stage.root_hash,
+                    ..Stages::default()
+                };
+                t.roots_live_parts_ns.add(&roots);
                 t.root_live_ns += c.root_ns;
                 t.step_live_ns += c.step_ns;
                 t.physics_live_ns += c.physics_ns;
@@ -413,6 +569,7 @@ impl Probe {
     pub(crate) fn trim(&mut self, floor: Frame) {
         self.digests = self.digests.split_off(&floor);
         self.roots = self.roots.split_off(&floor);
+        self.bodies = self.bodies.split_off(&floor);
     }
 
     fn close(&mut self) {
@@ -517,5 +674,51 @@ mod tests {
         p.caught_up();
         let t = shared.lock().unwrap().clone();
         assert_eq!((t.replays, t.replays_compared, t.replays_unread), (3, 2, 1));
+    }
+
+    #[test]
+    fn stages_root_parts_bodies_and_ring_bytes_add_up_and_other_is_what_is_left() {
+        let shared = probe_bodies();
+        let mut p = Probe::new(shared.clone());
+        assert!(p.tracks_bodies() && !Probe::new(probe()).tracks_bodies());
+        let (a, b) = (ObjectId::from_u128(1), ObjectId::from_u128(2));
+        let stage =
+            Stages { entries: 1_000, logic: 2_000, movers: 0, hands: 3_000, hits: 0, end: 1_000, ..Stages::default() };
+        let bodies = |da: u8, db: u8| Some(vec![(a, BodyDigest([da; 32])), (b, BodyDigest([db; 32]))]);
+        let cost = |bodies, root: bool| StepCost {
+            step_ns: 20_000,
+            physics_ns: 5_000,
+            root_ns: if root { 4_000 } else { 0 },
+            stage: Stages {
+                root_rows: 2_000 * u64::from(root),
+                root_write: 1_000 * u64::from(root),
+                root_hash: 1_000 * u64::from(root),
+                ..stage
+            },
+            bodies,
+            ring: Some((3_000_000, 1_000_000)),
+            ..StepCost::default()
+        };
+        for f in 0..4 {
+            p.step(Frame(f), true, false, (f == 3).then_some(Frame(4)), cost(bodies(1, 1), f == 3));
+        }
+        // A replay of frames 2 and 3: body a comes out the same, b differs, at both frames.
+        p.rewind(Frame(2), Frame(2), 0);
+        for f in 2..4 {
+            p.step(Frame(f), true, true, None, cost(bodies(1, 2), false));
+        }
+        p.caught_up();
+        let t = shared.lock().unwrap().clone();
+        assert_eq!((t.bodies_restepped, t.bodies_equal), (4, 2));
+        assert_eq!((t.ring_bytes_peak, t.owed_bytes_peak), (3_000_000, 1_000_000));
+        assert_eq!(
+            (t.roots_live_parts_ns.root_rows, t.roots_live_parts_ns.root_write, t.roots_live_parts_ns.root_hash),
+            (2_000, 1_000, 1_000)
+        );
+        assert_eq!((t.stages_replayed_ns.entries, t.stages_replayed_ns.hands), (2_000, 6_000));
+        let s = t.summary();
+        // Two re-steps of 20 us: 5 physics and 7 of stages each, so 16 us left.
+        assert_eq!(s.restep_us, 40);
+        assert_eq!(s.other_replayed_us(), 40 - 10 - 14);
     }
 }

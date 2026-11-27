@@ -86,6 +86,11 @@ impl<K> Ring<K> {
         self.keys.keys().copied()
     }
 
+    /// The keyframes kept, oldest first.
+    pub fn keys(&self) -> impl Iterator<Item = &K> + '_ {
+        self.keys.values()
+    }
+
     /// Keep `key` as the state at the start of `frame`, replacing any older one there.
     pub fn insert(&mut self, frame: Frame, key: K) {
         self.keys.insert(frame, key);

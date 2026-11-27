@@ -281,6 +281,9 @@ pub struct ReplicaImpl<W: WorldModel> {
     live_transfers: BTreeMap<Frame, Taken<W::Saved>>,
     /// The newest grid frame whose `BodyState` rows the world model lacks, as [`Key::stale`] (E3).
     stale_rows: Option<Frame>,
+    /// The last `take_root`'s parts, with a probe (crate::costs): the physics rows and transfer, the write into the
+    /// world model with its tree cache refresh, and the root's hash.
+    root_split: [u64; 3],
     /// The transfer the last take_root serialized, until the live history or a snapshot of that state takes it.
     taken: Option<Taken<W::Saved>>,
     /// The ids of the entries each live frame stepped, in apply order, from the floor.
@@ -532,6 +535,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
             live: BTreeMap::new(),
             live_transfers: BTreeMap::new(),
             stale_rows: None,
+            root_split: [0; 3],
             taken: None,
             stepped: BTreeMap::new(),
             outcomes: BTreeMap::new(),
@@ -800,6 +804,10 @@ impl<W: WorldModel> ReplicaImpl<W> {
         let mut reads = probe.then(PhysicsReads::new);
         let step_t = probe.then(std::time::Instant::now);
         let (mut root_ns, mut scan_ns, mut physics_ns, mut keyframe_ns, mut digest_ns) = (0u64, 0u64, 0u64, 0u64, 0u64);
+        // The rest of the step's stages (crate::costs::Stages), each less the timed parts inside it.
+        let mut stage = costs::Stages::default();
+        let at = || probe.then(std::time::Instant::now);
+        let (t_entries, d_entries) = (at(), digest_ns);
         if !pe_core::fpenv::check_and_reset() {
             self.counters.fp_resets += 1;
         }
@@ -840,6 +848,8 @@ impl<W: WorldModel> ReplicaImpl<W> {
                 }
             }
         }
+        stage.entries = t_entries.map_or(0, costs::since).saturating_sub(digest_ns - d_entries);
+        let t_logic = at();
         let mut events = Vec::new();
         // E3: a scripted world's scripts may read `BodyState` rows. Where a re-step left the newest grid frame's rows
         // unwritten (the world was unscripted then; a code commit can make it scripted since), write them now, as an
@@ -848,6 +858,8 @@ impl<W: WorldModel> ReplicaImpl<W> {
             self.catch_up_rows();
         }
         self.logic(f, Stage::LogicPrePhysics, live, &mut events);
+        stage.logic = t_logic.map_or(0, costs::since);
+        let (t_movers, d_movers) = (at(), digest_ns);
         // The player bodies (world-model.md 8.2): each walked by the mover before the hands are driven, so a hand's
         // target is where its moved body puts it.
         if let Some(r) = reads.as_mut() {
@@ -858,6 +870,8 @@ impl<W: WorldModel> ReplicaImpl<W> {
             digest_ns += costs::since(t);
         }
         self.faults += self.move_players();
+        stage.movers = t_movers.map_or(0, costs::since).saturating_sub(digest_ns - d_movers);
+        let (t_hands, d_hands, s_hands) = (at(), digest_ns, scan_ns);
         // The hand bodies for this frame, rebuilt from the world model's hands and the physics state (3.3).
         let hands = self.world.hands();
         if let Some(r) = reads.as_mut() {
@@ -868,17 +882,24 @@ impl<W: WorldModel> ReplicaImpl<W> {
         let grab_ns = probe.then_some(&mut scan_ns);
         let (faults, reaches) = hands::sync(&self.world, &mut self.physics, &hands, self.origin, self.rate, f, grab_ns);
         self.faults += faults;
+        let inner = (digest_ns - d_hands) + (scan_ns - s_hands);
+        stage.hands = t_hands.map_or(0, costs::since).saturating_sub(inner);
         let t = probe.then(std::time::Instant::now);
         let awake_before = self.awake(&hands);
         scan_ns += t.map_or(0, costs::since);
         let t = probe.then(std::time::Instant::now);
         self.faults += u64::from(self.physics.step_holding(self.dt, &reaches).is_err());
         physics_ns += t.map_or(0, costs::since);
+        let t_hits = at();
         let hits = self.step_hits(f, resimulated, &hands);
+        stage.hits = t_hits.map_or(0, costs::since);
         let t = probe.then(std::time::Instant::now);
         self.write_back(awake_before, &hands);
         scan_ns += t.map_or(0, costs::since);
+        let t_post = at();
         self.logic(f, Stage::LogicPostPhysics, live, &mut events);
+        stage.logic += t_post.map_or(0, costs::since);
+        let t_end = at();
         self.faults += u64::from(self.world.maintain_transforms());
         self.note_checks(f, mine, live);
         // A rung-1 replay below its cut steps exactly the cut's entries, for my root there: no preview (C4).
@@ -886,6 +907,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
             self.world.set_canonical(self.replay.as_ref().is_some_and(|r| f < r.cut.at.frame));
         }
         let acts = self.world.end_frame(f);
+        stage.end = t_end.map_or(0, costs::since);
         let next = Frame(f.0 + 1);
         self.frame = next;
         // E3 (re-solve step 2; diverge-eng/resolve-e3-design.md): a re-step of an unscripted world takes no root on the
@@ -906,6 +928,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
             let t = probe.then(std::time::Instant::now);
             let root = self.take_root();
             root_ns = t.map_or(0, costs::since);
+            [stage.root_rows, stage.root_write, stage.root_hash] = self.root_split;
             root
         });
         if !live {
@@ -934,10 +957,22 @@ impl<W: WorldModel> ReplicaImpl<W> {
             }
             self.reached = self.reached.max(next);
         }
+        // With a probe that tracks bodies (`costs::probe_bodies`), every body's digest after this step, to compare
+        // with the replaced history's (the reusable work), and the ring's bytes. The probe's own cost.
+        let mut bodies = None;
+        let mut ring = None;
+        if self.costs.as_deref().is_some_and(costs::Probe::tracks_bodies) && live {
+            let t = std::time::Instant::now();
+            bodies = self.physics.body_digests().ok();
+            let image = self.ring.keys().map(|k| k.image.world_bytes().len()).sum::<usize>();
+            ring = Some((image, self.ring.owed_bytes()));
+            digest_ns += costs::since(t);
+        }
         if let Some(p) = self.costs.as_deref_mut() {
             let digest = reads.map(|r| r.finish()).filter(|_| !self.world.scripted());
             let step_ns = step_t.map_or(0, costs::since);
-            let c = StepCost { root_ns, scan_ns, digest, step_ns, physics_ns, keyframe_ns, digest_ns };
+            let c =
+                StepCost { root_ns, scan_ns, digest, step_ns, physics_ns, keyframe_ns, digest_ns, stage, bodies, ring };
             p.step(f, live, resimulated, root.is_some().then_some(next), c);
         }
         root
@@ -1213,8 +1248,12 @@ impl<W: WorldModel> ReplicaImpl<W> {
 
     /// Step 10, at a cut frame: every bound body's `BodyState` and the domain's `physics_global`, then the root.
     fn take_root(&mut self) -> Hash {
+        let probe = self.costs.is_some();
+        let at = || probe.then(std::time::Instant::now);
+        let (t_rows, mut t_write) = (at(), None);
         let taken = match self.physics_rows() {
             Ok((rows, transfer, global)) => {
+                t_write = at();
                 self.world.write_physics(&rows, global);
                 Some((transfer, global))
             }
@@ -1223,7 +1262,16 @@ impl<W: WorldModel> ReplicaImpl<W> {
                 None
             }
         };
+        let t_hash = at();
         let root = self.world.root();
+        if let (Some(r), Some(h)) = (t_rows, t_hash) {
+            let w = t_write.unwrap_or(h);
+            self.root_split = [
+                u64::try_from((w - r).as_nanos()).unwrap_or(u64::MAX),
+                u64::try_from((h - w).as_nanos()).unwrap_or(u64::MAX),
+                costs::since(h),
+            ];
+        }
         self.taken = taken.map(|(transfer, global)| Taken { frame: self.frame, root, transfer, global, key: None });
         self.stale_rows = None;
         root
