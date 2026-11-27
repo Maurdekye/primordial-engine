@@ -522,6 +522,10 @@ fn whole_row(
 pub const NAME_MAX: usize = 255;
 /// The most inline bytes (names) one change may carry, its undo's included (api.md 5.3; rulings). pe-world's own cap is twice this, so an undo whose old values grew through a race still fits.
 pub const INLINE_MAX: usize = 1024;
+/// The most carried bytes (simulation blobs over 256 B: meshes and hulls, world-model.md 3.4) one change may carry, its
+/// undo's included (@coordinator-opus): pe-world's own cap is 960 KiB (`MAX_CARRIED_BYTES`), so an undo
+/// whose old values grew through a race still fits.
+pub const CARRIED_MAX: usize = 768 * 1024;
 
 /// The bytes of the inline-class blobs among `blobs` (names), each once, in ascending order of hash: the one
 /// encoding pe-world takes for `Transaction::inline` (world-model.md 3.4).
