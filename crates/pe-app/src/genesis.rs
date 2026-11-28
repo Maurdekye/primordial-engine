@@ -68,8 +68,10 @@ pub const PRESET_VERSION: u32 = 1;
 pub const PLANE: &str = "plane";
 /// 2: each member gets a player body (world-model.md 8.2, locomotion L2), so a version-1 build can't join a version-2
 /// world, nor the other way round. 3: a `World settings` root carries the world's `Limits` row (world-model.md
-/// 7.1, the friend test 11-27). 4: the movement test course (pe-world `preset::course`) and the 64 m floor.
-pub const PLANE_VERSION: u32 = 4;
+/// 7.1, the friend test 11-27). 4: the movement test course (pe-world `preset::course`) and the 64 m floor. 5: the
+/// heavy templates (`preset::HEAVY`, 11-27, which came without a bump) and the mid-weight ones (`preset::MID`, after the
+/// 11-27 test): new template objects, so a version-4 build's genesis differs (@chunks-reviewer on efedf41d).
+pub const PLANE_VERSION: u32 = 5;
 /// A home domain (pe-world `preset::home`; My Domain, design domain-eng d1): its scenery, then the content the opener
 /// starts it from, which the frame-0 root covers. Its record carries no balls.
 pub const HOME: &str = "home";

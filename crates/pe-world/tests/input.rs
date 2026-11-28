@@ -556,6 +556,69 @@ fn the_pick_is_the_nearest_grabbable_surface_within_reach_alone() {
     assert_eq!(f.w.root(), before);
 }
 
+/// A grabbable box of half extents `half` at `(x, y)`, turned by `rot`: a platform, a slab, a plank.
+fn plank(w: &mut World, owner: MemberKey, id: u128, (x, y): (f64, f64), half: [f32; 3], rot: [f32; 4]) {
+    w.create(oid(id), None, owner, pe_world::GENESIS).unwrap();
+    w.insert(oid(id), Transform::at(at(x, y)).with_rot(rot)).unwrap();
+    w.insert(oid(id), Body { grabbable: 1, ..Body::default() }).unwrap();
+    w.insert(oid(id), Shape { kind: shape_kind::BOX, size: half, ..Shape::default() }).unwrap();
+}
+
+/// The 11-27 platform: 2 x 0.3 x 2 m, bounding radius 1.42 m.
+const PLATFORM: u128 = 40;
+const ON_TOP: u128 = 41;
+
+/// The friend test's 11-27 problem 4: a large object in reach blocked every grab, because the pick
+/// measured to its bounding sphere, which a hand above it is inside. The pick now measures the real shape: a ball in
+/// the hand 0.3 m above the platform's top is picked, and the platform is out of reach there.
+#[test]
+fn a_ball_inside_a_platform_s_bounding_sphere_is_picked() {
+    let mut f = fx();
+    let ka = f.ka;
+    plank(&mut f.w, ka, PLATFORM, (0.0, 0.0), [1.0, 0.15, 1.0], ID);
+    ball(&mut f.w, ka, ON_TOP, (0.5, 0.5), 0.05, 1);
+    assert_eq!(pick(&f, 1, HAND_A, (0.5, 0.5)), Some(oid(ON_TOP)));
+    // With the ball gone, the platform's top is 0.35 m below the hand: past reach (0.1 m).
+    assert_eq!(pick(&f, 1, HAND_A, (0.5, 0.45)), Some(oid(ON_TOP)), "still touching the ball");
+    assert_eq!(pick(&f, 1, HAND_A, (-0.5, 0.5)), None, "over the platform, away from the ball");
+}
+
+/// A ball lying on the platform, with the hand at the ball: both touch the hand's sphere (gap 0), and the smaller
+/// bounding radius wins (@coordinator-opus).
+#[test]
+fn a_ball_lying_on_a_platform_is_picked() {
+    let mut f = fx();
+    let ka = f.ka;
+    plank(&mut f.w, ka, PLATFORM, (0.0, 0.0), [1.0, 0.15, 1.0], ID);
+    ball(&mut f.w, ka, ON_TOP, (0.5, 0.2), 0.05, 1);
+    assert_eq!(pick(&f, 1, HAND_A, (0.5, 0.2)), Some(oid(ON_TOP)));
+    // The hand on the platform's top away from the ball: the platform.
+    assert_eq!(pick(&f, 1, HAND_A, (-0.5, 0.2)), Some(oid(PLATFORM)));
+}
+
+/// Reach is measured to the oriented box: a plank 1 m long on x, turned a quarter about z, is long on y.
+#[test]
+fn the_pick_measures_a_turned_box() {
+    let mut f = fx();
+    let ka = f.ka;
+    let quarter = [0.0, 0.0, std::f32::consts::FRAC_1_SQRT_2, std::f32::consts::FRAC_1_SQRT_2];
+    plank(&mut f.w, ka, 50, (0.0, 0.0), [0.5, 0.02, 0.02], quarter);
+    assert_eq!(pick(&f, 1, HAND_A, (0.0, 0.45)), Some(oid(50)), "along its length, now on y");
+    assert_eq!(pick(&f, 1, HAND_A, (0.45, 0.0)), None, "across it: 0.43 m from its face");
+}
+
+/// Of shapes the hand's sphere doesn't touch, the nearest gap first, whatever their size.
+#[test]
+fn the_pick_prefers_a_touch_then_the_nearest_gap() {
+    let mut f = fx();
+    let ka = f.ka;
+    // Both in reach (0.1 m), neither touching the hand's 0.09 m sphere: 60's surface is 0.098 away (gap 0.008), 61's
+    // 0.095 (gap 0.005), so 61, though it's bigger.
+    ball(&mut f.w, ka, 60, (0.148, 0.0), 0.05, 1);
+    ball(&mut f.w, ka, 61, (-0.295, 0.0), 0.2, 1);
+    assert_eq!(pick(&f, 1, HAND_A, (0.0, 0.0)), Some(oid(61)));
+}
+
 #[test]
 fn the_pick_ties_to_the_lowest_id() {
     let mut f = fx();

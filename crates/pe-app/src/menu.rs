@@ -1772,7 +1772,25 @@ mod tests {
         m.press(Section::MyDomain.node());
         let page = m.page(1_000);
         let labels: Vec<&str> = page.buttons.iter().map(|b| b.label.as_str()).collect();
-        assert_eq!(labels, ["Box", "Sphere", "Capsule", "Box stack", "Big crate", "Platform", "Slab", "Clear"]);
+        // The spawn buttons' ids end before Clear's: 10 kinds fill 20..30 exactly, so an 11th needs Clear moved.
+        assert!(id::SPAWN + crate::spawn::Kind::ALL.len() as u32 <= id::CLEAR);
+        // Light to heavy, then Clear: 11 buttons.
+        assert_eq!(
+            labels,
+            [
+                "Box",
+                "Sphere",
+                "Capsule",
+                "Box stack",
+                "Sack",
+                "Barrel",
+                "Low crate",
+                "Big crate",
+                "Platform",
+                "Slab",
+                "Clear"
+            ]
+        );
         assert_eq!(page.lines, ["Box: spawned"], "the last result shows");
         m.frame(&input(None, 0, false, false));
         // The head is at (0, 1.6, 0) facing -Z: a box 0.5 m ahead and 0.2 m down, a stack 0.8 m ahead on the floor.

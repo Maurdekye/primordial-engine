@@ -650,29 +650,54 @@ impl World {
     }
 
     /// The object a close of `author`'s `hand` would grab, with the hand's target at `target` in a `Grab` stamped
-    /// `now` (pe-app's pick, app.md 3.1 step 2; @coordinator-opus and its ruling on the defaults, after
-    /// @fable-reviewer): of the objects whose `Body` is marked grabbable, hands excepted, those a `Grab` would claim
-    /// ([`World::grab_check`]: not held by another member, nothing in their subtree held by one, not under the
-    /// author's cooldown) within `reach_mm` alone, since the slack is for prediction error; the nearest by the
-    /// distance from `target` to the surface of its nearest bounding sphere, ties to the lowest id. `None` when none
-    /// is in reach. Changes nothing.
+    /// `now` (pe-app's pick, app.md 3.1 step 2; @coordinator-opus, and its 11-27 ruling after
+    /// @fable-reviewer). Of the objects whose `Body` is marked grabbable, hands excepted, it considers those a
+    /// `Grab` would claim ([`World::grab_check`]: not held by another member, nothing in their subtree held by one,
+    /// not under the author's cooldown) whose **real shape** is within `reach_mm` alone of `target`. The slack is left
+    /// for prediction error. Real shapes are a sphere, a capsule, and an oriented box of `size` for boxes, hulls and
+    /// meshes, and they sit inside the bounding spheres, so a pick is always in a `Grab`'s reach. Their order:
+    /// 1. the gap between the hand's sphere ([`HAND_RADIUS`] about `target`) and the shape, 0 for anything it touches;
+    /// 2. the smaller bounding radius, so a ball in the hand beats the platform under it;
+    /// 3. the nearer centre;
+    /// 4. the lower id.
+    ///
+    /// `None` when none is in reach. Changes nothing.
     pub fn pick_grab(&self, now: Frame, author: MemberKey, hand: ObjectId, target: Pos) -> Option<ObjectId> {
         let reach = f64::from(self.input_settings.reach_mm) / 1000.0;
-        let mut best: Option<(f64, ObjectId)> = None;
+        let mut best: Option<(Pick, ObjectId)> = None;
         for (id, body) in self.store.iter::<Body>() {
             if body.grabbable == 0 || self.store.has::<Hand>(id) {
                 continue;
             }
-            let surface = self.bounds(id).iter().map(|&(c, r)| c.dist2(&target).sqrt() - r).reduce(f64::min);
-            let Some(d) = surface.filter(|&d| d <= reach) else { continue };
-            if best.is_some_and(|(b, bid)| (b, bid) <= (d, id)) {
+            let Some(d) = self.shape_distance(id, target).filter(|&d| d <= reach) else { continue };
+            let Some(centre) = self.placed(id).map(|w| w.pos) else { continue };
+            let radius = self.bounds(id).iter().map(|&(c, r)| c.dist2(&centre).sqrt() + r).fold(0.0, f64::max);
+            let key = Pick { gap: (d - f64::from(HAND_RADIUS)).max(0.0), radius, centre: centre.dist2(&target) };
+            if best.as_ref().is_some_and(|(b, bid)| b.cmp(&key).then(bid.cmp(&id)).is_le()) {
                 continue;
             }
             if self.grab_check(now, author, id, Some(hand), ReachFrom::Target(target)).is_ok() {
-                best = Some((d, id));
+                best = Some((key, id));
             }
         }
         best.map(|(_, id)| id)
+    }
+
+    /// The distance from `p` to a body's real shape: its own `Shape` and each compound child's (as [`World::bounds`]
+    /// walks them), 0 inside one. `None` for a body with no shape it can place.
+    fn shape_distance(&self, body: ObjectId, p: Pos) -> Option<f64> {
+        let mut best: Option<f64> = None;
+        let mut stack = vec![body];
+        while let Some(x) = stack.pop() {
+            if let (Some(s), Some(w)) = (self.store.get::<Shape>(x), self.placed(x)) {
+                let d = shape_distance(s, &w, p);
+                if d.is_finite() {
+                    best = Some(best.map_or(d, |b| b.min(d)));
+                }
+            }
+            stack.extend(self.store.children(x).filter(|&c| !self.store.has::<Body>(c)));
+        }
+        best
     }
 
     fn release(&mut self, author: MemberKey, object: ObjectId, notes: &mut Vec<Note>) {
@@ -887,6 +912,51 @@ impl World {
             for h in done {
                 t.packs.remove(&h);
             }
+        }
+    }
+}
+
+/// The radius of a hand's body, m: the pick measures from its surface (pe-replica builds the hand body with the same
+/// value, `pe_replica::world::HAND_RADIUS`).
+pub const HAND_RADIUS: f32 = 0.09;
+
+/// A pick's order key ([`World::pick_grab`]), compared field by field; distances are finite.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Pick {
+    gap: f64,
+    radius: f64,
+    /// The squared distance from the target to the body's centre.
+    centre: f64,
+}
+
+impl Pick {
+    fn cmp(&self, o: &Pick) -> std::cmp::Ordering {
+        (self.gap.total_cmp(&o.gap)).then(self.radius.total_cmp(&o.radius)).then(self.centre.total_cmp(&o.centre))
+    }
+}
+
+/// The distance from `p` to one shape placed at `w`, 0 inside: a sphere of radius `size[0]` and a capsule of radius
+/// `size[0]` about a segment of half length `size[1]` on the local y axis, both scaled by the largest axis of the
+/// world scale (as the bounds are); a box, hull or mesh as the oriented box of half extents `size` times the scale
+/// on each axis.
+fn shape_distance(s: &Shape, w: &pe_sim::WorldTransform, p: Pos) -> f64 {
+    let d = (p - w.pos).0;
+    let k = w.scale.iter().fold(0.0f64, |m, v| m.max(f64::from(v.abs())));
+    let [a, b, c] = s.size.map(|v| f64::from(v.abs()));
+    let len = |v: [f64; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    // Into the shape's own axes: the inverse rotation.
+    let inverse = [-w.rot[0], -w.rot[1], -w.rot[2], w.rot[3]];
+    let q = pe_sim::transform::rotate(inverse, d);
+    match s.kind {
+        shape_kind::SPHERE => (len(d) - a * k).max(0.0),
+        shape_kind::CAPSULE => {
+            let h = b * k;
+            (len([q[0], q[1] - q[1].clamp(-h, h), q[2]]) - a * k).max(0.0)
+        }
+        _ => {
+            let half = [a, b, c];
+            let out = |i: usize| (q[i].abs() - half[i] * f64::from(w.scale[i].abs())).max(0.0);
+            len([out(0), out(1), out(2)])
         }
     }
 }

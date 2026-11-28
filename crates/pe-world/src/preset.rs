@@ -229,6 +229,10 @@ pub mod plane_names {
     pub const BIG_CRATE: &str = "Big crate";
     pub const PLATFORM: &str = "Platform";
     pub const SLAB: &str = "Slab";
+    /// The mid-weight templates ([`super::MID`]), after the heavy ones: too heavy to lift, light enough to drag.
+    pub const SACK: &str = "Sack";
+    pub const BARREL: &str = "Barrel";
+    pub const LOW_CRATE: &str = "Low crate";
 }
 
 /// The plane's floor: a static box this many metres on a side, 1 m thick, its top at the origin. Room for the test
@@ -259,7 +263,7 @@ const STACK_GAP: f64 = 0.002;
 /// "larger spawnable objects that are harder to move / can be walked on top of"): each a box body's name, half
 /// extents in metres, density in kg/m³ and colour. Every one is far above the mover's `heavy_mass` (40 kg), so a
 /// player stands and walks on it as on the floor and never shoves it: a 1 m crate of 300 kg, a 2 × 0.3 × 2 m platform
-/// of 240 kg and a 1.5 × 0.2 × 1.5 m slab of 180 kg. Still dynamic and grabbable: a hold moves one slowly.
+/// of 240 kg and a 1.5 × 0.2 × 1.5 m slab of 180 kg. Still dynamic and grabbable (ruled 11-27).
 pub const HEAVY: [(&str, [f32; 3], f32, [f32; 3]); 3] = [
     (plane_names::BIG_CRATE, [0.5, 0.5, 0.5], 300.0, [0.55, 0.38, 0.22]),
     (plane_names::PLATFORM, [1.0, 0.15, 1.0], 200.0, [0.3, 0.32, 0.36]),
@@ -267,6 +271,24 @@ pub const HEAVY: [(&str, [f32; 3], f32, [f32; 3]); 3] = [
 ];
 /// The heavy templates' friction: higher than the light ones' 0.6, so a player's weight doesn't slide one along.
 pub const HEAVY_FRICTION: f32 = 0.9;
+/// One mid-weight template ([`MID`]): its body's name, shape kind (`shape_kind`), `size`, density in kg/m³ and colour.
+pub type MidTemplate = (&'static str, u32, [f32; 3], f32, [f32; 3]);
+
+/// The mid-weight templates (the user after the 11-27 test: "things that are too heavy to pick up, but
+/// light enough to drag on the floor"; @coordinator-opus): each a body's name, shape kind, `size`,
+/// density in kg/m³ and colour. A hand's grip (110 N) lifts about 11 kg and one object takes one hand's claim, so
+/// none of these lifts; on [`MID_FRICTION`] each slides for a drag of 50-90 N; and each is under the mover's 40 kg
+/// `heavy_mass`, so a player's body pushes it too. An 18 kg sack (0.6 × 0.3 × 0.4 m), a 25 kg barrel (a capsule of
+/// radius 0.25 m about a 0.4 m segment, 0.9 m tall; there is no cylinder shape) and a 30 kg low crate
+/// (0.8 × 0.4 × 0.6 m). The barrel stands on its round end, balanced only upright: the first push tips it, and on its
+/// side it rolls rather than drags (accepted for now, @coordinator-opus; @chunks-reviewer's Low).
+pub const MID: [MidTemplate; 3] = [
+    (plane_names::SACK, shape_kind::BOX, [0.3, 0.15, 0.2], 250.0, [0.72, 0.62, 0.42]),
+    (plane_names::BARREL, shape_kind::CAPSULE, [0.25, 0.2, 0.0], 173.6, [0.45, 0.28, 0.16]),
+    (plane_names::LOW_CRATE, shape_kind::BOX, [0.4, 0.2, 0.3], 156.25, [0.62, 0.48, 0.3]),
+];
+/// The mid-weight templates' friction: low, so a hand can drag one along the floor.
+pub const MID_FRICTION: f32 = 0.3;
 
 /// The friend test's flat plane at frame 0 on line `line` (world-model.md 2.4, "The plane"; the friend-test
 /// prototype): a root `Plane` holding a static floor [`PLANE_SIDE`] m square with its top at `origin`, a lamp, and the
@@ -391,6 +413,21 @@ fn plane_transaction(blobs: &BlobStore, origin: Pos) -> Transaction {
         ];
         create(&mut ops, under, rows);
         x += f64::from(half[0]) + 1.0;
+    }
+    // The mid-weight templates, after the heavy ones so that every earlier object keeps its id; each stands on its
+    // lowest point (a capsule's is its radius plus its half segment below the centre).
+    for (label, kind, size, density, rgb) in MID {
+        x += f64::from(size[0]);
+        let up = if kind == shape_kind::CAPSULE { size[0] + size[1] } else { size[1] };
+        let rows = vec![
+            row(Transform::local([x, f64::from(up), 0.0])),
+            name(blobs, &mut used, label),
+            colour(rgb),
+            dynamic_body_with(MID_FRICTION),
+            row(Shape { kind, density, size, ..Shape::default() }),
+        ];
+        create(&mut ops, under, rows);
+        x += f64::from(size[0]) + 1.0;
     }
     // The world's limits, on a root of their own and as the last op, so the course's and the templates' objects
     // keep their ids (@world-model).

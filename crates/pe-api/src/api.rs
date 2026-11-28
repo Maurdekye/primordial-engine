@@ -2704,9 +2704,12 @@ mod tests {
             panic!("a list")
         };
         let names: Vec<String> = templates.iter().map(|t| t.name.clone()).collect();
-        // The heavy templates follow the four (@world-model's world/ft-body, the friend test 11-27).
-        assert_eq!(names, [n::BOX, n::SPHERE, n::CAPSULE, n::STACK, n::BIG_CRATE, n::PLATFORM, n::SLAB]);
-        let heavy = [(n::BIG_CRATE, 1), (n::PLATFORM, 1), (n::SLAB, 1)];
+        // The heavy templates follow the four (@world-model's world/ft-body, the friend test 11-27), then the
+        // mid-weight ones (after the 11-27 test).
+        let all = [n::BOX, n::SPHERE, n::CAPSULE, n::STACK, n::BIG_CRATE, n::PLATFORM, n::SLAB];
+        assert_eq!(names, [&all[..], &[n::SACK, n::BARREL, n::LOW_CRATE]].concat());
+        let heavy =
+            [(n::BIG_CRATE, 1), (n::PLATFORM, 1), (n::SLAB, 1), (n::SACK, 1), (n::BARREL, 1), (n::LOW_CRATE, 1)];
         let four = [(n::BOX, 1), (n::SPHERE, 1), (n::CAPSULE, 1), (n::STACK, 1 + n::STACK_BOXES)];
         for (template, objects) in four.into_iter().chain(heavy) {
             let spawn =

@@ -2768,8 +2768,15 @@ New seam reason: `Reason::Cooldown { until: Frame }` (@engine-architect, docked 
   its reach is checked (`OutOfReach`), though not `Held` (@design-reviewer's Low 1).
 - **The client's pick** (@coordinator-opus and its ruling, after @fable-reviewer): `grab()` applies
   through `grab_check`, its checks in the order above, read-only, and `World::pick_grab` asks the same function which
-  object a closing hand should name (app.md 3, step 2). It takes bodies marked `grabbable`, hands excepted, within
-  `reach_mm` alone of the target the client is about to send, the nearest surface first. `grab()` itself checks
+  object a closing hand should name (app.md 3, step 2). It takes bodies marked `grabbable`, hands excepted, whose
+  **real shape** is within `reach_mm` alone of the target the client is about to send (11-27 ruling,
+  after the friend test's "if one of them is large, i cant grab anything": the bounding sphere of a
+  platform contains a hand above it). A real shape is a sphere, a capsule, or the oriented box of `size` (times the
+  scale on each axis) for a box, hull or mesh; each lies inside its bounding sphere, so a pick is always in a
+  `Grab`'s reach. They are ordered by the gap between the hand's sphere (`HAND_RADIUS` 0.09 m about the target) and
+  the shape, 0 for everything it touches, then the smaller bounding radius (a ball in the hand beats the platform
+  it lies on), then the nearer centre, then the lower id. `grab()`'s own reach check keeps the bounding spheres
+  (reach plus slack), which a pick's choice always passes. `grab()` itself checks
   neither `grabbable` nor, for `hand: None`, reach: a gap docketed for after M1. `until` only ever grows. A
   hand-less claim has `hand = ObjectId::NONE`. A pack whose hand is gone is dropped at the next `end_frame`, and so
   is a pack whose next pose cannot be placed (the hand's frame moved so the pose is out of range): nothing of that

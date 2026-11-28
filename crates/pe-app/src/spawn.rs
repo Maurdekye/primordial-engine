@@ -33,6 +33,11 @@ pub enum Kind {
     Sphere,
     Capsule,
     Stack,
+    /// The mid-weight templates (pe-world `preset::MID`, after the 11-27 test): too heavy to lift, light enough to
+    /// drag.
+    Sack,
+    Barrel,
+    LowCrate,
     /// The heavy templates (pe-world `preset::HEAVY`, the friend test of 11-27): solid ground a player stands on.
     BigCrate,
     Platform,
@@ -40,8 +45,19 @@ pub enum Kind {
 }
 
 impl Kind {
-    pub const ALL: [Kind; 7] =
-        [Kind::Box, Kind::Sphere, Kind::Capsule, Kind::Stack, Kind::BigCrate, Kind::Platform, Kind::Slab];
+    /// Light to heavy, as the spawn panel lists them (@xr-eng).
+    pub const ALL: [Kind; 10] = [
+        Kind::Box,
+        Kind::Sphere,
+        Kind::Capsule,
+        Kind::Stack,
+        Kind::Sack,
+        Kind::Barrel,
+        Kind::LowCrate,
+        Kind::BigCrate,
+        Kind::Platform,
+        Kind::Slab,
+    ];
 
     /// The template's name, which is also the copy's.
     pub fn template(self) -> &'static str {
@@ -51,6 +67,9 @@ impl Kind {
             Kind::Sphere => n::SPHERE,
             Kind::Capsule => n::CAPSULE,
             Kind::Stack => n::STACK,
+            Kind::Sack => n::SACK,
+            Kind::Barrel => n::BARREL,
+            Kind::LowCrate => n::LOW_CRATE,
             Kind::BigCrate => n::BIG_CRATE,
             Kind::Platform => n::PLATFORM,
             Kind::Slab => n::SLAB,
@@ -64,42 +83,54 @@ impl Kind {
             Kind::Sphere => "sphere",
             Kind::Capsule => "capsule",
             Kind::Stack => "stack",
+            Kind::Sack => "sack",
+            Kind::Barrel => "barrel",
+            Kind::LowCrate => "lowcrate",
             Kind::BigCrate => "crate",
             Kind::Platform => "platform",
             Kind::Slab => "slab",
         }
     }
 
-    /// A heavy template's half extents, m (pe-world `preset::HEAVY`); `None` for the small ones.
-    pub fn heavy_half(self) -> Option<[f32; 3]> {
+    /// The half extents, m, of a template that stands on the floor: a heavy one's box (pe-world `preset::HEAVY`), or a
+    /// mid-weight one's (`preset::MID`; a capsule's are its radius across and its radius plus half segment up). `None`
+    /// for the small ones, which appear in the air.
+    pub fn floor_half(self) -> Option<[f32; 3]> {
+        use pe_world::components::shape_kind;
         let name = self.template();
-        pe_world::preset::HEAVY.iter().find(|h| h.0 == name).map(|h| h.1)
+        let heavy = pe_world::preset::HEAVY.iter().find(|h| h.0 == name).map(|h| h.1);
+        heavy.or_else(|| {
+            pe_world::preset::MID.iter().find(|m| m.0 == name).map(|&(_, kind, s, ..)| match kind {
+                shape_kind::CAPSULE => [s[0], s[0] + s[1], s[0]],
+                _ => s,
+            })
+        })
     }
 
-    /// The root's height when it stands on the floor: a stack's root just above it, a heavy box's centre at its half
+    /// The root's height when it stands on the floor: a stack's root just above it, a floor kind's centre at its half
     /// height and the same gap; `None` for what appears in the air.
     pub fn on_floor(self) -> Option<f64> {
-        match (self, self.heavy_half()) {
+        match (self, self.floor_half()) {
             (Kind::Stack, _) => Some(FLOOR_GAP),
             (_, Some(h)) => Some(f64::from(h[1]) + FLOOR_GAP),
             _ => None,
         }
     }
 
-    /// How far a counted spawn's next layer goes above the last (`grid_at`): a stack's or a heavy one's height and a
+    /// How far a counted spawn's next layer goes above the last (`grid_at`): a stack's or a floor kind's height and a
     /// little more, so it settles on the one below; a small one's [`GRID_STEP`], since it falls.
     pub fn layer_height(self) -> f64 {
-        match (self, self.heavy_half()) {
+        match (self, self.floor_half()) {
             (Kind::Stack, _) => STACK_LAYER,
             (_, Some(h)) => 2.0 * f64::from(h[1]) + 0.1,
             _ => GRID_STEP,
         }
     }
 
-    /// How far apart two of it go on a grid or a row, m: the small ones' [`GRID_STEP`], a heavy one's width and
+    /// How far apart two of it go on a grid or a row, m: the small ones' [`GRID_STEP`], a floor kind's width and
     /// 0.5 m more.
     pub fn spacing(self) -> f64 {
-        self.heavy_half().map_or(GRID_STEP, |h| 2.0 * f64::from(h[0].max(h[2])) + 0.5)
+        self.floor_half().map_or(GRID_STEP, |h| 2.0 * f64::from(h[0].max(h[2])) + 0.5)
     }
 
     pub fn parse(w: &str) -> Option<Kind> {
@@ -357,8 +388,8 @@ pub fn parse_command(what: &str) -> Result<Command, String> {
         [w, n] => {
             let k = kind(w)?;
             match n.parse::<u32>() {
-                Ok(c) if k.heavy_half().is_some() && c > HEAVY_COUNT_MAX => Err(format!(
-                    "`spawn {what}`: at most {HEAVY_COUNT_MAX} of a heavy kind at once, so they stay on the floor"
+                Ok(c) if k.floor_half().is_some() && c > FLOOR_COUNT_MAX => Err(format!(
+                    "`spawn {what}`: at most {FLOOR_COUNT_MAX} of a big kind at once, so they stay on the floor"
                 )),
                 Ok(c) if (1..=COUNT_MAX).contains(&c) => Ok(Command::Many(k, c)),
                 _ => Err(format!("`spawn {what}`: a count is a whole number from 1 to {COUNT_MAX}")),
@@ -377,7 +408,7 @@ fn words_list() -> String {
 /// away from the origin; a stack on the floor.
 pub fn grid_at(k: Kind, n: u32) -> [f64; 3] {
     let step = k.spacing();
-    // A heavy kind's rows are as wide as the small ones' (GRID_ACROSS × GRID_STEP), so fewer to a row; a layer
+    // A floor kind's rows are as wide as the small ones' (GRID_ACROSS × GRID_STEP), so fewer to a row; a layer
     // keeps to the clear ground (`grid_rows`), and the next layer goes above it.
     let across = ((f64::from(GRID_ACROSS) * GRID_STEP / step) as u32).max(1);
     let rows = grid_rows(step);
@@ -436,8 +467,8 @@ fn limits_now(api: &dyn WorldApi, c: &Caller) -> String {
 
 /// The console's `n`-th spawn's place: a row of five in front of the origin, a stack on the floor.
 pub fn console_at(k: Kind, n: u32) -> [f64; 3] {
-    if k.heavy_half().is_some() {
-        // A heavy one goes 1.5 m further out than the small ones' rows, its width apart, so it never lands on them.
+    if k.floor_half().is_some() {
+        // A floor kind goes 1.5 m further out than the small ones' rows, its width apart, so it never lands on them.
         // Its places repeat every 9 (3 by 3): the 10th of a kind lands on the 1st, fine for a test session.
         let step = k.spacing();
         let z = CONSOLE_AT[2] - 1.5 - step * (1.0 + f64::from((n / 3) % 3));
@@ -448,9 +479,10 @@ pub fn console_at(k: Kind, n: u32) -> [f64; 3] {
     [x, k.on_floor().unwrap_or(CONSOLE_AT[1]), z]
 }
 
-/// The most one counted `spawn` of a heavy kind queues: four rows of the widest (the platform, three to a row, 2.5 m
-/// apart) from [`GRID_AT`] reach 10.5 m ahead, inside the plane's floor (@xr-eng's L1 on a306b59c).
-pub const HEAVY_COUNT_MAX: u32 = 12;
+/// The most one counted `spawn` of a floor kind (heavy or mid-weight) queues: four rows of the widest (the platform,
+/// three to a row, 2.5 m apart) from [`GRID_AT`] reach 10.5 m ahead, inside the plane's floor (@xr-eng's L1 on
+/// a306b59c).
+pub const FLOOR_COUNT_MAX: u32 = 12;
 
 /// A stack's root above the floor's top (at the origin's height), so its bottom box starts just clear of it.
 pub const FLOOR_GAP: f64 = 0.01;
@@ -472,9 +504,9 @@ pub fn in_front(head: [f64; 3], forward: [f64; 3], k: Kind, hands: &[[f64; 3]]) 
     let (fx, fz) = if len > 1e-6 { (fx / len, fz / len) } else { (0.0, -1.0) };
     // Left of the level forward: for forward -Z, left is -X.
     let (lx, lz) = (fz, -fx);
-    // A heavy box stands on the floor far enough ahead that its near side clears the player's body (0.25 m around the
+    // A floor kind stands on the floor far enough ahead that its near side clears the player's body (0.25 m around the
     // head's spot over the floor) by 0.2 m.
-    let (ahead0, y) = match (k, k.heavy_half()) {
+    let (ahead0, y) = match (k, k.floor_half()) {
         (Kind::Stack, _) => (0.8, FLOOR_GAP),
         // The copy is axis-aligned, so its reach back toward the player along the level forward is hx|fx| + hz|fz|.
         (_, Some(h)) => {
@@ -483,8 +515,9 @@ pub fn in_front(head: [f64; 3], forward: [f64; 3], k: Kind, hands: &[[f64; 3]]) 
         _ => (0.5, (head[1] - 0.2).max(0.3)),
     };
     let spot = |ahead: f64, left: f64| [head[0] + fx * ahead + lx * left, y, head[2] + fz * ahead + lz * left];
-    // A heavy box is big, so a hand is measured to its surface (a point-to-box distance), a small thing's to its centre.
-    let half = k.heavy_half().map_or([0.0; 3], |h| h.map(f64::from));
+    // A floor kind is big, so a hand is measured to its surface (a point-to-box distance), a small thing's to its
+    // centre.
+    let half = k.floor_half().map_or([0.0; 3], |h| h.map(f64::from));
     let clear = |p: &[f64; 3]| {
         hands.iter().all(|h| {
             let d: f64 = (0..3).map(|i| ((h[i] - p[i]).abs() - half[i]).max(0.0).powi(2)).sum();
@@ -730,12 +763,12 @@ mod tests {
         assert!((up[0] + 0.25).abs() < 1e-9 && (up[2] + 0.5).abs() < 1e-9, "looking straight up: ahead is -Z");
     }
 
-    /// The heavy templates (the friend test of 11-27) stand on the floor, their near side clear of the player's body, and
-    /// a grid or a row of them never overlaps.
+    /// The floor kinds (the heavy and mid-weight templates) stand on the floor, their near side clear of the player's
+    /// body, and a grid or a row of them never overlaps.
     #[test]
-    fn heavy_things_stand_on_the_floor_clear_of_the_player() {
-        for k in [Kind::BigCrate, Kind::Platform, Kind::Slab] {
-            let h = k.heavy_half().expect("a heavy kind");
+    fn floor_things_stand_on_the_floor_clear_of_the_player() {
+        for k in [Kind::Sack, Kind::Barrel, Kind::LowCrate, Kind::BigCrate, Kind::Platform, Kind::Slab] {
+            let h = k.floor_half().expect("a floor kind");
             assert_eq!(Kind::parse(k.word()), Some(k));
             let at = in_front([0.0, 1.6, 0.0], [0.0, 0.0, -1.0], k, &[]);
             assert!((at[1] - (f64::from(h[1]) + FLOOR_GAP)).abs() < 1e-9, "{k:?} on the floor: {at:?}");
@@ -750,19 +783,19 @@ mod tests {
         // Facing diagonally the axis-aligned platform's near corner still clears the body (@xr-eng's M1).
         let r = std::f64::consts::FRAC_1_SQRT_2;
         let at = in_front([0.0, 1.6, 0.0], [r, 0.0, -r], Kind::Platform, &[]);
-        let h = Kind::Platform.heavy_half().unwrap().map(f64::from);
+        let h = Kind::Platform.floor_half().unwrap().map(f64::from);
         let corner = (at[0] - h[0]).max(0.0).hypot((-at[2] - h[2]).max(0.0));
         assert!(corner >= 0.25 + 0.2 - 1e-9 || (at[0] - h[0]) * r + (-at[2] - h[2]) * r >= 0.45 - 1e-9, "{at:?}");
         // A hand in front at chest height moves the crate on to a spot clear of it (@xr-eng's M2).
         let hand = [0.0, 1.0, -0.6];
         let c = in_front([0.0, 1.6, 0.0], [0.0, 0.0, -1.0], Kind::BigCrate, &[hand]);
-        let hc = Kind::BigCrate.heavy_half().unwrap().map(f64::from);
+        let hc = Kind::BigCrate.floor_half().unwrap().map(f64::from);
         let d: f64 = (0..3).map(|i| ((hand[i] - c[i]).abs() - hc[i]).max(0.0).powi(2)).sum();
         assert!(d.sqrt() > HAND_CLEAR_M, "the crate at {c:?} is within reach of the hand");
-        // A heavy count stays on the floor, and the console's fourth crate isn't inside its first (L1, L2).
-        assert!(parse_command(&format!("crate {}", HEAVY_COUNT_MAX + 1)).is_err());
-        assert!(parse_command(&format!("crate {HEAVY_COUNT_MAX}")).is_ok());
-        let last = grid_at(Kind::Platform, HEAVY_COUNT_MAX - 1);
+        // A floor-kind count stays on the floor, and the console's fourth crate isn't inside its first (L1, L2).
+        assert!(parse_command(&format!("crate {}", FLOOR_COUNT_MAX + 1)).is_err());
+        assert!(parse_command(&format!("crate {FLOOR_COUNT_MAX}")).is_ok());
+        let last = grid_at(Kind::Platform, FLOOR_COUNT_MAX - 1);
         assert!(-last[2] < 11.0, "{last:?}");
         assert_ne!(console_at(Kind::BigCrate, 0), console_at(Kind::BigCrate, 3));
     }

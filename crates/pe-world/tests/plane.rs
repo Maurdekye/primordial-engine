@@ -119,7 +119,10 @@ fn the_plane_has_its_floor_an_empty_spawned_root_and_inert_templates() {
     assert!(snap.children(spawned).is_empty(), "nothing is spawned at genesis");
     // The templates, in order: three single bodies and a stack of five.
     let names: Vec<_> = snap.children(folder).into_iter().map(|c| snap.name(c).expect("named")).collect();
-    assert_eq!(names, [n::BOX, n::SPHERE, n::CAPSULE, n::STACK, n::BIG_CRATE, n::PLATFORM, n::SLAB]);
+    assert_eq!(
+        names,
+        [n::BOX, n::SPHERE, n::CAPSULE, n::STACK, n::BIG_CRATE, n::PLATFORM, n::SLAB, n::SACK, n::BARREL, n::LOW_CRATE]
+    );
     // The heavy templates: box bodies far above the mover's 40 kg `heavy_mass`, so a player stands on them.
     for (label, half, density, _) in pe_world::preset::HEAVY {
         let id = get(label);
@@ -129,6 +132,22 @@ fn the_plane_has_its_floor_an_empty_spawned_root_and_inert_templates() {
         assert!(kg >= 150.0, "{label} weighs {kg} kg");
         let body = w.store().get::<Body>(id).expect("a body");
         assert_eq!((body.kind, body.grabbable), (pe_world::components::body_kind::DYNAMIC, 1));
+    }
+    // The mid-weight templates: too heavy for a hand's 110 N grip (about 11 kg), under the mover's 40 kg line, and
+    // on low friction, so a hand drags one and a body pushes it.
+    for (label, kind, size, density, _) in pe_world::preset::MID {
+        let id = get(label);
+        let shape = w.store().get::<Shape>(id).expect("a shape");
+        assert_eq!((shape.kind, shape.size, shape.density), (kind, size, density));
+        let [a, b, c] = size.map(f64::from);
+        let volume = match kind {
+            shape_kind::CAPSULE => std::f64::consts::PI * a * a * (2.0 * b + 4.0 / 3.0 * a),
+            _ => 8.0 * a * b * c,
+        };
+        let kg = f64::from(density) * volume;
+        assert!((15.0..=31.0).contains(&kg), "{label} weighs {kg} kg");
+        let body = w.store().get::<Body>(id).expect("a body");
+        assert_eq!((body.kind, body.grabbable, body.friction), (body_kind::DYNAMIC, 1, pe_world::preset::MID_FRICTION));
     }
     let stack = get(n::STACK);
     assert!(w.store().get::<Body>(stack).is_none(), "the stack's parent is a plain frame");
@@ -158,7 +177,7 @@ fn the_plane_has_its_floor_an_empty_spawned_root_and_inert_templates() {
     assert!(boxes.windows(2).all(|p| y(p[1]) - y(p[0]) > 2.0 * f64::from(pe_world::preset::STACK_HALF)));
     // The folder is parked below the floor; the floor's shape, the templates' and each member's drawn body (8.2).
     assert!(y(folder) < -40.0);
-    let heavy = pe_world::preset::HEAVY.len();
+    let heavy = pe_world::preset::HEAVY.len() + pe_world::preset::MID.len();
     assert_eq!(w.store().count(ids::SHAPE), 1 + course::piece_count() + 3 + n::STACK_BOXES + heavy + w.players().len());
 }
 
