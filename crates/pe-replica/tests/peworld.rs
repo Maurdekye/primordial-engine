@@ -1698,7 +1698,7 @@ fn a_late_handoff_and_a_late_jump_roll_back_to_the_same_roots() {
     run(fast_run, 1);
 }
 
-/// A held object keeps the rotation it was grabbed at, relative to the hand ([`pe_replica::hands::GRAB_TORQUE`]): a
+/// A held object keeps the rotation it was grabbed at, relative to the hand ([`pe_replica::hands::grab_torque`]): a
 /// box resting at 30 degrees about y is grabbed 15 cm from the hand's centre, lifted 30 cm, then turned with the
 /// hand by 30 degrees, 3 a frame, and ends at 60. An angular spring would turn it to the hand's own rotation (30),
 /// and with no angular drive it would stay at 30.
@@ -1741,6 +1741,175 @@ fn a_held_object_keeps_the_rotation_it_was_grabbed_at() {
     let degrees = 2.0 * f64::from(q[1]).atan2(f64::from(q[3])).to_degrees();
     assert!((degrees - 60.0).abs() < 2.0, "the box turned with the hand, keeping its 30 degrees: {degrees} ({q:?})");
     assert!(q[0].abs() < 0.02 && q[2].abs() < 0.02, "and did not tip: {q:?}");
+    assert_eq!(r.faults(), 0);
+}
+
+/// A box body of half extents `half`, `density` kg/m^3 and `friction`, resting on the floor with its centre at `at`.
+fn add_box(w: &mut World, id: u128, at: [f64; 3], half: [f32; 3], density: f32, friction: f32) {
+    let k = keys().key(0);
+    w.create(oid(id), None, k, GENESIS).expect("box");
+    w.insert(oid(id), Transform::at(pos(at[0], at[1], at[2]))).expect("box transform");
+    w.insert(oid(id), Body { friction, ..dynamic() }).expect("box body");
+    w.insert(oid(id), Shape { density, ..cuboid(half) }).expect("box shape");
+}
+
+/// The hand closed at each point in turn, one a frame from `from`, in packs of at most `MAX_POSES`.
+fn closed_path(b: &mut EntryBuilder, from: u64, points: &[[f64; 3]]) -> Vec<SignedEntry> {
+    points
+        .chunks(pe_world::input::MAX_POSES)
+        .enumerate()
+        .map(|(i, pack)| input(b, from + (i * pe_world::input::MAX_POSES) as u64, &hand_at(pack, true)))
+        .collect()
+}
+
+/// How far `id`'s local up is tipped from the world's, degrees.
+fn tilt_of(r: &ReplicaImpl<PeWorld>, id: u128) -> f64 {
+    let q = r.physics().pose(oid(id)).expect("a body").rotation.map(f64::from);
+    (1.0 - 2.0 * (q[0] * q[0] + q[2] * q[2])).clamp(-1.0, 1.0).acos().to_degrees()
+}
+
+/// Where `id`'s local point `p` is now.
+fn point_of(r: &ReplicaImpl<PeWorld>, id: u128, p: [f64; 3]) -> [f64; 3] {
+    let pose = r.physics().pose(oid(id)).expect("a body");
+    let q = pose.rotation.map(f64::from);
+    let (u, w) = ([q[0], q[1], q[2]], q[3]);
+    let cross =
+        |a: [f64; 3], b: [f64; 3]| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    let t = cross(u, p).map(|c| 2.0 * c);
+    let ut = cross(u, t);
+    [0usize, 1, 2].map(|i| pose.position[i] + p[i] + w * t[i] + ut[i])
+}
+
+/// The claim frame (problem 3's jump in the 11-27 test; the coordinator's request of 2026-11-27): a hand that closes inside a
+/// 300 kg crate (the heavy preset's) and grabs it in the same frame, as pe-app sends the two, doesn't move it: the
+/// grab joint is made in the sync that makes the hand's body, and a grab's two bodies never collide. The grab holds the
+/// crate by the hand's centre, which is inside it. The control, the same close with no grab, is printed: the closed
+/// hand's kinematic body inside the crate shoves it (the unclaimed case the hand's contact cap is for).
+#[test]
+fn a_hand_closing_inside_a_heavy_crate_and_grabbing_it_does_not_move_it() {
+    const CRATE: u128 = BALL + 4;
+    let hand = [2.0, 0.7, 0.2];
+    let run = |grab: bool| -> (f64, f64, Option<[f32; 3]>) {
+        let keys = keys();
+        let mut b = EntryBuilder::new(&keys, 0);
+        let mut s = Source::default();
+        for e in closed_path(&mut b, 10, &[hand; 61]) {
+            s.add(e);
+        }
+        if grab {
+            s.add(input(&mut b, 10, &Input::Grab { object: oid(CRATE), hand: Some(oid(HAND)) }));
+        }
+        let mut w = with_hands_and_balls(&[(HAND, hand)], &[]);
+        add_box(&mut w, CRATE, [2.0, 0.5, 0.0], [0.5; 3], 300.0, 0.9);
+        let mut r = replica_of(w);
+        r.advance(Frame(9), &mut s);
+        let before = r.physics().pose(oid(CRATE)).expect("the crate").position;
+        let mut moved: f64 = 0.0;
+        for f in 10..=70 {
+            r.advance(Frame(f), &mut s);
+            moved = moved.max(distance(before, r.physics().pose(oid(CRATE)).expect("the crate").position));
+        }
+        let mass = f64::from(r.physics().mass(oid(CRATE)).expect("the crate"));
+        assert_eq!(r.faults(), 0);
+        (moved, mass, r.physics().grab_object_anchor(pe_replica::hands::grab_key(oid(CRATE))).ok())
+    };
+    let (moved, mass, anchor) = run(true);
+    let (shoved, _, none) = run(false);
+    println!(
+        "RESULT claim frame: {mass:.1} kg crate moved {:.3} mm with the grab, {:.1} mm without (control); anchor {anchor:?}",
+        moved * 1e3,
+        shoved * 1e3
+    );
+    assert!((mass - 300.0).abs() < 1.0, "the crate is the heavy preset's: {mass} kg");
+    assert!(moved < 1e-3, "the crate didn't move on the claim frame or after: {moved} m");
+    let anchor = anchor.expect("held");
+    assert!(distance(anchor.map(f64::from), [0.0, 0.2, 0.2]) < 1e-4, "held by the hand's centre: {anchor:?}");
+    assert_eq!(none, None);
+}
+
+/// Grab at the point (the user's ruling of 2026-11-27): a hand 5 cm out from the sack's top edge
+/// (@world-model's mid-weight, 18 kg, friction 0.3) holds it by the edge's nearest point. Lifting the hand 25 cm over
+/// half a second pulls that edge up with the grip's 110 N, less than the sack's weight (177 N), so it can't come off
+/// the floor, and the drive's 33 N m holds it level against the turn about its far bottom edge (tilting it needs
+/// 88 N plus 33 N m over the 0.6 m lever, 143 N in all); dragging it 1 m along x at 1 m/s slides it (friction 53 N). Both printed: the tilt, the held point's gap
+/// and the far bottom edge's height.
+#[test]
+fn a_grab_holds_a_mid_weight_sack_by_the_point_the_hand_took_hold_of() {
+    const SACK: u128 = BALL + 5;
+    let half = [0.3f32, 0.15, 0.2];
+    let hand = [2.0 + 0.3 + 0.05, 0.3 + 0.05, 0.0];
+    let run = |path: &dyn Fn(u32) -> [f64; 3], frames: u32| {
+        let keys = keys();
+        let mut b = EntryBuilder::new(&keys, 0);
+        let mut s = Source::default();
+        s.add(input(&mut b, 2, &hand_at(&[hand; 8], true)));
+        s.add(input(&mut b, 6, &Input::Grab { object: oid(SACK), hand: Some(oid(HAND)) }));
+        let points: Vec<[f64; 3]> = (1..=frames + 60).map(|k| path(k.min(frames))).collect();
+        for e in closed_path(&mut b, 12, &points) {
+            s.add(e);
+        }
+        let mut w = with_hands_and_balls(&[(HAND, hand)], &[]);
+        add_box(&mut w, SACK, [2.0, 0.15, 0.0], half, 250.0, 0.3);
+        let mut r = replica_of(w);
+        r.advance(Frame(11), &mut s);
+        let anchor = r.physics().grab_object_anchor(pe_replica::hands::grab_key(oid(SACK))).expect("held");
+        r.advance(Frame(12 + u64::from(frames) + 60), &mut s);
+        assert_eq!(held_by(&r, SACK), Some(oid(HAND)));
+        assert_eq!(r.faults(), 0);
+        let gap = pe_replica::hands::hold_gap(r.physics(), oid(SACK), oid(HAND)).expect("held");
+        let far = point_of(&r, SACK, [-0.3, -0.15, 0.0]);
+        let mass = r.physics().mass(oid(SACK)).expect("the sack");
+        let at = r.physics().pose(oid(SACK)).expect("the sack").position;
+        (anchor, tilt_of(&r, SACK), gap, far, mass, at)
+    };
+    let lift = |k: u32| [hand[0], hand[1] + 0.25 * f64::from(k.min(30)) / 30.0, 0.0];
+    let (anchor, tilt, gap, far, mass, _) = run(&lift, 30);
+    println!(
+        "RESULT sack lift: {mass:.1} kg, anchor {anchor:?}, tilt {tilt:.1} deg, held point {:.1} cm from the hand, far bottom edge at y {:.1} cm",
+        gap * 100.0,
+        far[1] * 100.0
+    );
+    assert!((f64::from(mass) - 18.0).abs() < 0.1, "the sack: {mass} kg");
+    // The sack settles a fraction of a millimetre before the grab.
+    assert!(distance(anchor.map(f64::from), [0.3, 0.15, 0.0]) < 1e-3, "held by its top edge: {anchor:?}");
+    let drag = |k: u32| [hand[0] + f64::from(k.min(60)) / 60.0, hand[1], 0.0];
+    let (_, tilt, gap, _, _, at) = run(&drag, 60);
+    println!(
+        "RESULT sack drag: moved {:.1} cm along x, tilt {tilt:.1} deg, held point {:.1} cm from the hand",
+        (at[0] - 2.0) * 100.0,
+        gap * 100.0
+    );
+    assert!(at[0] - 2.0 > 0.8, "the grip drags the sack: it moved {} m", at[0] - 2.0);
+}
+
+/// The grip's torque (the coordinator's ruling of 2026-11-27): a 2 kg, 1 m plank held 5 cm past its end is lifted 30 cm.
+/// Its weight turns it 9.8 N m about the held end, under the grip's 33 N m, so it stays level.
+#[test]
+fn a_plank_held_by_its_end_stays_level() {
+    const PLANK: u128 = BALL + 6;
+    let half = [0.5f32, 0.02, 0.05];
+    let hand = [2.0 - 0.5 - 0.05, 0.02, 0.0];
+    let keys = keys();
+    let mut b = EntryBuilder::new(&keys, 0);
+    let mut s = Source::default();
+    s.add(input(&mut b, 2, &hand_at(&[hand; 8], true)));
+    s.add(input(&mut b, 6, &Input::Grab { object: oid(PLANK), hand: Some(oid(HAND)) }));
+    let points: Vec<[f64; 3]> = (1..=90).map(|k| [hand[0], hand[1] + 0.3 * f64::from(k.min(30)) / 30.0, 0.0]).collect();
+    for e in closed_path(&mut b, 12, &points) {
+        s.add(e);
+    }
+    let mut w = with_hands_and_balls(&[(HAND, hand)], &[]);
+    add_box(&mut w, PLANK, [2.0, 0.02, 0.0], half, 500.0, 0.6);
+    let mut r = replica_of(w);
+    r.advance(Frame(12 + 30 + 60), &mut s);
+    assert_eq!(held_by(&r, PLANK), Some(oid(HAND)));
+    let mass = r.physics().mass(oid(PLANK)).expect("the plank");
+    let tilt = tilt_of(&r, PLANK);
+    let far = point_of(&r, PLANK, [0.5, 0.0, 0.0]);
+    println!("RESULT plank: {mass:.2} kg, tilt {tilt:.2} deg, far end at y {:.1} cm", far[1] * 100.0);
+    assert!((f64::from(mass) - 2.0).abs() < 0.01, "the plank: {mass} kg");
+    assert!(tilt < 2.0, "it stays level: {tilt} deg");
+    assert!(far[1] > 0.25, "and came up whole: its far end is at {} m", far[1]);
     assert_eq!(r.faults(), 0);
 }
 
@@ -2146,17 +2315,24 @@ fn add_wall(w: &mut World) {
     w.insert(oid(WALL), cuboid([0.05, 0.5, 1.0])).expect("wall shape");
 }
 
-/// Where `object`'s place in `hand` is now: the hand's body and its grab's anchor.
+/// Where `object`'s centre belongs in `hand` now: the hand's body and its grab's anchor, less the object's anchor (the
+/// point the hand took hold of) in the object's rotation now.
 fn place_in(r: &ReplicaImpl<PeWorld>, hand: u128, object: u128) -> [f64; 3] {
-    let a = r.physics().grab_anchor(pe_replica::hands::grab_key(oid(object))).expect("held");
+    let key = pe_replica::hands::grab_key(oid(object));
+    let a = r.physics().grab_anchor(key).expect("held");
+    let b = r.physics().grab_object_anchor(key).expect("held");
     let h = r.physics().pose(oid(hand)).expect("the hand's body");
-    let (q, v) = (h.rotation, a);
-    let cross =
-        |a: [f32; 3], b: [f32; 3]| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-    let t = cross([q[0], q[1], q[2]], v).map(|c| 2.0 * c);
-    let ut = cross([q[0], q[1], q[2]], t);
-    let r = [v[0] + q[3] * t[0] + ut[0], v[1] + q[3] * t[1] + ut[1], v[2] + q[3] * t[2] + ut[2]];
-    [0usize, 1, 2].map(|i| h.position[i] + f64::from(r[i]))
+    let o = r.physics().pose(oid(object)).expect("the object's body");
+    let rotate = |q: [f32; 4], v: [f32; 3]| {
+        let cross = |a: [f32; 3], b: [f32; 3]| {
+            [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+        };
+        let t = cross([q[0], q[1], q[2]], v).map(|c| 2.0 * c);
+        let ut = cross([q[0], q[1], q[2]], t);
+        [v[0] + q[3] * t[0] + ut[0], v[1] + q[3] * t[1] + ut[1], v[2] + q[3] * t[2] + ut[2]]
+    };
+    let (ra, rb) = (rotate(h.rotation, a), rotate(o.rotation, b));
+    [0usize, 1, 2].map(|i| h.position[i] + f64::from(ra[i]) - f64::from(rb[i]))
 }
 
 fn ball_speed(r: &ReplicaImpl<PeWorld>, id: u128) -> f64 {

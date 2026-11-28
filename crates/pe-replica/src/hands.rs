@@ -56,8 +56,12 @@
 //!   (3.3, D52).
 //! - **Grabs mirror the claims** (3.3; world-model.md 7.2), after the hands are driven: a claim by a hand with a body
 //!   on an object with one gets a grab joint from the hand to the object, keyed from the object's id, which holds
-//!   the object where it was in the hand when the joint was made: a spring pulls it to that place ([`grab_spring`]),
-//!   and an angular drive keeps its rotation relative to the hand ([`GRAB_TORQUE`]). A grab joint whose claim has gone
+//!   the object by the point the hand took hold of (the user's ruling of 2026-11-27: "grab them by the
+//!   point i grab"): the object's point nearest the hand's centre, the centre itself when the hand is inside it
+//!   ([`PhysicsWorld::nearest_point`]). That point stays where it was in the hand when the joint was made: a spring
+//!   pulls it to that place ([`grab_spring`]), so a heavy object the grip can't lift is pulled by that point,
+//!   and an angular spring keeps its rotation relative to the hand with at most the grip's torque
+//!   ([`grab_torque`], an angular spring). A grab joint whose claim has gone
 //!   is removed, and one whose claim a renewing grab moved to another of its author's hands is made again from that
 //!   hand, holding the object where it is (@design-reviewer's Medium on cc037c10). An agent's grab has no hand, so
 //!   it gets no joint. The joints are in the physics image, so a rollback restores them with the bodies.
@@ -125,14 +129,19 @@ pub const MAX_STRENGTH: f32 = 10_000.0;
 /// object follows the fastest swing or twist of a hand within millimetres, and a heavier one lags once the hand asks
 /// for more than the strength. It also means a hold presses a light object into what blocks it with the whole strength,
 /// so a held object pushed against the floor or a wall can sink into it or pass through (measured in
-/// `measure_push_through_at_the_grip_s_strength`). It has no
-/// angular part (`max_torque` 0): pe-physics's grab joint has no frame rotation, so an angular spring would turn the
-/// object to the hand's own rotation instead of keeping the one it was grabbed at. The joint's linear velocity drive
-/// stays off: it is solved after the spring and is stiff, so it cancelled every velocity the spring gave, and a held
+/// `measure_push_through_at_the_grip_s_strength`). Its angular part, at the same frequency, holds the rotation the
+/// object was grabbed at relative to the hand (pe-physics's grab frame keeps it), with at most [`grab_torque`]: held by
+/// a point off its centre, an object whose rotation lagged (a turn faster than Box3D's eighth of a turn a frame) would
+/// otherwise stay turned, its centre off its place. The joint's velocity drives stay off: it is solved after the spring and is stiff, so it cancelled every velocity the spring gave, and a held
 /// object only copied the hand's velocity, left wherever a jump or a knock put it (measured on cc037c10). [`hold`]
 /// takes the force when it makes the joint.
 pub fn grab_spring(strength: f32) -> GrabSpring {
-    GrabSpring { hertz: HOLD_HZ, damping_ratio: 1.0, max_force: strength_of(strength), max_torque: 0.0 }
+    GrabSpring {
+        hertz: HOLD_HZ,
+        damping_ratio: 1.0,
+        max_force: strength_of(strength),
+        max_torque: grab_torque(strength),
+    }
 }
 
 /// Whether a hand of `strength` N holds an object of `mass` kg tightly, under gravity of magnitude `g`: when its hold's
@@ -152,9 +161,21 @@ fn follow(mass: f32, g: f32) -> f32 {
     mass.max(0.0) * (HOLD_ACCELERATION + g.max(0.0))
 }
 
-/// A grab's angular drive, N m: it matches the held object's turning to the hand's, so the object keeps the rotation
-/// it was grabbed at relative to the hand.
-pub const GRAB_TORQUE: f32 = 100.0;
+/// The lever of a grab's angular spring, m: the spring keeps the held object at the rotation it was grabbed at
+/// relative to the hand ([`grab_spring`]), with at most the holder's strength times this lever
+/// ([`grab_torque`]; the coordinator's ruling of 2026-11-27 on @fable-reviewer's suggestion, option (b)). So the
+/// grip governs turning as it governs the pull: 33 N m at the default 110 N. An object whose weight turns it harder
+/// about the held point than that (an 18 kg sack held by an edge, 35-53 N m) pivots from it; a 2 kg, 1 m plank held
+/// by its end (9.8 N m) stays level. A mid-weight lifted by an edge doesn't tilt: lifting the edge needs half its
+/// weight plus this torque over the lever (143 N for the 18 kg sack, measured flat), so it only drags. Named apart
+/// from the strength so a test session can tune it.
+pub const GRAB_LEVER: f32 = 0.3;
+
+/// The most torque a grab's angular spring applies for a hand of `strength` N, N m: the strength as the physics takes
+/// it times [`GRAB_LEVER`].
+pub fn grab_torque(strength: f32) -> f32 {
+    strength_of(strength) * GRAB_LEVER
+}
 
 /// The grab spring's angular frequency, 1/s: `2 pi` times [`HOLD_HZ`]. Its static sag under gravity `g` is
 /// `g / OMEGA^2` (0.069 mm at 9.81 m/s^2; measured 0.07 mm at 30, 60 and 120 Hz).
@@ -433,11 +454,12 @@ pub fn reaches(physics: &PhysicsWorld, claims: &[ClaimRow], dt: f32, gravity: [f
         if physics.joint_kind(key) != Some(JointKind::Grab) || out.iter().any(|&(k, _)| k == key) {
             continue;
         }
-        let poses = (physics.pose(c.hand), physics.grab_anchor(key), physics.pose(c.object));
+        let poses =
+            (physics.pose(c.hand), physics.grab_anchor(key), physics.pose(c.object), physics.grab_object_anchor(key));
         let error = match poses {
-            (Ok(hand), Ok(anchor), Ok(object)) => {
-                let r = rotate(hand.rotation, anchor);
-                [0usize, 1, 2].map(|i| hand.position[i] + f64::from(r[i]) - object.position[i])
+            (Ok(hand), Ok(anchor), Ok(object), Ok(on)) => {
+                let (r, s) = (rotate(hand.rotation, anchor), rotate(object.rotation, on));
+                [0usize, 1, 2].map(|i| hand.position[i] + f64::from(r[i]) - object.position[i] - f64::from(s[i]))
             }
             _ => [0.0; 3],
         };
@@ -560,7 +582,7 @@ fn jump_from_motion(
 
 /// Where a placement of `hand`'s body at `target` puts `object`, which `carried` would put at its offset in the hand
 /// (@design-reviewer's L1 on 980e6ba7, @coordinator-opus): a light hold ([`follows_tightly`]) at its
-/// place in the hand, the grab joint's anchor at `target`, since the hand could lift it there anyway and a light object
+/// place in the hand, the grab's anchor on the object at its anchor on the hand at `target`, since the hand could lift it there anyway and a light object
 /// that lagged would otherwise keep its lag through every placement (a hand kept at 1.5 times the cap for 2 s left a
 /// pit ball 1.1-3.3 m behind; now about 0.2 m); a heavy one, or one with no grab joint from this hand yet, at
 /// `carried`, so a placement never lifts what the strength can't. Its rotation relative to the hand is `carried`'s
@@ -581,7 +603,11 @@ fn placed(
         return Ok(carried);
     }
     let r = rotate(target.rotation, physics.grab_anchor(key)?);
-    Ok(Pose { position: [0usize, 1, 2].map(|i| target.position[i] + f64::from(r[i])), rotation: carried.rotation })
+    let s = rotate(carried.rotation, physics.grab_object_anchor(key)?);
+    Ok(Pose {
+        position: [0usize, 1, 2].map(|i| target.position[i] + f64::from(r[i]) - f64::from(s[i])),
+        rotation: carried.rotation,
+    })
 }
 
 /// Whether the hand's body moved at the cap in the last frame, at itself or at a held object (`carried`: each held
@@ -684,15 +710,19 @@ fn hold(
     let h = physics.pose(hand)?;
     let o = physics.pose(object)?;
     let spring = grab_spring(strength);
-    let offset = [o.position[0] - h.position[0], o.position[1] - h.position[1], o.position[2] - h.position[2]];
+    // Held by the point the hand took hold of (the user's ruling of 2026-11-27): the object's point
+    // nearest the hand's centre, the centre itself when the hand is inside the object.
+    let anchor_b = physics.nearest_point(object, h.position)?;
+    let at = rotate(o.rotation, anchor_b);
+    let offset = [0usize, 1, 2].map(|i| o.position[i] + f64::from(at[i]) - h.position[i]);
     let anchor_a = inverse_rotate(h.rotation, offset.map(|c| c as f32));
     let desc = JointDesc::Grab {
         a: Some(hand),
         b: object,
         anchor_a,
-        anchor_b: [0.0; 3],
+        anchor_b,
         max_force: 0.0,
-        max_torque: GRAB_TORQUE,
+        max_torque: 0.0,
         spring: Some(spring),
     };
     physics.add_joint(key, &desc)
@@ -758,8 +788,11 @@ pub fn hold_gap(physics: &PhysicsWorld, object: ObjectId, hand: ObjectId) -> Opt
         return None;
     }
     let (h, o, anchor) = (physics.pose(hand).ok()?, physics.pose(object).ok()?, physics.grab_anchor(key).ok()?);
-    let r = rotate(h.rotation, anchor);
-    Some(distance(o.position, [0usize, 1, 2].map(|i| h.position[i] + f64::from(r[i]))))
+    let (r, s) = (rotate(h.rotation, anchor), rotate(o.rotation, physics.grab_object_anchor(key).ok()?));
+    Some(distance(
+        [0usize, 1, 2].map(|i| o.position[i] + f64::from(s[i])),
+        [0usize, 1, 2].map(|i| h.position[i] + f64::from(r[i])),
+    ))
 }
 
 /// Whether a held object `gap` from its place in the hand is drawn where it is simulated (render.md 8, D4's

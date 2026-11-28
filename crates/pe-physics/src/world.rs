@@ -11,6 +11,7 @@ use box3d_rust::body::{
     create_body, destroy_body,
 };
 use box3d_rust::core::get_length_units_per_meter;
+use box3d_rust::distance::{DistanceInput, SimplexCache, make_proxy, shape_distance};
 use box3d_rust::geometry::{Capsule, ShapeType, Sphere, compute_capsule_mass, compute_sphere_mass};
 use box3d_rust::hull::{HullData, compute_hull_mass, create_hull, get_hull_points, make_box_hull};
 use box3d_rust::id::{BodyId, JointId, ShapeId};
@@ -21,8 +22,8 @@ use box3d_rust::joint::{
     motor_joint_set_linear_velocity,
 };
 use box3d_rust::math_functions::{
-    Pos, Quat, Transform as BoxTransform, Vec3, WorldTransform as BoxWorldTransform, inv_rotate_vector,
-    is_normalized_quat, mul, rotate_vector, sub_pos, transform_world_point,
+    Pos, Quat, TRANSFORM_IDENTITY, Transform as BoxTransform, Vec3, WorldTransform as BoxWorldTransform, inv_mul_quat,
+    inv_rotate_vector, is_normalized_quat, mul, rotate_vector, sub_pos, transform_world_point,
 };
 use box3d_rust::recording::hash_world_state;
 use box3d_rust::shape::{
@@ -172,7 +173,8 @@ pub enum JointDesc {
     Distance { a: ObjectId, b: Option<ObjectId>, anchor_a: [f32; 3], anchor_b: [f32; 3], length: f32 },
     /// A grab, like a hand holding an object (D72 grabs): drives `b`'s velocity towards `a`'s
     /// plus a target velocity, with force caps, and optionally springs `anchor_b` towards
-    /// `anchor_a`. `a = None` uses a static world anchor.
+    /// `anchor_a` and `b`'s rotation towards the rotation relative to `a` it had when the joint was
+    /// made (the spring's `max_torque`). `a = None` uses a static world anchor.
     Grab {
         a: Option<ObjectId>,
         b: ObjectId,
@@ -423,6 +425,45 @@ impl BodyDesc {
 /// Whether `shape` is a mesh shape's back ([`BACK_NAME`]).
 fn is_back(world: &World, shape: ShapeId) -> bool {
     shape_get_type(world, shape) == ShapeType::Mesh && shape_get_name(world, shape) == BACK_NAME
+}
+
+/// The point of `shape` nearest `q` (both in its body's frame) and its distance, 0 when `q` lies in or on it, for
+/// [`PhysicsWorld::nearest_point`]: a sphere, capsule or hull by GJK, a mesh by the box of its scaled vertices. `None`
+/// for any other shape.
+fn nearest_on(world: &World, shape: ShapeId, q: Vec3) -> Option<(f32, Vec3)> {
+    let proxy = match shape_get_type(world, shape) {
+        ShapeType::Sphere => {
+            let s = shape_get_sphere(world, shape);
+            make_proxy(&[s.center], s.radius)
+        }
+        ShapeType::Capsule => {
+            let c = shape_get_capsule(world, shape);
+            make_proxy(&[c.center1, c.center2], c.radius)
+        }
+        ShapeType::Hull => make_proxy(get_hull_points(shape_get_hull(world, shape)?), 0.0),
+        ShapeType::Mesh => {
+            let (data, scale) = shape_get_mesh(world, shape)?;
+            let mut points = data.vertices.iter().map(|&p| mul(scale, p));
+            let first = points.next()?;
+            let (mut lo, mut hi) = (first, first);
+            for p in points {
+                lo = Vec3 { x: lo.x.min(p.x), y: lo.y.min(p.y), z: lo.z.min(p.z) };
+                hi = Vec3 { x: hi.x.max(p.x), y: hi.y.max(p.y), z: hi.z.max(p.z) };
+            }
+            let at = Vec3 { x: q.x.clamp(lo.x, hi.x), y: q.y.clamp(lo.y, hi.y), z: q.z.clamp(lo.z, hi.z) };
+            let d = Vec3 { x: q.x - at.x, y: q.y - at.y, z: q.z - at.z };
+            return Some(((d.x * d.x + d.y * d.y + d.z * d.z).sqrt(), at));
+        }
+        _ => return None,
+    };
+    let input = DistanceInput {
+        proxy_a: proxy,
+        proxy_b: make_proxy(&[q], 0.0),
+        transform: TRANSFORM_IDENTITY,
+        use_radii: true,
+    };
+    let out = shape_distance(&input, &mut SimplexCache::default(), None);
+    Some((out.distance, out.point_a))
 }
 
 fn check_length_units() -> Result<(), PhysicsError> {
@@ -918,7 +959,9 @@ impl PhysicsWorld {
                 let mut def = default_motor_joint_def();
                 def.base.body_id_a = body_a;
                 def.base.body_id_b = body_b;
-                def.base.local_frame_a = frame(anchor_a);
+                // The angular spring holds `b`'s rotation relative to `a` as it is now, not `a`'s own.
+                let (qa, qb) = (body_get_transform(&self.world, body_a).q, body_get_transform(&self.world, body_b).q);
+                def.base.local_frame_a = BoxTransform { p: vec3(anchor_a), q: inv_mul_quat(qa, qb) };
                 def.base.local_frame_b = frame(anchor_b);
                 def.max_velocity_force = max_force;
                 def.max_velocity_torque = max_torque;
@@ -1148,6 +1191,50 @@ impl PhysicsWorld {
         }
         let p = joint_get_local_frame_a(&self.world, joint.id).p;
         Ok([p.x, p.y, p.z])
+    }
+
+    /// The anchor of the grab under `key` on its object (`b`), in the object's frame: the point of the object its
+    /// spring pulls to [`PhysicsWorld::grab_anchor`].
+    pub fn grab_object_anchor(&self, key: JointKey) -> Result<[f32; 3], PhysicsError> {
+        if self.poisoned {
+            return Err(PhysicsError::Poisoned);
+        }
+        let joint = *self.joints.get(&key).ok_or(PhysicsError::UnknownJoint(key.0))?;
+        if joint.kind != JointKind::Grab {
+            return Err(PhysicsError::NotAGrab(key.0));
+        }
+        let p = joint_get_local_frame_b(&self.world, joint.id).p;
+        Ok([p.x, p.y, p.z])
+    }
+
+    /// The point of `object` nearest `point` (a position as [`PhysicsWorld::pose`] gives them), in the object's own
+    /// frame: `point` itself if it lies in or on one of the object's shapes. A grab holds its object by it, the point
+    /// the hand took hold of (the user's ruling of 2026-11-27: "grab them by the point i grab"). A
+    /// sphere, capsule or hull (a box) by Box3D's GJK distance; a mesh by the box of its scaled vertices, as the mover
+    /// and the pick take a mesh, its back skipped. Among several shapes the nearest wins, the first in the body's shape
+    /// order on a tie; a body with no shape answers its origin. Computed in the object's frame, so the same wherever
+    /// the object is.
+    pub fn nearest_point(&self, object: ObjectId, point: [f64; 3]) -> Result<[f32; 3], PhysicsError> {
+        position(&point, "nearest point")?;
+        let body = self.live_body(object)?;
+        let world = &self.world;
+        let xf = body_get_transform(world, body);
+        let q = inv_rotate_vector(xf.q, sub_pos(pos(point), xf.p));
+        let count = usize::try_from(body_get_shape_count(world, body)).unwrap_or(0);
+        let mut best: Option<(f32, Vec3)> = None;
+        for shape in body_get_shapes(world, body, count) {
+            if is_back(world, shape) {
+                continue;
+            }
+            let Some((d, at)) = nearest_on(world, shape, q) else { continue };
+            if d <= 0.0 {
+                return Ok([q.x, q.y, q.z]);
+            }
+            if best.is_none_or(|(b, _)| d < b) {
+                best = Some((d, at));
+            }
+        }
+        Ok(best.map_or([0.0; 3], |(_, p)| [p.x, p.y, p.z]))
     }
 
     /// The hard contacts of the latest step ([`Hit`]), in Box3D's order (contact id), so the same on every machine for

@@ -225,3 +225,56 @@ fn a_diagonal_error_is_cut_by_its_length() {
     let size = vn.iter().map(|c| c * c).sum::<f32>().sqrt();
     assert!(gap <= 1e-4 * size, "{vf:?} vs {vn:?}");
 }
+
+/// [`PhysicsWorld::nearest_point`], where a grab holds its object (the user's ruling of 2026-11-27, "grab them by the
+/// point i grab"): the point of the object nearest a world point, in the object's frame, or the point itself inside.
+/// A box turned 90 degrees about y far from the origin, a sphere, a capsule, and a body of two shapes.
+#[test]
+fn the_nearest_point_of_an_object_is_in_its_own_frame_and_the_point_itself_inside() {
+    let mut pw = PhysicsWorld::new(weightless()).unwrap();
+    let far = [5_000.0, 2.0, -3_000.0];
+    let h = std::f32::consts::FRAC_1_SQRT_2;
+    let turned = BodyDesc::new(BodyKind::Dynamic, far)
+        .with_rotation([0.0, h, 0.0, h])
+        .with_shape(ShapeDesc::new(Geometry::Box { half_extents: [0.3, 0.15, 0.2] }));
+    pw.add_body(id(1), &turned).unwrap();
+    let close = |a: [f32; 3], b: [f32; 3]| (0..3).all(|i| (a[i] - b[i]).abs() < 1e-4);
+    // Turned 90 degrees about y, the box's local +x is world -z: a point 0.5 m out along world -z, 0.1 m up, is
+    // nearest its local +x face at height 0.1.
+    let p = pw.nearest_point(id(1), [far[0], far[1] + 0.1, far[2] - 0.5]).unwrap();
+    assert!(close(p, [0.3, 0.1, 0.0]), "{p:?}");
+    // Past its top edge: the edge's point.
+    let p = pw.nearest_point(id(1), [far[0], far[1] + 0.4, far[2] - 0.5]).unwrap();
+    assert!(close(p, [0.3, 0.15, 0.0]), "{p:?}");
+    // Inside: the point itself, in the box's frame.
+    let p = pw.nearest_point(id(1), [far[0] + 0.05, far[1], far[2] - 0.1]).unwrap();
+    assert!(close(p, [0.1, 0.0, 0.05]), "{p:?}");
+
+    let ball = BodyDesc::new(BodyKind::Dynamic, [0.0; 3])
+        .with_shape(ShapeDesc::new(Geometry::Sphere { center: [0.0; 3], radius: 0.1 }));
+    pw.add_body(id(2), &ball).unwrap();
+    let p = pw.nearest_point(id(2), [0.0, 0.0, 1.0]).unwrap();
+    assert!(close(p, [0.0, 0.0, 0.1]), "{p:?}");
+    let p = pw.nearest_point(id(2), [0.05, 0.0, 0.0]).unwrap();
+    assert!(close(p, [0.05, 0.0, 0.0]), "inside the radius: {p:?}");
+
+    let capsule = BodyDesc::new(BodyKind::Dynamic, [10.0, 0.0, 0.0]).with_shape(ShapeDesc::new(Geometry::Capsule {
+        center1: [-0.2, 0.0, 0.0],
+        center2: [0.2, 0.0, 0.0],
+        radius: 0.05,
+    }));
+    pw.add_body(id(3), &capsule).unwrap();
+    let p = pw.nearest_point(id(3), [10.1, 1.0, 0.0]).unwrap();
+    assert!(close(p, [0.1, 0.05, 0.0]), "{p:?}");
+
+    // Two shapes: the nearer wins.
+    let pair = BodyDesc::new(BodyKind::Dynamic, [20.0, 0.0, 0.0])
+        .with_shape(ShapeDesc::new(Geometry::Sphere { center: [-1.0, 0.0, 0.0], radius: 0.1 }))
+        .with_shape(ShapeDesc::new(Geometry::Sphere { center: [1.0, 0.0, 0.0], radius: 0.1 }));
+    pw.add_body(id(4), &pair).unwrap();
+    let p = pw.nearest_point(id(4), [21.0, 0.5, 0.0]).unwrap();
+    assert!(close(p, [1.0, 0.1, 0.0]), "{p:?}");
+
+    assert_eq!(pw.nearest_point(id(9), [0.0; 3]), Err(PhysicsError::NotBound(id(9))));
+    assert!(pw.nearest_point(id(1), [f64::NAN, 0.0, 0.0]).is_err());
+}

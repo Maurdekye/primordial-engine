@@ -360,10 +360,13 @@ The rules are world-model.md 8.1's (the speed cap, the teleport distance and the
 - **Grabs are pe-world's rule 1** (world-model.md 7.2): the soonest in apply order wins, and a later grab is refused
   naming the holder. Its reach is checked against the hand's position after the frame's hand movement.
 - **Grab joints mirror the claims,** after the hands are driven. A claim by a hand with a body, on an object with one,
-  gets a grab joint from the hand to the object, keyed from the object's id. It holds the object where it was in the
-  hand when the joint was made: a spring pulls it to that place (`grab_spring`: `HOLD_HZ`, 60 Hz, critically damped),
-  and an angular drive (`GRAB_TORQUE`, 100 N m) keeps its rotation relative to the hand. A joint whose claim has gone
-  is removed. A holder's `Throw` (world-model.md 8.1) is applied as its entry applies, while the hold's joint is
+  gets a grab joint from the hand to the object, keyed from the object's id. It holds the object by the point the
+  hand took hold of (the user's ruling of 2026-11-27): the object's point nearest the hand's centre,
+  the centre itself when the hand is inside it (pe-physics `nearest_point`). That point stays where it was in the hand
+  when the joint was made: a spring pulls it to that place (`grab_spring`: `HOLD_HZ`, 60 Hz, critically damped), and
+  an angular spring keeps the object's rotation relative to the hand with at most the holder's strength times
+  `GRAB_LEVER` (0.3 m: 33 N m at 110 N, the coordinator's ruling of 2026-11-27), so an object whose weight turns it harder
+  about the held point pivots from it. A joint whose claim has gone is removed. A holder's `Throw` (world-model.md 8.1) is applied as its entry applies, while the hold's joint is
   still there: if a hand's grab joint holds the object, its velocity becomes the throw's, as far as the hold's force
   could have changed it in a frame (the change from its solver velocity at most `F dt / m`, `F` the holder's
   strength), with no speed cap and no other gate (the user's rulings of 2026-11-26, "keep it straightforward and predictable"). A light object a hand carries leaves at the hand's
