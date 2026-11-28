@@ -154,9 +154,11 @@ pub enum Job {
 pub const LOOK_AGAIN: std::time::Duration = std::time::Duration::from_millis(500);
 /// The parent spawns go under (pe-world `preset::plane_names::SPAWNED`).
 pub const SPAWNED: &str = "/Spawned";
-/// Deletes per transaction while clearing, and the most rounds a clear takes.
-const CLEAR_BATCH: usize = 32;
-const CLEAR_ROUNDS: usize = 16;
+/// Deletes per transaction while clearing (a quarter of pe-world's 4,096 ops), and the most rounds a clear takes: each
+/// round reads every child of `/Spawned` and deletes those not yet sent, so a second round only finds what was spawned
+/// meanwhile.
+const CLEAR_BATCH: usize = 1024;
+const CLEAR_ROUNDS: usize = 4;
 /// The longest the worker waits out pe-api's change rate for one change (api.md 9.3: 20 a second, a burst of 40) before
 /// it gives up and says so: a counted spawn queues a hundred at once, and a clear of 500 is 16 changes (K4's R5', where
 /// 43 of 102 stacks were refused `rate_limited`). A quick second press of a button can meet the same limit.
@@ -632,60 +634,105 @@ fn has_spawned(api: &dyn WorldApi, c: &Caller) -> Result<(), String> {
     }
 }
 
-/// `/Spawned`'s children's ids, one page.
+/// Every id of `/Spawned`'s children, page by page.
 fn children(api: &dyn WorldApi, c: &Caller) -> Result<Vec<String>, String> {
-    let q: Query = serde_json::from_value(json!({"where": {"child_of": SPAWNED}, "limit": 256})).expect("a query");
-    let r = api.query(c, &q).map_err(|e| format!("{e:?}"))?;
-    let v = serde_json::to_value(&r).map_err(|e| e.to_string())?;
-    Ok(v["objects"]
-        .as_array()
-        .map_or_else(Vec::new, |o| o.iter().filter_map(|o| o["id"].as_str().map(str::to_string)).collect()))
+    let mut ids = Vec::new();
+    let mut cursor: Option<Value> = None;
+    loop {
+        let mut q = json!({"where": {"child_of": SPAWNED}, "limit": 256});
+        if let Some(c) = cursor.take() {
+            q["cursor"] = c;
+        }
+        let q: Query = serde_json::from_value(q).expect("a query");
+        let r = api.query(c, &q).map_err(|e| format!("{e:?}"))?;
+        let v = serde_json::to_value(&r).map_err(|e| e.to_string())?;
+        let page = v["objects"].as_array().map_or_else(Vec::new, |o| {
+            o.iter().filter_map(|o| o["id"].as_str().map(str::to_string)).collect::<Vec<_>>()
+        });
+        let empty = page.is_empty();
+        ids.extend(page);
+        match v.get("more").filter(|m| !m.is_null()) {
+            Some(m) if !empty => cursor = Some(m.clone()),
+            _ => return Ok(ids),
+        }
+    }
 }
 
 /// Delete `/Spawned`'s children: everyone's, as built (app.md 4.2). A batch refused because another player holds
-/// something in it (pe-world refuses that delete, `Held`; the author's own holds end with the delete) is redone one
-/// object at a time, and the held ones are left (@world-model's M1 on S4).
+/// something in it (pe-world refuses that delete, `Held`; the author's own holds end with the delete) is sent again
+/// without the held one, which is left (@world-model's M1 on S4).
+///
+/// A batch answered `queued` (this machine is behind the present, so its own change hadn't applied here within
+/// the wait) is sent all the same: the clear goes on with the next batch, and doesn't send those ids again. Before
+/// the friend test 11-27's fix it stopped there, after the first 32 (@coordinator-opus).
 fn clear(api: &dyn WorldApi, c: &Caller) -> String {
     clear_with(api, c, &ApplyOpts::default(), CLEAR_ROUNDS)
 }
 
 /// [`clear`] with `opts` and at most `rounds` rounds (a test's dry run takes one: nothing is removed between rounds).
 fn clear_with(api: &dyn WorldApi, c: &Caller, opts: &ApplyOpts, rounds: usize) -> String {
-    let (mut removed, mut held) = (0, std::collections::BTreeSet::new());
-    let accepted = |r: &Result<Outcome, pe_seams::world_api::ApiError>| matches!(r, Ok(o) if matches!(o.status, Status::Accepted | Status::Final));
-    let is_held = |r: &Result<Outcome, pe_seams::world_api::ApiError>| matches!(r, Ok(Outcome { refusal: Some(f), .. }) if f.code == RefusalCode::Held);
+    use std::collections::BTreeSet;
+    type Answer = Result<Outcome, pe_seams::world_api::ApiError>;
+    let (mut removed, mut queued) = (0, 0);
+    let (mut held, mut sent) = (BTreeSet::new(), BTreeSet::new());
+    let status = |r: &Answer| r.as_ref().ok().map(|o| o.status);
+    // The index of the delete a `Held` refusal names, within its batch (pe-api's `op`).
+    let held_at = |r: &Answer| match r {
+        Ok(Outcome { refusal: Some(f), .. }) if f.code == RefusalCode::Held => Some(f.op.map(|k| k as usize)),
+        _ => None,
+    };
     for _ in 0..rounds {
         let ids: Vec<String> = match children(api, c) {
-            Ok(ids) => ids.into_iter().filter(|id| !held.contains(id)).collect(),
+            Ok(ids) => ids.into_iter().filter(|id| !held.contains(id) && !sent.contains(id)).collect(),
             Err(e) => return format!("Clear: couldn't read Spawned ({e})"),
         };
         if ids.is_empty() {
             break;
         }
         for batch in ids.chunks(CLEAR_BATCH) {
-            let r = paced(api, c, &clear_tx(batch), opts);
-            if accepted(&r) {
-                removed += batch.len();
-            } else if is_held(&r) {
-                for id in batch {
-                    let one = paced(api, c, &clear_tx(std::slice::from_ref(id)), opts);
-                    if accepted(&one) {
-                        removed += 1;
-                    } else if is_held(&one) {
-                        held.insert(id.clone());
-                    } else {
-                        return said("Clear", one);
+            let mut batch = batch.to_vec();
+            while !batch.is_empty() {
+                let r = paced(api, c, &clear_tx(&batch), opts);
+                match (status(&r), held_at(&r)) {
+                    (Some(Status::Accepted | Status::Final), _) => removed += batch.len(),
+                    (Some(Status::Queued), _) => queued += batch.len(),
+                    // The held one stays; the rest go again.
+                    (_, Some(Some(k))) if k < batch.len() => {
+                        held.insert(batch.remove(k));
+                        continue;
                     }
+                    // A hold the refusal doesn't place: one at a time.
+                    (_, Some(_)) => {
+                        for id in std::mem::take(&mut batch) {
+                            let one = paced(api, c, &clear_tx(std::slice::from_ref(&id)), opts);
+                            match (status(&one), held_at(&one)) {
+                                (Some(Status::Accepted | Status::Final), _) => removed += 1,
+                                (Some(Status::Queued), _) => queued += 1,
+                                (_, Some(_)) => {
+                                    held.insert(id);
+                                    continue;
+                                }
+                                _ => return said("Clear", one),
+                            }
+                            sent.insert(id);
+                        }
+                        continue;
+                    }
+                    _ => return said("Clear", r),
                 }
-            } else {
-                return said("Clear", r);
+                sent.extend(std::mem::take(&mut batch));
             }
         }
     }
-    match (removed, held.len()) {
+    let behind = if queued > 0 {
+        format!(", {queued} more sent (this machine is behind; they go as it catches up)")
+    } else {
+        String::new()
+    };
+    match (removed + queued, held.len()) {
         (0, 0) => "Nothing to clear".into(),
-        (n, 0) => format!("Cleared {n}"),
-        (n, k) => format!("Cleared {n}, {k} held"),
+        (_, 0) => format!("Cleared {removed}{behind}"),
+        (_, k) => format!("Cleared {removed}{behind}, {k} held"),
     }
 }
 
@@ -1090,5 +1137,140 @@ mod tests {
         // Since the friend test 11-27 the bucket is 2,000 a second with a burst of 4,000 (pe-api rate.rs), which a
         // test asking back to back can't spend; pe-api's own test (the_rate_limit_applies_per_principal) shows the
         // bucket refusing at a lower rate.
+    }
+
+    /// A machine behind the present: its own changes don't apply here within the wait, so every `apply` comes back
+    /// `queued` (checked as a dry run on the same snapshot), and every query still shows what it was asked to delete.
+    /// It records each delete it was sent.
+    struct Behind {
+        inner: Arc<dyn WorldApi>,
+        deleted: Mutex<Vec<String>>,
+    }
+
+    impl WorldApi for Behind {
+        fn session(&self, c: &Caller) -> pe_seams::world_api::SessionInfo {
+            self.inner.session(c)
+        }
+        fn schema(
+            &self,
+            c: &Caller,
+            q: &pe_seams::world_api::SchemaQuery,
+        ) -> Result<pe_seams::world_api::Schema, pe_seams::world_api::ApiError> {
+            self.inner.schema(c, q)
+        }
+        fn query(
+            &self,
+            c: &Caller,
+            q: &Query,
+        ) -> Result<pe_seams::world_api::QueryResult, pe_seams::world_api::ApiError> {
+            self.inner.query(c, q)
+        }
+        fn apply(&self, c: &Caller, tx: Transaction, _: &ApplyOpts) -> Result<Outcome, pe_seams::world_api::ApiError> {
+            let v = serde_json::to_value(&tx).unwrap();
+            let ids = v["ops"].as_array().unwrap().iter().filter_map(|o| o["id"].as_str().map(str::to_string));
+            self.deleted.lock().unwrap().extend(ids);
+            let dry = ApplyOpts { mode: pe_seams::world_api::Mode::DryRun, ..Default::default() };
+            let o = self.inner.apply(c, tx, &dry)?;
+            assert!(o.refusal.is_none(), "the deletes pass: {:?}", o.refusal);
+            Ok(Outcome { status: Status::Queued, dry_run: false, ..o })
+        }
+        fn watch(
+            &self,
+            c: &Caller,
+            f: &pe_seams::world_api::Filter,
+            cursor: Option<&pe_seams::world_api::Cursor>,
+            wait: std::time::Duration,
+        ) -> Result<pe_seams::world_api::Changes, pe_seams::world_api::ApiError> {
+            self.inner.watch(c, f, cursor, wait)
+        }
+        fn history(
+            &self,
+            c: &Caller,
+            q: &pe_seams::world_api::HistoryQuery,
+        ) -> Result<pe_seams::world_api::History, pe_seams::world_api::ApiError> {
+            self.inner.history(c, q)
+        }
+        fn revert(
+            &self,
+            c: &Caller,
+            change: pe_seams::world_api::TxId,
+            opts: &ApplyOpts,
+        ) -> Result<Outcome, pe_seams::world_api::ApiError> {
+            self.inner.revert(c, change, opts)
+        }
+        fn capture(
+            &self,
+            c: &Caller,
+            r: &pe_seams::world_api::CaptureRequest,
+            deadline: std::time::Instant,
+        ) -> Result<pe_seams::world_api::Capture, pe_seams::world_api::ApiError> {
+            self.inner.capture(c, r, deadline)
+        }
+        fn code_check(
+            &self,
+            c: &Caller,
+            r: &pe_seams::world_api::CodeCheck,
+        ) -> Result<pe_seams::world_api::Diagnostics, pe_seams::world_api::ApiError> {
+            self.inner.code_check(c, r)
+        }
+    }
+
+    /// The friend test 11-27 (@coordinator-opus): on a machine behind the present, a clear stopped at
+    /// its first batch answered `queued`, after 32 of the pile. Now it sends a delete for every root of `/Spawned`,
+    /// each once, past the 256 of one query page.
+    #[test]
+    fn a_clear_on_a_machine_behind_the_present_sends_a_delete_for_every_root() {
+        use pe_seams::test_util::{EntryBuilder, TestKeys};
+        use pe_world::edit::{Actor, Op, Target};
+        use pe_world::preset::{Preset, Session, find, m1_session, plane_names as n};
+        let keys = TestKeys::new(3, 1);
+        let ka = keys.key(0);
+        let line = pe_seams::LineId(pe_seams::Hash([7; 32]));
+        let s = Session {
+            seed: 5,
+            origin: pe_seams::Pos::ORIGIN,
+            preset: Preset::Plane,
+            line,
+            rate: pe_seams::SimRate::DEFAULT,
+            gravity: pe_world::GRAVITY,
+            agree: b"settings".to_vec(),
+            members: vec![(ka, pe_world::perm::ADMIN | pe_world::perm::EDIT)],
+        };
+        let mut w = m1_session(&s, pe_world::BlobStore::default()).expect("the plane");
+        let (template, spawned) = (find(&w, n::BOX).unwrap(), find(&w, n::SPAWNED).unwrap());
+        let mut author = EntryBuilder::on_line(&keys, 0, line);
+        const ROOTS: usize = 300;
+        let copy = |new| Op::Copy {
+            source: Target::Existing(template),
+            new,
+            parent: Target::Existing(spawned),
+            index: None,
+            size: 1,
+        };
+        let t = pe_world::edit::Transaction {
+            inline: vec![],
+            actor: Actor::Person,
+            label: None,
+            preconditions: vec![],
+            ops: (0..ROOTS as u32).map(copy).collect(),
+            blobs: vec![],
+        };
+        let e = author.next(pe_seams::Class::Edit, pe_seams::Frame(1), bytes::Bytes::from(t.encode()));
+        assert!(matches!(w.apply_edit(pe_seams::Frame(1), &e).0, pe_seams::Outcome::Applied { .. }));
+        w.set_frame(pe_seams::Frame(2));
+        let facts =
+            crate::api::Facts { world_name: "Plane".into(), line, rate: pe_seams::SimRate::DEFAULT, me: Some(ka) };
+        let api = crate::api::Ports::new(w.snapshot(pe_seams::Frame(2)), facts, || {}).api();
+        let a = person(ka);
+        let roots = children(&*api, &a).unwrap();
+        assert_eq!(roots.len(), ROOTS, "every root, past one page");
+        let behind = Behind { inner: api, deleted: Mutex::new(vec![]) };
+        let said = clear_with(&behind, &a, &ApplyOpts::default(), CLEAR_ROUNDS);
+        let mut deleted = behind.deleted.into_inner().unwrap();
+        deleted.sort();
+        let mut want = roots;
+        want.sort();
+        assert_eq!(deleted, want, "a delete for every root, each once ({said})");
+        assert_eq!(said, format!("Cleared 0, {ROOTS} more sent (this machine is behind; they go as it catches up)"));
     }
 }
