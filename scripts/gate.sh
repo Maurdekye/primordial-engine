@@ -40,7 +40,7 @@
 #      which maps them). The terms are local files that must never be published, so hosted CI skips this step;
 #      a whole-history run reports the old history's terms without failing on them (the user kept that
 #      history, 2026-10-31 11:49Z);
-#   4b. process check (scripts/process_check.py): no mail id in the tree of <rev> or in the messages of
+#   4b. process check (scripts/process_check.py): no mail id or bare CR in the tree of <rev> or in the messages of
 #      <base>..<rev> (user ruling 2026-11-27); it needs no local file, so it runs everywhere;
 #   5. tier 2's state (decision C7), where this clone asks for it (git config pe.gate.tier2, or PE_GATE_TIER2):
 #      scripts/ci_status.py --check reads the latest finished hosted run on the public main, and gives up after
@@ -539,7 +539,7 @@ else
   fi
 fi
 
-# 4b. The process check: no mail id in the tree of <rev> or the new commits' messages, with the base's script.
+# 4b. The process check: no mail id or bare CR in the tree of <rev> or the new commits' messages, with the base's script.
 if G show "$code:scripts/process_check.py" > "$c/scripts/process_check.py" 2> /dev/null; then
   (cd "$c" && export GIT_DIR="$gitdir" && "$py" -I scripts/process_check.py "$sha" ${bsha:+"$range"}) > "$tmp/process.log" 2>&1; r=$?
   case $r in

@@ -1,7 +1,8 @@
 """Process check: the team's mail ids stay out of the repository (user ruling 2026-11-27: the agents'
 workspaces are not part of the engine). A mail id is `m` and 12 lowercase hex digits, standing alone.
 Provenance (who ruled what, in which mail) belongs to the docket and the team's notes; the repository says
-what changed and why.
+what changed and why. It also refuses a bare CR (a CR without its LF) in a text file: git stores text with LF
+(.gitattributes), and a publish_apply before its CRLF fix left one where a rule joined two CRLF lines.
 
 usage: python -I scripts/process_check.py <rev> [<range>]
   <rev>    every text file of its tree (a NUL in the first 8 KiB marks a binary file, which is skipped)
@@ -15,6 +16,7 @@ import subprocess
 import sys
 
 MAIL_ID = re.compile(rb"(?<![0-9A-Za-z])m[0-9a-f]{12}(?![0-9A-Za-z])")
+BARE_CR = re.compile(rb"\r(?!\n)")
 
 
 def git(*args):
@@ -52,6 +54,10 @@ def main():
         for m in MAIL_ID.finditer(data):
             line = data.count(b"\n", 0, m.start()) + 1
             hits.append(f"{path}:{line}: a mail id")
+        # A CR without its LF: what an older publish_apply left when a rule joined two CRLF lines.
+        for m in BARE_CR.finditer(data):
+            line = data.count(b"\n", 0, m.start()) + 1
+            hits.append(f"{path}:{line}: a bare CR (a CR without its LF: join the line with a space)")
     p.stdin.close()
     p.wait()
     n_msgs = 0
@@ -69,9 +75,9 @@ def main():
         print(h)
     scope = f"{len(blobs)} files" + (f" and {n_msgs} commit messages" if len(sys.argv) == 3 else "")
     if hits:
-        print(f"process_check: FAIL: {len(hits)} mail id(s) in {scope}")
+        print(f"process_check: FAIL: {len(hits)} hit(s) in {scope}")
         sys.exit(1)
-    print(f"process_check: PASS: no mail id in {scope}")
+    print(f"process_check: PASS: no mail id or bare CR in {scope}")
 
 
 if __name__ == "__main__":

@@ -169,6 +169,9 @@ new_case; echo "process" >> "$R/README.md"; commit -m "after $mid"
 expect mail-id-in-message fail "process check: FAIL" "a mail id in its message"
 new_case; echo "x${mid}y and ${mid}0" >> "$R/README.md"; commit -m "longer words"
 expect mail-id-inside-a-word pass "process check: PASS"
+# 11c. A bare CR (a CR without its LF, as a join of two CRLF lines left it) in the tree.
+new_case; printf 'joined,\r line\n' >> "$R/README.md"; commit -m "bare CR"
+expect bare-cr-in-tree fail "process check: FAIL" "README.md:[0-9]+: a bare CR"
 
 # 12. Paths a committed .gitattributes marks export-ignore are checked all the same (the export applies no
 #     attributes): a new workspace whose crate compiles C, and a secret, both under such a path.

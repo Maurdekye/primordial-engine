@@ -90,6 +90,10 @@ checks either.
 3b. **Process check:** `scripts/process_check.py`. No mail id of the team's (`m` and 12 hex digits, standing
    alone) in the tree of `<rev>` or in the messages of `<base>..<rev>` (user ruling 2026-11-27: the agents'
    workspaces are not part of the engine). It needs no local file, so it runs wherever the gate runs.
+   It also refuses a bare CR (a CR without its LF) in a text file: git stores text with LF, and a
+   publish_apply from before its CRLF fix left one wherever a rule joined two CRLF lines. "Text" means no
+   NUL in the first 8 KiB; .gitattributes isn't read, so a file marked `-text` without a NUL (say a CR test
+   fixture) would be refused too. None exists; teach the check `git check-attr text` if one is needed.
    * Provenance goes to the docket and the team's notes: the code, the docs and the commit messages say what
      changed and why, without mail ids, workspace paths or this PC's drive paths.
    * Workspace paths, drive paths and host names are publication terms, so the publication check (3) blocks
