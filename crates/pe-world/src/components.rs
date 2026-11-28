@@ -47,6 +47,10 @@ pub mod ids {
     pub const PLAYER: ComponentId = ComponentId(12);
     /// Registered only in worlds whose preset sets the world's limits as a row ([`register_limits`]).
     pub const LIMITS: ComponentId = ComponentId(13);
+    /// Registered only in worlds whose preset holds folders ([`register_folder`]; the home domain).
+    pub const FOLDER: ComponentId = ComponentId(14);
+    /// Registered only in worlds whose preset holds the starter set ([`register_folder`] registers it too).
+    pub const STARTER: ComponentId = ComponentId(15);
 }
 
 /// `"name": field, Kind, count;` or, with a unit (world-model.md 3.6), `"name": field, Kind, count, "unit";`.
@@ -404,6 +408,64 @@ impl Component for Limits {
     const NAME: &'static str = "Limits";
     fn fields() -> Vec<FieldDesc> {
         fields![Limits; "max_shapes": max_shapes, U32, 1;]
+    }
+}
+
+/// A folder (design domain-eng d1, C5; @coordinator-opus): everything under an object with this row is
+/// stored, not played. Its descendants are inert as a template folder's are ([`crate::templates`]): no body, no
+/// collisions, no grab. The folder itself stays a live object (a crate you can pick up and carry its contents in).
+/// My Domain renders the top level and keeps the rest in folders (the user's ruling, 11-27).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Pod, Zeroable)]
+#[repr(C)]
+pub struct Folder {
+    /// Reserved, 0.
+    pub flags: u32,
+}
+
+impl Component for Folder {
+    const ID: ComponentId = ids::FOLDER;
+    const NAME: &'static str = "Folder";
+    fn fields() -> Vec<FieldDesc> {
+        fields![Folder; "flags": flags, U32, 1;]
+    }
+}
+
+/// Which starter object an object came from (design domain-eng d1, C7: "Restore starter set" adds back the starter
+/// objects a home no longer has). Provenance only: nothing in play reads it, and a copy keeps it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Pod, Zeroable)]
+#[repr(C)]
+pub struct Starter {
+    /// [`starter_key`] of the starter object's name.
+    pub key: u64,
+}
+
+impl Component for Starter {
+    const ID: ComponentId = ids::STARTER;
+    const NAME: &'static str = "Starter";
+    fn fields() -> Vec<FieldDesc> {
+        fields![Starter; "key": key, U64, 1;]
+    }
+}
+
+/// The key of the starter object named `name`: the first 8 bytes of `BLAKE3("pe.starter" ‖ name)`, little-endian.
+pub fn starter_key(name: &str) -> u64 {
+    let mut h = pe_core::commit::Hasher::new("pe.starter");
+    h.write(name.as_bytes());
+    u64::from_le_bytes(h.finish().0[..8].try_into().expect("8 bytes"))
+}
+
+/// Registers [`Folder`] and [`Starter`] in `store`'s registry: a preset whose world holds folders and the starter set
+/// (the home) calls it at genesis, so every other world keeps the registry, and the root, it always had.
+pub fn register_folder(store: &mut pe_sim::SimStore) {
+    store.register_engine(Folder::desc()).expect("the engine's Folder description");
+    store.register_engine(Starter::desc()).expect("the engine's Starter description");
+}
+
+impl crate::World {
+    /// Registers [`Folder`] in this world, as a preset with folders does at genesis. Not an edit: for a preset, or a
+    /// test.
+    pub fn register_folders(&mut self) {
+        register_folder(&mut self.store);
     }
 }
 

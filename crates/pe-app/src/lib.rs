@@ -32,6 +32,7 @@ pub mod fault;
 pub mod fps;
 pub mod genesis;
 pub mod handfeel;
+pub mod home;
 pub mod join;
 pub mod leave;
 pub mod local;

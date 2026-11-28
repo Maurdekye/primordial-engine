@@ -46,8 +46,9 @@ pub struct Footprint {
     /// Objects an input's `Grab` began holding: a new claim, not a renewal of the author's own (8.1). With pushes and
     /// throws, what the author's own check after an interaction watches (replica.md 3.4).
     pub grabs: Vec<ObjectId>,
-    /// Roots whose `Name` the edit wrote or removed and whose subtree it so made inert or live (a template folder's
-    /// name, [`crate::templates`]), in id order: every body under each is affected, as under a reparent.
+    /// Objects whose subtree the edit made inert or live: roots whose `Name` it wrote or removed (a template folder's
+    /// name, [`crate::templates`]) and objects that gained or lost a `Folder` row, in id order: every body under each
+    /// is affected, as under a reparent.
     pub regrouped: Vec<ObjectId>,
     /// What a script commit's re-key did (7.9): the objects, the row count and the fields zeroed or dropped. Always
     /// `None` for an entry since logic.md 6.2a: the re-key happens at activation, and [`World::end_frame`] reports it.
@@ -465,15 +466,17 @@ impl World {
                 return Err((None, Reason::Held { by: c.member }));
             }
         }
-        // A root renamed to or from a template folder's name: its subtree's bodies are affected (a reparent's are
-        // already, through its subtree).
+        // A root renamed to or from a template folder's name, or an object that gained or lost its `Folder` row: its
+        // subtree's bodies are affected (a reparent's are already, through its subtree).
         let mut regrouped: Vec<ObjectId> = cx
             .fp
             .rows
             .iter()
-            .filter(|&&(id, c)| c == ids::NAME && work.store.exists(id) && work.store.parent(id).is_none())
+            .filter(|&&(id, c)| {
+                work.store.exists(id) && ((c == ids::NAME && work.store.parent(id).is_none()) || c == ids::FOLDER)
+            })
             .map(|&(id, _)| id)
-            .filter(|&id| self.is_template_folder(id) != work.is_template_folder(id))
+            .filter(|&id| self.marks_inert(id) != work.marks_inert(id))
             .collect();
         regrouped.sort();
         regrouped.dedup();

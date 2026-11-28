@@ -423,6 +423,31 @@ which fixes the origin's role deliberately.
 - **Determinism:** the same arguments give the same state root, and admitting the same member at the same frame
   gives the same root again [V `crates/pe-world/tests/preset.rs`].
 
+### 2.5 Domain content and the home domain (M2, design domain-eng d1)
+
+Players call worlds **domains** (the user's ruling); the code keeps "world".
+
+- **Content** (`pe_world::content`; @coordinator-opus, C2 "save content"): objects outside any world,
+  each with its rows (no `Node`, no `BodyState`) and the bytes of every blob they reference. No ids, row versions,
+  velocities, holds, members or history. A top-level object's `Transform` is stored relative to the content's
+  origin. Putting content into a world is ordinary `Create` ops (`Content::transactions`), split into edits that
+  each fit one entry, so the objects get ids derived on the destination's line (2.1, "Carrying between worlds") and
+  every row passes the edit path's checks. Its bytes are versioned (`pe.content`, v1) and decode checked, never
+  panicking. In v1 only engine components are carried: script rows are left out and counted (`skipped_rows`) until
+  modules travel with content. `Pos` fields inside rows and object references are copied unchanged, as `Copy` does.
+- **The home domain** (`preset::home`, the genesis record's preset `home` v1; the user's rulings, 11-27): the player's local "My Domain", an ordinary world built at frame 0 from its
+  scenery (a static floor 32 m square, a lamp and the `World settings` root with its limits: one transaction by world
+  logic, as the plane's) and then its content (further transactions on the same chain). The save keeps the content
+  only: every root except the scenery (`home::scenery_ids`, a function of the line and seed) and members' hands and
+  bodies (`World::content_roots`). Ids re-derive in each session; a save and reopen keeps every object and row, and
+  its placement to within rounding [V `crates/pe-world/tests/content.rs`].
+- **The starter set** (`home::starter`): a new home's content, the objects that ship with the game, each top-level,
+  dynamic and grabbable (physics on by default). Each carries a `Starter { key }` row (id 15,
+  provenance only), so "Restore starter set" (`home::missing_starters`, C7) adds back exactly the starter objects a
+  home no longer holds anywhere.
+- **Swappable.** The home's files (pe-app's `home`) hold encoded content; @fable-reviewer's git layout (M3+) replaces
+  them, one object per file then, with the same rows.
+
 ## 3. Objects and components
 
 ### 3.1 An object
@@ -1720,6 +1745,13 @@ pub enum Precondition {
     `crates/pe-world/tests/plane.rs`].
   - **The name rule is interim.** Its intended successor is an explicit marker (a component or flag) read by the
     same predicate, so only that function changes.
+  - **Folders** (the `Folder` engine component, id 14; design domain-eng d1 C5, @coordinator-opus):
+    that marker, for My Domain. Everything under an object with a `Folder` row is inert at any depth, as a template
+    folder's subtree is; the folder object itself stays live, a crate you can carry. `World::inert` reads both rules,
+    and adding or removing a `Folder` row puts that object in `Footprint::regrouped` as a rename does
+    [V `crates/pe-world/tests/folder.rs`]. Only a world whose preset holds folders registers it (the home, 2.5), so
+    every other world's registry and root are unchanged; a `Folder` row in such a world is refused as any unknown
+    component's is. The plane keeps its `Templates` name rule.
   "Double the cube" is a `Copy` too. A copy is copy-on-write in storage (file 04 A1: new ids over the same records)
   [I; an optimisation, invisible in the hash].
 - Field writes name a field by its index in the description, and give its bytes. WorldApi turns names into indices

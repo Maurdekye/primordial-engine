@@ -14,6 +14,7 @@
 mod apply;
 pub mod branch;
 pub mod components;
+pub mod content;
 pub mod edit;
 mod import;
 pub mod inline;

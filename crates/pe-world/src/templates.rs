@@ -11,12 +11,15 @@
 //! - **A physics edit**: renaming a root to or from [`FOLDER`], or moving an object into or out of a folder, makes its
 //!   subtree's bodies inert or live. The edit's footprint covers them (`Footprint::regrouped`, and a reparent's
 //!   subtree), and an edit that would make a held object inert or live is refused `Held`.
-//! - The name rule is the interim. Its intended successor is an explicit marker (a component or flag) that the same
-//!   predicate reads, so the rule can be swapped in one place.
+//! - **Folders** (design domain-eng d1, C5): an object with a [`Folder`] row makes everything under it inert, at any
+//!   depth; the folder itself stays live. [`World::inert`] reads both rules, and so does the edit path's regrouping
+//!   (a `Folder` row added or removed regroups that object's subtree, as a rename of a root does).
+//! - The name rule stays for the plane's `Templates`; the `Folder` row is the explicit marker the name rule was the
+//!   interim for.
 
 use pe_core::ObjectId;
 
-use crate::components::{BlobRef, Name};
+use crate::components::{BlobRef, Folder, Name};
 use crate::world::World;
 
 /// The name of a template folder.
@@ -41,7 +44,18 @@ impl World {
             && self.store.get::<Name>(id).is_some_and(|n| is_folder_name_ref(&n.text))
     }
 
-    /// Whether `id` is inert: it exists and its root is a template folder (module doc).
+    /// Whether `id` is a folder: it carries a [`Folder`] row.
+    pub fn is_folder(&self, id: ObjectId) -> bool {
+        self.store.has::<Folder>(id)
+    }
+
+    /// Whether `id` makes objects inert: a template folder (itself and its subtree) or a folder (its descendants).
+    pub fn marks_inert(&self, id: ObjectId) -> bool {
+        self.is_template_folder(id) || self.is_folder(id)
+    }
+
+    /// Whether `id` is inert: it exists, and its root is a template folder or one of its ancestors is a folder
+    /// (module doc).
     pub fn inert(&self, id: ObjectId) -> bool {
         if !self.store.exists(id) {
             return false;
@@ -49,7 +63,12 @@ impl World {
         let mut at = id;
         for _ in 0..=crate::world::DEPTH_LIMIT_MAX {
             match self.store.parent(at) {
-                Some(p) => at = p,
+                Some(p) => {
+                    if self.is_folder(p) {
+                        return true;
+                    }
+                    at = p;
+                }
                 None => return self.is_template_folder(at),
             }
         }

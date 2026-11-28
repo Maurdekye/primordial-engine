@@ -22,6 +22,7 @@ use crate::edit::{Actor, Op, Row, Target, Transaction};
 use crate::world::{BlobStore, World, perm};
 
 pub mod course;
+pub mod home;
 
 /// The context of the reserved line M1's disposable worlds are made on.
 pub const M1_LINE_CONTEXT: &str = "pe.m1.disposable";
@@ -114,6 +115,9 @@ pub enum Preset {
     BallPit { balls: usize },
     /// [`plane_on`].
     Plane,
+    /// A home domain ([`home::home_on`]): its content is given beside the session ([`m1_session_with`]), and the
+    /// frame-0 root covers it.
+    Home,
 }
 
 /// What M1's session genesis is built from ([`m1_session`]): the preset and its arguments, and the settings and
@@ -144,9 +148,35 @@ pub struct Session {
 /// second machine checks against its record before it starts. A key listed twice is refused (`WorldError::Duplicate`,
 /// from its second admission).
 pub fn m1_session(s: &Session, blobs: BlobStore) -> Result<World, crate::WorldError> {
+    m1_session_with(s, blobs, None).map_err(|e| match e {
+        SessionError::World(e) => e,
+        // Without content a home is empty, never refused.
+        SessionError::Home(e) => unreachable!("an empty home was refused: {e:?}"),
+    })
+}
+
+/// Why [`m1_session_with`] built no world.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SessionError {
+    World(crate::WorldError),
+    /// The home's content was refused (only for [`Preset::Home`]).
+    Home(home::HomeError),
+}
+
+/// [`m1_session`], with the content a [`Preset::Home`] session starts from (`None`: an empty home). Other presets
+/// ignore `home`.
+pub fn m1_session_with(
+    s: &Session,
+    blobs: BlobStore,
+    home: Option<&crate::content::Content>,
+) -> Result<World, SessionError> {
     let mut w = match s.preset {
         Preset::BallPit { balls } => ball_pit_on(s.line, s.seed, blobs, s.origin, balls),
         Preset::Plane => plane_on(s.line, s.seed, blobs, s.origin),
+        Preset::Home => {
+            let empty = crate::content::Content::default();
+            home::home_on(s.line, s.seed, blobs, s.origin, home.unwrap_or(&empty)).map_err(SessionError::Home)?.world
+        }
     };
     w.set_rate(s.rate);
     w.set_gravity(s.gravity);
@@ -155,10 +185,10 @@ pub fn m1_session(s: &Session, blobs: BlobStore) -> Result<World, crate::WorldEr
     members.sort_by_key(|m| m.0);
     // A key listed twice: `admit` would take the second as a returning member, so it is refused here.
     if let Some(w2) = members.windows(2).find(|w2| w2[0].0 == w2[1].0) {
-        return Err(crate::WorldError::Duplicate(ObjectId::hand(s.line, w2[1].0, 0, Frame(0))));
+        return Err(SessionError::World(crate::WorldError::Duplicate(ObjectId::hand(s.line, w2[1].0, 0, Frame(0)))));
     }
     for (i, &(m, perms)) in members.iter().enumerate() {
-        w.admit(s.line, m, perms, Frame(0), slot_feet(s.origin, i))?;
+        w.admit(s.line, m, perms, Frame(0), slot_feet(s.origin, i)).map_err(SessionError::World)?;
     }
     Ok(w)
 }
