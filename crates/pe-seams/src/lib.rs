@@ -34,6 +34,7 @@ pub mod agree;
 pub mod entry;
 pub mod gov;
 pub mod ids;
+pub mod package;
 pub mod replica;
 pub mod time;
 pub mod trace;
