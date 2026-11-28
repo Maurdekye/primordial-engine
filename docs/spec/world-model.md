@@ -344,7 +344,8 @@ which fixes the origin's role deliberately.
   avatar spawn object, a home template's) replaces it when one exists (@design-reviewer's nits).
 - **A leave** (`World::leave(member, entry)`; @coordinator-opus, after
   @fable-reviewer): the world side of the member's final `Leave` entry (pe-agree's epoch change,
-  agreement.md 8), applied at its stamp on every replica, as a join is by `admit`. It is all or nothing, and refused
+  agreement.md 8), applied at its stamp on every replica, as a join is by `admit`. An admin's `Remove` of a member
+  (S3 v1.13) applies the same for the removed key, at the `Remove`'s stamp (pe-replica). It is all or nothing, and refused
   with `WorldError::NotAMember` for a key that holds no permission bits. That is its only error, since every step
   below is infallible: a hand's child that can't keep its world pose under the hand's parent becomes a root. In
   order:

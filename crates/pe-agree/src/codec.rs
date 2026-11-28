@@ -272,7 +272,8 @@ impl W {
 
 /// The tag a start record begins with, and its version.
 const START_TAG: &[u8] = b"pe.agree.start";
-const START_VERSION: u8 = 1;
+/// 2 (S3 v1.14): the keys awaiting departure follow `final_high`.
+const START_VERSION: u8 = 2;
 
 /// A joiner's start record ([`crate::epoch::EpochStart`]): tag, version, the epoch, the certificate (count, then each
 /// block as a proposal encodes it, and its certificate), the members, the governance state, the head entries and the
@@ -308,6 +309,13 @@ pub fn encode_start(s: &crate::epoch::EpochStart) -> Vec<u8> {
         w.b32(&k.author.0);
         w.b32(&k.chain.0.0);
         w.u64(f.0);
+    }
+    // decode_start refuses more, so a joiner couldn't start (@design-reviewer's L3 on 544655cf). The set is bounded
+    // in practice: every member offers a `Departed` for each key in it, and one final `Departed` takes the key out.
+    assert!(s.awaiting.len() <= MAX_SIGNERS, "{} keys awaiting departure, over MAX_SIGNERS", s.awaiting.len());
+    w.u32(s.awaiting.len() as u32);
+    for k in &s.awaiting {
+        w.b32(&k.0);
     }
     w.0
 }
@@ -350,10 +358,15 @@ pub fn decode_start(bytes: &[u8]) -> Result<crate::epoch::EpochStart, DecodeErro
         let chain = ChainId(r.hash()?);
         final_high.push((pe_log::ChainKey { author, chain }, Frame(r.u64()?)));
     }
+    let n = r.count(MAX_SIGNERS)?;
+    let mut awaiting = Vec::with_capacity(n);
+    for _ in 0..n {
+        awaiting.push(MemberKey(r.b32()?));
+    }
     if !r.0.is_empty() {
         return Err(DecodeError);
     }
-    Ok(crate::epoch::EpochStart { epoch, chain, members, gov, heads, final_high })
+    Ok(crate::epoch::EpochStart { epoch, chain, members, gov, heads, final_high, awaiting })
 }
 
 pub fn encode(m: &Wire) -> Vec<u8> {
@@ -573,6 +586,31 @@ pub fn decode(bytes: &[u8]) -> Result<Wire, DecodeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn start_awaiting(n: usize) -> crate::epoch::EpochStart {
+        crate::epoch::EpochStart {
+            epoch: 1,
+            chain: Vec::new(),
+            members: vec![MemberKey([1; 32])],
+            gov: pe_seams::GovState::genesis([(MemberKey([1; 32]), 0)]),
+            heads: Vec::new(),
+            final_high: Vec::new(),
+            awaiting: (0..n).map(|i| MemberKey(Hash::of("k", &(i as u64).to_le_bytes()).0)).collect(),
+        }
+    }
+
+    #[test]
+    fn a_start_record_round_trips_at_the_awaiting_cap() {
+        let s = start_awaiting(MAX_SIGNERS);
+        assert_eq!(decode_start(&encode_start(&s)).unwrap().awaiting, s.awaiting);
+    }
+
+    /// @design-reviewer's L3 on 544655cf: a start record decode_start would refuse is never encoded.
+    #[test]
+    #[should_panic(expected = "over MAX_SIGNERS")]
+    fn a_start_record_over_the_awaiting_cap_is_never_encoded() {
+        encode_start(&start_awaiting(MAX_SIGNERS + 1));
+    }
 
     fn sample() -> Vec<Wire> {
         let line = LineId::origin();

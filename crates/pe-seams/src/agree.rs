@@ -56,6 +56,11 @@
 //!   effective, and then the key is a member from the next epoch on. The joiner starts from the inviter's start record
 //!   (pe-agree's epoch certificate), which the inviter's app sends it (app.md 4): S3 v1.11's
 //!   [`Agreement::epoch_start`], beside [`Agreement::epoch`], which an invite pins.
+//! - **Silent members** (S3 v1.14; agreement.md 8): a member that hears nothing new signed by k for the silence time
+//!   signs a vote, `Remove{k, Silent}` ([`crate::gov::Remove`]), offered by [`Agreement::take_protocol`]. The vote that
+//!   brings the epoch's tally to a quorum takes k out as an admin's `Remove` does; the world follows by the remaining
+//!   members' `Remove{k, Departed}`, effective only while k awaits departure (removed by the tally, no `Departed{k}`
+//!   effective since; [`Agreement::awaiting_departure`]).
 //! - **A cut's identity is its [`CutRef`]: line, height and frame** (S3 v1.7): heights go on across a membership
 //!   change, so the old epoch's suffix cuts and the new epoch's first cuts share heights with different frames.
 //!   Never key a cut on its height alone.
@@ -367,17 +372,22 @@ pub enum VoidReason {
     /// Stamped below an earlier stamp in its author's chain.
     BackStamped,
     /// (S3 v1.7; agreement.md 8.) An entry of a leaver's key that comes after its `Leave` in the final log's order, in
-    /// the epoch of that `Leave`, on any chain. Only that epoch: a member admitted again in a later epoch starts a new
+    /// the epoch of that `Leave`, on any chain. (S3 v1.13) Likewise a removed key's entries after the `Remove`. Only that epoch: a member admitted again in a later epoch starts a new
     /// chain, whose entries this never voids.
     AfterLeave,
     /// (S3 v1.7; agreement.md 8, @design-reviewer's L1 on e3597563.) A `Leave` that would leave its epoch with no
-    /// members: the line keeps its last member, which stays a member.
+    /// members: the line keeps its last member, which stays a member. (S3 v1.13) Also a `Remove` that would.
     LastMember,
     /// (S3 v1.10; agreement.md 8.) A membership change its author may not make: an `Admit` by a key that isn't one of
-    /// the line's admitters, or by a key that isn't a member.
+    /// the line's admitters, or by a key that isn't a member. (S3 v1.13) A `Remove` the governance fold denies (by a
+    /// non-admin, of the signer's own key, malformed), or by a key that isn't a member. (S3 v1.14) A `Remove{k,
+    /// Departed}` of a k that is a current member (so it can never remove one).
     NotAuthorized,
     /// (S3 v1.10; agreement.md 8.) A membership change that changes nothing: an `Admit` of a key that is a member
-    /// already, or that an earlier `Admit` in the same epoch admits.
+    /// already, or that an earlier `Admit` in the same epoch admits. (S3 v1.13) A `Remove` of a key that isn't a
+    /// member, or that has left or been removed earlier in the epoch. (S3 v1.14) A silence vote (`Remove{k, Silent}`)
+    /// for such a k, or stamped at or before k's newest final entry in the epoch, or below the epoch's first cut. A
+    /// `Remove{k, Departed}` of a k that doesn't await departure and isn't a member (a duplicate).
     NoChange,
 }
 
@@ -519,6 +529,24 @@ pub trait Agreement: EntrySource + Send {
     /// keep up with the present.
     fn stepped(&mut self, frame: Frame) {
         let _ = frame;
+    }
+
+    /// (S3 v1.14; agreement.md 8, "Silent members".) A payload this member's agreement asks the driver to sign as a
+    /// class Protocol entry of its own chain, at the frame's stamp, as it writes a `Leave` or an `Admit`: a silence
+    /// vote (`Remove{k, Silent}`) once this member has heard nothing new signed by k for the silence time, or a
+    /// `Remove{k, Departed}` once the epoch dropped k by the silence tally, for the world to follow. At most one per
+    /// call; the driver calls it once per frame while it isn't leaving, and a refused submit is offered again later. A
+    /// source with no silence rule keeps this default.
+    fn take_protocol(&mut self) -> Option<Bytes> {
+        None
+    }
+
+    /// (S3 v1.14; agreement.md 8, "Silent members".) The keys the silence tally removed whose `Remove{k, Departed}`
+    /// isn't final here yet. Agreement voids an `Admit` of one as `NoChange` (coordinator), so an
+    /// inviter holds its `Admit` back until the key is gone from here: stamped after that, it follows the departure in
+    /// the final log. Empty in a source with no silence rule.
+    fn awaiting_departure(&self) -> Vec<MemberKey> {
+        Vec::new()
     }
 }
 

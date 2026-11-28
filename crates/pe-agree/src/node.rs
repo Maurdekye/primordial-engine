@@ -108,6 +108,9 @@ pub struct NodeConfig {
     /// The byte limit on one author's entries waiting for its budget (they are delayed, never lost, up to this and to
     /// the pending cap in entries).
     pub defer_bytes: usize,
+    /// How long a member hears nothing new signed by another before it votes to remove it (agreement.md 8, "Silent
+    /// members"; the user's ruling), seconds. A world setting: every member must match.
+    pub silence_s: f64,
     /// A planted defect for the harness's mutation tests (feature `mutants` only).
     #[cfg(feature = "mutants")]
     pub mutation: Option<core::Mutation>,
@@ -144,6 +147,7 @@ impl NodeConfig {
             min_pending: 600,
             defer_bytes: 2 << 20,
             cut_interval_s: 0.1,
+            silence_s: 30.0,
             #[cfg(feature = "mutants")]
             mutation: None,
         }
@@ -192,6 +196,8 @@ impl NodeConfig {
             defer_bytes,
             // Members with different grids refuse each other's cuts.
             cut_interval_s,
+            // Members with different silence times vote at different times; the tally itself is the final log's.
+            silence_s,
             // Local.
             cut_lag_s: _,
             cut_lag_floor_s: _,
@@ -215,12 +221,16 @@ impl NodeConfig {
         // v9: no new setting, but members send `Progress` (Wire::Progress, F3 S2), a wire change.
         // v10: no new setting, but the leader rule changes at n >= 6: the reputation window holds n - quorum(n)
         // leaders (agreement.md 3), and a voter refuses a proposal from any other leader.
-        let mut h = Hasher::new("pe.agree.consensus.v10");
+        // v11: membership by epochs (Remove, S3 v1.13): an admin's Remove takes a member out; its NotAuthorized,
+        // NoChange and LastMember voids.
+        // v12: silence_s joined the set; silent members (S3 v1.14): the silence tally, Remove{k, Departed}.
+        let mut h = Hasher::new("pe.agree.consensus.v12");
         h.write_u64(frame_tolerance_s.to_bits());
         h.write_u64(*entries_per_frame as u64).write_u64(*extra_per_s as u64);
         h.write_u64(budget_slack.to_bits()).write_u64(burst_s.to_bits()).write_u64(pending_s.to_bits());
         h.write_u64(*min_rate_per_s as u64).write_u64(*min_burst as u64).write_u64(*min_pending as u64);
         h.write_u64(*defer_bytes as u64).write_u64(cut_interval_s.to_bits());
+        h.write_u64(silence_s.to_bits());
         h.write_u64(timing.cadence_ns as u64)
             .write_u64(timing.min_timeout_ns as u64)
             .write_u64(timing.max_timeout_ns as u64);
@@ -433,6 +443,19 @@ pub struct Node {
     former: Vec<MemberKey>,
     /// This member signed its own `Leave`: it signs nothing after it.
     left: bool,
+    /// The epoch's silence tally (agreement.md 8, "Silent members"), from the final log.
+    tally: Tally,
+    /// The silence clock: per member, the newest frame of new content signed by it that this member holds (an entry's
+    /// stamp, or the present for a current vote or timeout). Set to the present when first looked at.
+    heard_new: BTreeMap<MemberKey, Frame>,
+    /// Per member, when this member's next silence vote against it may be offered in this epoch (host ns): `silence_s`
+    /// after one it signed, or [`SILENCE_RETRY_NS`] after an offer the driver didn't sign (@chunks-reviewer's Low 2 on
+    /// 544655cf).
+    voted: BTreeMap<MemberKey, i64>,
+    /// Per key awaiting departure (the tally's `awaiting`), when this member last offered its `Remove{k, Departed}`
+    /// (host ns). Created lazily, so a member admitted or restarted after the drop offers one too (@chunks-reviewer's
+    /// Low 1 on 544655cf).
+    departed_due: BTreeMap<MemberKey, i64>,
     /// Per epoch: the members that told this one the reconfiguring cut starting it is final there.
     settled: BTreeMap<u64, std::collections::BTreeSet<MemberKey>>,
     /// The epochs this member ended, newest last, at most [`RETIRED_EPOCHS`]: each one's certificate and committed
@@ -484,13 +507,79 @@ const LATENESS_MIN: usize = 32;
 /// pe-seams, so that S2's replica reads a `Leave` without depending on S3's implementation.
 pub use pe_seams::{ADMIT, Admit, GovState, GovVerdict, LEAVE, ROLE_ADMIN, is_leave};
 
+/// An entry's place in the final log's order: stamp, tie rank, author, chain, seq (the membership rules' sort key).
+/// A removed key's entries are compared with its `Remove`'s place by the whole key, so "after the `Remove`" is after
+/// it in the log (@chunks-reviewer's Low on b5343f29); for a `Leave` the author is the leaver, and it orders as
+/// (stamp, chain, seq) did.
+type Place = (Frame, u64, MemberKey, pe_seams::ChainId, u64);
+
 /// The membership changes made effective in an epoch so far (agreement.md 8), each key to its change's place in the
-/// final log's order (stamp, chain, seq).
+/// final log's order ([`Place`]).
 #[derive(Default)]
 struct Changes {
-    leaves: BTreeMap<MemberKey, (Frame, pe_seams::ChainId, u64)>,
+    leaves: BTreeMap<MemberKey, Place>,
     /// Each admitted key's place and the role its verdict names.
-    admits: BTreeMap<MemberKey, ((Frame, pe_seams::ChainId, u64), u32)>,
+    admits: BTreeMap<MemberKey, (Place, u32)>,
+    /// The keys among `leaves` that the silence tally removed: the world follows them by `Remove{k, Departed}`.
+    silent: std::collections::BTreeSet<MemberKey>,
+}
+
+/// One epoch's silence tally (agreement.md 8, "Silent members"), folded from the final log alone, so every member
+/// counts the same.
+#[derive(Clone, Default)]
+struct Tally {
+    /// The epoch's first cut's frame: a vote stamped below it is void (`NoChange`), so no vote combines across epochs.
+    from: Frame,
+    /// Each member's newest final entry's stamp in this epoch.
+    newest: BTreeMap<MemberKey, Frame>,
+    /// Each member with counted votes against it: each voter and its vote's stamp, always above `newest`.
+    votes: BTreeMap<MemberKey, BTreeMap<MemberKey, Frame>>,
+    /// Keys the tally removed whose `Remove{k, Departed}` isn't final yet ("awaiting departure"; coordinator): an `Admit` of one is void as `NoChange`, and a `Departed` is effective only for one. Unlike the
+    /// rest it carries over epochs, and a joiner takes it from its `EpochStart`.
+    awaiting: std::collections::BTreeSet<MemberKey>,
+}
+
+impl Tally {
+    fn new(from: Frame) -> Tally {
+        Tally { from, ..Tally::default() }
+    }
+
+    /// The next epoch's tally, from its first cut's frame: empty but for the keys still awaiting departure.
+    fn next(&mut self, from: Frame, removed: impl IntoIterator<Item = MemberKey>) -> Tally {
+        let mut awaiting = std::mem::take(&mut self.awaiting);
+        awaiting.extend(removed);
+        Tally { from, awaiting, ..Tally::default() }
+    }
+
+    /// An entry of `k` stamped `stamp` became final: a vote against k stamped at or before it no longer counts (k was
+    /// heard then).
+    fn heard(&mut self, k: MemberKey, stamp: Frame) {
+        let n = self.newest.entry(k).or_insert(stamp);
+        if stamp <= *n && !self.votes.contains_key(&k) {
+            return;
+        }
+        *n = (*n).max(stamp);
+        if let Some(v) = self.votes.get_mut(&k) {
+            v.retain(|_, f| *f > stamp);
+            if v.is_empty() {
+                self.votes.remove(&k);
+            }
+        }
+    }
+
+    /// Whether a vote against `k` stamped `stamp` is stale: below the epoch's first cut, or at or below k's newest final
+    /// entry (k was alive at that frame, so a tie goes to k staying; @design-reviewer's L2 on 544655cf).
+    fn stale(&self, k: &MemberKey, stamp: Frame) -> bool {
+        stamp < self.from || self.newest.get(k).is_some_and(|n| stamp <= *n)
+    }
+
+    /// Count `voter`'s vote against `k`; the distinct voters now counted.
+    fn count(&mut self, k: MemberKey, voter: MemberKey, stamp: Frame) -> usize {
+        let v = self.votes.entry(k).or_default();
+        let f = v.entry(voter).or_insert(stamp);
+        *f = (*f).max(stamp);
+        v.len()
+    }
 }
 
 impl Changes {
@@ -506,6 +595,16 @@ impl Changes {
 /// How long a member keeps its previous epoch's core after its reconfiguring cut E became final there, so members that
 /// missed E's finality can still finish it (agreement.md 8: a member that missed it fetches it like a committed block).
 const OLD_EPOCH_KEEP_NS: i64 = 30_000_000_000;
+
+/// A vote or timeout for a view at least this far below this member's own is old content: it doesn't reset its
+/// signer's silence clock ("Silent members").
+const SILENCE_VIEWS: u64 = 4;
+
+/// How soon a silence vote the driver didn't sign is offered again (host ns).
+const SILENCE_RETRY_NS: i64 = 1_000_000_000;
+
+/// How often a member offers a `Remove{k, Departed}` again while none is final (host ns).
+const DEPARTED_EVERY_NS: i64 = 1_000_000_000;
 
 /// How often a member that switched epochs tells the leavers that E is final here, while its old core is kept.
 const EPOCH_FINAL_EVERY_NS: i64 = 1_000_000_000;
@@ -675,6 +774,7 @@ impl Node {
             let _ = node.log.insert(h, node.verifier.as_ref());
         }
         node.final_high = start.final_high.into_iter().collect();
+        node.tally.awaiting = start.awaiting.into_iter().collect();
         node.final_cut = Some(FinalCut { cut: e, root: eqc.root, voters: eqc.votes });
         node.start_root = Some(eqc.root);
         node.importing = true;
@@ -778,6 +878,10 @@ impl Node {
             gov: cfg.genesis_gov.clone(),
             former: Vec::new(),
             left: false,
+            tally: Tally::new(start),
+            heard_new: BTreeMap::new(),
+            voted: BTreeMap::new(),
+            departed_due: BTreeMap::new(),
             settled: BTreeMap::new(),
             retired: std::collections::VecDeque::new(),
             epoch_asks: BTreeMap::new(),
@@ -903,6 +1007,11 @@ impl Node {
             return Err(self.fault(from, None, kind, format!("{r:?} (claims author {author:?})")));
         }
         let seen = self.seen_high.entry(key).or_default();
+        if e.entry.seq > *seen {
+            // New content signed by the author: its silence clock moves to the entry's stamp ("Silent members").
+            let h = self.heard_new.entry(author).or_insert(e.entry.stamp);
+            *h = (*h).max(e.entry.stamp);
+        }
         *seen = (*seen).max(e.entry.seq);
         let links = self.fills_hole(&key, e.entry.seq);
         // While the author has entries waiting, a new one waits behind them, in chain order, rather than taking the
@@ -1557,8 +1666,16 @@ impl Node {
             }
             // The epoch's final log has no earlier change: the epoch ends at the first cut with one.
             let mut changes = Changes::default();
-            let (effective, after) = self.membership_rules(effective, &mut changes);
+            let mut tally = std::mem::take(&mut self.tally);
+            let (effective, after) = self.membership_rules(effective, &mut changes, &mut tally);
+            self.tally = tally;
             for e in effective {
+                if let Some(Some(pe_seams::Remove { key, reason: pe_seams::RemoveReason::Departed })) =
+                    pe_seams::Remove::of(&e)
+                {
+                    // The world follows k's departure from this entry on: no member need sign another.
+                    self.departed_due.remove(&key);
+                }
                 touched.push(e.entry.stamp);
                 self.final_bytes += e.entry.payload.len() + 200;
                 self.final_by_frame.entry(e.entry.stamp).or_default().push(e);
@@ -1569,6 +1686,12 @@ impl Node {
                     self.left = false;
                 }
                 self.voided(&e, reason, at);
+            }
+            if changes.leaves.contains_key(&self.me) {
+                // This member departs at this cut: its own Leave, or another's Remove of it (@chunks-reviewer's
+                // Medium on b5343f29). From here `submit` refuses as after a Leave, and `leave_settled` waits for the
+                // remaining members' word that E is final, as a leaver's does. Its app sees `members()` without it.
+                self.left = true;
             }
             self.final_heads = block.cut.clone();
             let own_final = self.my_head.map_or(0, |(key, _, _)| {
@@ -1609,16 +1732,42 @@ impl Node {
     ///   @design-reviewer's L1), counting the admits made effective before it;
     /// - an `Admit` takes effect if its author is a member and the epoch's governance fold allows it
     ///   ([`GovState::step`]; else void as `NotAuthorized`), and its key is neither a member nor admitted earlier in the
-    ///   epoch (else void as `NoChange`).
+    ///   epoch (else void as `NoChange`);
+    /// - a `Remove` (S3 v1.13) takes effect if its author is a member and the fold allows it (else `NotAuthorized`), its
+    ///   key is a member that hasn't left or been removed earlier in the epoch (else `NoChange`), and it wouldn't leave
+    ///   the epoch with no members (else `LastMember`). The key then departs as a leaver does, from the `Remove`'s place:
+    ///   its later entries are void as `AfterLeave`, and the next epoch starts without it.
+    /// - a silence vote, `Remove{k, Silent}` (S3 v1.14, "Silent members"), by a member about another counts in the
+    ///   epoch's `tally`, unless k isn't a member or is departing already, or the vote is stamped before k's newest
+    ///   final entry in the epoch or below its first cut (void as `NoChange`). Each entry of k that becomes final
+    ///   drops the counted votes stamped before it, and k's entries in a cut count before the votes in it. The vote that brings the distinct voters to `quorum(n)` (n the
+    ///   epoch's members, k included) takes k out as a `Remove` does (`LastMember` as there);
+    /// - a `Remove{k, Departed}` (S3 v1.14) by a member is effective only if the tally removed k and no `Departed{k}`
+    ///   was effective since (k awaits departure); void as `NotAuthorized` if k is a current member, else as
+    ///   `NoChange` (a duplicate, or a key never removed). It changes no membership: it is the world's;
+    /// - an `Admit` of a key awaiting departure is void as `NoChange`: k comes back once the world has followed.
     ///
     /// Returns the effective entries and the voided ones with their reasons.
     fn membership_rules(
         &self,
         mut es: Vec<SignedEntry>,
         changes: &mut Changes,
+        tally: &mut Tally,
     ) -> (Vec<SignedEntry>, Vec<(SignedEntry, pe_seams::agree::VoidReason)>) {
-        if changes.leaves.is_empty() && !es.iter().any(|e| is_leave(e) || Admit::of(e).is_some()) {
+        if changes.leaves.is_empty()
+            && !es.iter().any(|e| is_leave(e) || Admit::of(e).is_some() || pe_seams::Remove::of(e).is_some())
+        {
+            for e in &es {
+                tally.heard(e.entry.author, e.entry.stamp);
+            }
             return (es, Vec::new());
+        }
+        // k's entries in this cut count before any vote in it: an entry of k stamped after a vote outweighs it
+        // whatever their order, so votes made before k came back never decide in the cut that shows it back.
+        for e in &es {
+            if !changes.leaves.contains_key(&e.entry.author) {
+                tally.heard(e.entry.author, e.entry.stamp);
+            }
         }
         let line = self.cfg.line;
         es.sort_by_cached_key(|e| {
@@ -1627,7 +1776,7 @@ impl Node {
         let (mut eff, mut after) = (Vec::new(), Vec::new());
         for e in es {
             let author = e.entry.author;
-            let place = (e.entry.stamp, e.entry.chain, e.entry.seq);
+            let place = (e.entry.stamp, tie_rank(line, e.entry.stamp, &author), author, e.entry.chain, e.entry.seq);
             if changes.leaves.get(&author).is_some_and(|l| place > *l) {
                 after.push((e, pe_seams::agree::VoidReason::AfterLeave));
                 continue;
@@ -1642,11 +1791,56 @@ impl Node {
             match self.gov.step(&e) {
                 None => {}
                 Some(GovVerdict::Admit { key, role }) if self.cfg.members.contains(&author) => {
-                    if self.cfg.members.contains(&key) || changes.admits.contains_key(&key) {
+                    // A key the tally removed comes back only once the world has followed (coordinator).
+                    if self.cfg.members.contains(&key)
+                        || changes.admits.contains_key(&key)
+                        || tally.awaiting.contains(&key)
+                    {
                         after.push((e, pe_seams::agree::VoidReason::NoChange));
                         continue;
                     }
                     changes.admits.insert(key, (place, role));
+                }
+                Some(GovVerdict::Remove { key }) if self.cfg.members.contains(&author) => {
+                    if !self.cfg.members.contains(&key) || changes.leaves.contains_key(&key) {
+                        after.push((e, pe_seams::agree::VoidReason::NoChange));
+                        continue;
+                    }
+                    if changes.leaves.len() + 1 >= self.cfg.members.len() + changes.admits.len() {
+                        after.push((e, pe_seams::agree::VoidReason::LastMember));
+                        continue;
+                    }
+                    changes.leaves.insert(key, place);
+                }
+                Some(GovVerdict::Silent { key }) if self.cfg.members.contains(&author) => {
+                    if !self.cfg.members.contains(&key)
+                        || changes.leaves.contains_key(&key)
+                        || tally.stale(&key, e.entry.stamp)
+                    {
+                        after.push((e, pe_seams::agree::VoidReason::NoChange));
+                        continue;
+                    }
+                    let voters = tally.count(key, author, e.entry.stamp);
+                    if voters >= pe_seams::agree::quorum(self.cfg.members.len()) {
+                        if changes.leaves.len() + 1 >= self.cfg.members.len() + changes.admits.len() {
+                            after.push((e, pe_seams::agree::VoidReason::LastMember));
+                            continue;
+                        }
+                        changes.leaves.insert(key, place);
+                        changes.silent.insert(key);
+                    }
+                }
+                Some(GovVerdict::Departed { key }) if self.cfg.members.contains(&author) => {
+                    // Decided by the awaiting set, which a joiner holds too (its `former` holds only its start's
+                    // leavers): a current member's is never effective; once the first is, the rest change nothing.
+                    if self.cfg.members.contains(&key) {
+                        after.push((e, pe_seams::agree::VoidReason::NotAuthorized));
+                        continue;
+                    }
+                    if !tally.awaiting.remove(&key) {
+                        after.push((e, pe_seams::agree::VoidReason::NoChange));
+                        continue;
+                    }
                 }
                 Some(_) => {
                     after.push((e, pe_seams::agree::VoidReason::NotAuthorized));
@@ -1663,7 +1857,14 @@ impl Node {
     /// suffix with members that lag.
     fn switch_epoch(&mut self, e: &Block, root: Hash, changes: Changes) {
         let old_members = self.cfg.members.clone();
+        // The tally is per epoch; the world follows the silence tally's removals by `Remove{k, Departed}`, which every
+        // member offers while k awaits departure (`take_protocol`; duplicates are harmless).
+        self.tally = self.tally.next(e.cut.at.frame, changes.silent.iter().copied());
+        self.voted.clear();
         let leavers: Vec<MemberKey> = changes.leaves.into_keys().collect();
+        for k in &leavers {
+            self.heard_new.remove(k);
+        }
         let admitted_roles: Vec<(MemberKey, u32)> = changes.admits.into_iter().map(|(k, (_, r))| (k, r)).collect();
         let admitted: Vec<MemberKey> = admitted_roles.iter().map(|(k, _)| *k).collect();
         self.gov = self.gov.next(&admitted_roles, &leavers);
@@ -1693,6 +1894,7 @@ impl Node {
                 gov: self.gov.clone(),
                 heads,
                 final_high,
+                awaiting: self.tally.awaiting.iter().copied().collect(),
             })
         });
         // Kept to serve a member that misses E once the old core is gone (agreement.md 8).
@@ -2369,6 +2571,7 @@ impl Node {
         let mut out = Vec::new();
         let mut missing = Vec::new();
         let mut changes = Changes::default();
+        let mut tally = self.tally.clone();
         let mut reconfig = None;
         for (i, b) in chain.iter().enumerate() {
             let mut block_out = Vec::new();
@@ -2395,7 +2598,7 @@ impl Node {
                 }
             }
             let had = changes.len();
-            let (eff, _) = self.membership_rules(block_out, &mut changes);
+            let (eff, _) = self.membership_rules(block_out, &mut changes, &mut tally);
             out.extend(eff);
             if changes.len() > had && reconfig.is_none() {
                 reconfig = Some(i);
@@ -2509,6 +2712,48 @@ impl Node {
     }
 
     /// Record when the own chain reached `seq`, keeping a little over the pacing grace of history.
+    /// A vote or timeout signed by `voter` for `view` passed the core's checks: new content if the view is current
+    /// (within [`SILENCE_VIEWS`] of this member's), so `voter`'s silence clock moves to the present. A replayed old
+    /// vote, relayed by anyone, moves nothing ("Silent members").
+    fn heard_vote(&mut self, voter: MemberKey, view: u64) {
+        if view + SILENCE_VIEWS < self.core.view() {
+            return;
+        }
+        if let Some(p) = self.present {
+            let h = self.heard_new.entry(voter).or_insert(p);
+            *h = (*h).max(p);
+        }
+    }
+
+    /// The silence vote due now, if any ("Silent members"): a member other than this one that this member has heard
+    /// nothing new signed by for `silence_s`, at most once per `silence_s` per member and epoch. None at n <= 2, where
+    /// a quorum needs the silent member's own vote, after this member's leave, or before the present is known.
+    fn silence_vote_due(&mut self) -> Option<MemberKey> {
+        let p = self.present?;
+        let n = self.cfg.members.len();
+        if self.left || !self.cfg.members.contains(&self.me) || n.saturating_sub(1) < pe_seams::agree::quorum(n) {
+            return None;
+        }
+        let s = self.cfg.silence_s;
+        let frames =
+            if s.is_finite() && s > 0.0 { (s * self.rate_hz.max(1) as f64).ceil() as u64 } else { return None };
+        let now = self.now.0;
+        for k in self.cfg.members.clone() {
+            if k == self.me {
+                continue;
+            }
+            let h = *self.heard_new.entry(k).or_insert(p);
+            let silent = p.0.saturating_sub(h.0) >= frames;
+            let due = self.voted.get(&k).is_none_or(|t| now >= *t);
+            if silent && due {
+                // Until the driver signs it (`submit` then defers the next one by `silence_s`).
+                self.voted.insert(k, now.saturating_add(SILENCE_RETRY_NS));
+                return Some(k);
+            }
+        }
+        None
+    }
+
     fn note_own(&mut self, seq: u64) {
         let now = self.now.0;
         // Long enough to look up an ack's delay over a slow link as well as the pacing grace.
@@ -2759,6 +3004,11 @@ impl Agreement for Node {
         self.my_head = Some((key, e.entry.seq, id));
         self.left |= is_leave(&e);
         self.note_own(e.entry.seq);
+        if let Some(Some(pe_seams::Remove { key, reason: pe_seams::RemoveReason::Silent })) = pe_seams::Remove::of(&e) {
+            // A signed silence vote: the next one against `key` is due `silence_s` from now.
+            let ns = (self.cfg.silence_s.max(0.0) * 1e9) as i64;
+            self.voted.insert(key, self.now.0.saturating_add(ns));
+        }
         self.send_all(Lane::Action, &Wire::Entries(vec![e.clone()]), &[]);
         Ok(e)
     }
@@ -2834,9 +3084,13 @@ impl Agreement for Node {
                     core::Msg::Timeout(t) => (t.voter, t.heads.clone(), t.view, t.lateness.clone()),
                     _ => (from, Vec::new(), 0, Vec::new()),
                 };
+                let signed_by = matches!(m, core::Msg::Vote(_) | core::Msg::Timeout(_)).then_some((heads.0, heads.2));
                 match self.core.receive(from, m, at, self.verifier.as_ref()) {
                     Ok(()) => {
                         let (voter, heads, view, lateness) = heads;
+                        if let Some((voter, view)) = signed_by {
+                            self.heard_vote(voter, view);
+                        }
                         let mine = self.my_head.map(|(k, _, _)| k);
                         self.take_lateness(voter, view, mine, &lateness);
                         for h in heads {
@@ -3052,6 +3306,30 @@ impl Agreement for Node {
         self.cfg.members.clone()
     }
 
+    fn awaiting_departure(&self) -> Vec<MemberKey> {
+        self.tally.awaiting.iter().copied().collect()
+    }
+
+    fn take_protocol(&mut self) -> Option<Bytes> {
+        if self.left || !self.cfg.members.contains(&self.me) {
+            return None;
+        }
+        let now = self.now.0;
+        // Every member offers a `Departed` for each key awaiting departure, whenever it joined the line.
+        let awaiting = &self.tally.awaiting;
+        self.departed_due.retain(|k, _| awaiting.contains(k));
+        if let Some(k) = awaiting
+            .iter()
+            .find(|k| self.departed_due.get(*k).is_none_or(|t| now.saturating_sub(*t) >= DEPARTED_EVERY_NS))
+            .copied()
+        {
+            self.departed_due.insert(k, now);
+            return Some(pe_seams::Remove { key: k, reason: pe_seams::RemoveReason::Departed }.encode());
+        }
+        let k = self.silence_vote_due()?;
+        Some(pe_seams::Remove { key: k, reason: pe_seams::RemoveReason::Silent }.encode())
+    }
+
     fn leave_settled(&self) -> bool {
         if !self.left {
             return true;
@@ -3103,5 +3381,25 @@ mod outage_silence_tests {
         assert_eq!(f(-1.0), 50_000_000);
         assert_eq!(f(f64::NAN), 300_000_000);
         assert_eq!(f(f64::INFINITY), 10_000_000_000);
+    }
+}
+
+#[cfg(test)]
+mod tally_tests {
+    use super::*;
+
+    /// @design-reviewer's L2 on 544655cf: k was alive at the frame of its newest final entry, so a vote stamped at that
+    /// frame is stale (the tie goes to k staying), and an entry of k drops the votes stamped at or before it.
+    #[test]
+    fn a_vote_stamped_at_ks_newest_entry_is_stale() {
+        let (k, v) = (MemberKey([1; 32]), MemberKey([2; 32]));
+        let mut t = Tally::new(Frame(10));
+        assert!(t.stale(&k, Frame(9)), "below the epoch's first cut");
+        t.heard(k, Frame(20));
+        assert!(t.stale(&k, Frame(20)), "stamped at k's newest entry");
+        assert!(!t.stale(&k, Frame(21)));
+        assert_eq!(t.count(k, v, Frame(21)), 1);
+        t.heard(k, Frame(21));
+        assert!(!t.votes.contains_key(&k), "an entry of k at the vote's frame keeps it");
     }
 }

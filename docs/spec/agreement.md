@@ -723,8 +723,8 @@ Named as the model's controls: `VoteWithoutChainValidation` (d1), `AcceptProposa
 
 ## 8. Membership change: epochs (model v1)
 
-Ruled by the coordinator (epochs, as DiemBFT v4 reconfigures), with @design-reviewer's gaps and wording. Built in pe-agree for `Leave` and `Admit` (below); `Remove` and
-`Rechain` are not built yet.
+Ruled by the coordinator (epochs, as DiemBFT v4 reconfigures), with @design-reviewer's gaps and wording. Built in pe-agree for `Leave`, `Admit`, an admin's `Remove` and the
+automatic removal of a silent member (below); `Rechain` is not built yet.
 
 - **Build order: `Leave` first** (coordinator; @item:primordial-engine/m1-leave-a-member-leaves-gracefully-and-the-rest).
   M1's demo has a member leave and the other carry on alone, and at n = 2 that is impossible without epochs: q = 2,
@@ -888,9 +888,57 @@ Ruled by the coordinator (epochs, as DiemBFT v4 reconfigures), with @design-revi
     anyway. Both names are S3 changes, to confirm
     with @engine-architect when the seam's version is bumped.
   - `Remove{key}`, by an authorized member other than the one removed, so a crashed, departed or Byzantine member
-    can be removed. Who is authorized, for `Admit` too, is governance's (admins, the user's ruling); in the model it
+    can be removed. **Built for an admin (S3 v1.13, M2 S3,
+    @item:primordial-engine/m2-s1-s3-agreement-at-3-8-players-open-internet-h):** the payload is pe-seams'
+    `Remove { key, reason }` (tag `pe.agree.remove/`, version 1, the key, a reason byte). The governance fold allows
+    `RemoveReason::Admin` by an admin of the epoch for a key other than its own (`GovVerdict::Remove`), and denies the
+    rest: a non-admin, its own key (that is a `Leave`) and a malformed payload. (`RemoveReason::Silent` and
+    `Departed` are the silence rule's, next.) The rules run beside the
+    `Leave` rules in the final log's order: void as `NotAuthorized` if denied or the author isn't a member, `NoChange`
+    if the key isn't a member or has left or been removed earlier in the epoch, `LastMember` if it would leave no
+    member. Otherwise the key departs as a leaver does, from the `Remove`'s place: its later entries are void as
+    `AfterLeave`, and the next epoch starts without it, t and q recomputed. Its world side is the leave's: pe-replica
+    calls `World::leave` for the key at the `Remove`'s stamp (its hands, body, claims and permissions go). A crashed
+    member's vote isn't needed: at n >= 3 the rest are a quorum while at most n - q are down (removing two down at
+    n = 7 in one cut, the five carry on at once). At n = 2 a crashed member still can't be removed (its vote is part
+    of q = 2). Tests: pe-agree node_tests/remove.rs, pe-replica tests/peworld.rs. The consensus hash is v11. Who is authorized, for `Admit` too, is governance's (admins, the user's ruling); in the model it
     is abstract, and the Byzantine member runs both authorized (it may sign `Remove{honest}` and `Admit{sybil}`) and
     not (@design-reviewer, Low 4).
+  - **Silent members (S3 v1.14; the user's 30 s rule; @world-chunks's silence-removal design, rev 4 approved by
+    @design-reviewer; the coordinator's rulings).**
+    A member silent for `silence_s` (30 s, a world setting in the consensus hash) is removed at a cut and may rejoin.
+    Silence is local, so no one member's word removes anyone:
+    - *Hearing k* is new signed content by k reaching this member by any route: a chain entry above the highest seq
+      held on that chain, or a vote or timeout of k for a view within 4 of this member's. The clock runs on stamps (an
+      entry's stamp; the present for a current vote), so replays and drip-fed old entries reset nothing.
+    - *The vote:* a member that has heard nothing new from k for `silence_s` signs `Remove{k, Silent}` (reason 1),
+      offered by S3's `take_protocol` and signed by the driver; once per `silence_s` per k and epoch once signed (an
+      offer the driver didn't sign comes again a second later). Proposals don't move the clock: a live leader also
+      votes. None at n <= 2,
+      where quorum(n) needs k's own vote.
+    - *The tally* (pe-agree's `Tally`, folded from the final log alone): a vote by a member about another member
+      counts unless k is departing already or the vote is stamped at or before k's newest final entry in the epoch (k
+      was alive at that frame) or below its first cut (void as `NoChange`). Each final entry of k drops the counted
+      votes stamped at or before it, and k's
+      entries in a cut count before the votes in it. The vote that brings the distinct voters to quorum(n) (n the
+      epoch's members, k included) takes k out as an admin's `Remove` does, from its place. A vote about itself is
+      `NotAuthorized`. q honest-or-not signers include at least t + 1 honest members that heard nothing of k.
+    - *The world follows by an explicit entry* (coordinator's (b)): the vote is nothing in the world. Once the epoch
+      drops k by the tally, every member signs `Remove{k, Departed}` (reason 2), offered every second while k awaits
+      departure, so a member admitted or restarted after the drop offers it too. It is effective only while k *awaits departure* (removed by the tally, no `Departed{k}` effective
+      since): `NotAuthorized` for a current member, `NoChange` otherwise (a duplicate). pe-replica applies the
+      effective one as k's leave at its stamp; a `Departed` on a key with no world row is a true no-op. Until it
+      applies, about a round trip, k's silent hands stay, frozen.
+    - *Rejoin:* an `Admit` of a key awaiting departure is void as `NoChange` (coordinator), so k comes
+      back fresh, after its leave. The awaiting set carries over epochs and is in `EpochStart` (start record v2), so
+      a joiner decides the same. pe-app's inviter holds its `Admit` back while the key awaits departure (S3
+      `awaiting_departure`), saying "… is rejoining…", so that, stamped after the departure is final, it follows it.
+    - *What it can't tell apart:* a member that receives but can't send is silent to the others and is removed after
+      `silence_s`; it still receives, so it sees itself out. One that sends but can't receive is heard, and is never
+      removed automatically (admin-only, as a slow or one-way link is).
+    - Consensus hash v12. Tests: pe-agree node_tests/silence.rs (a crash at 4 after 30 s; two down at 7; 3 -> 2; never
+      at 2; votes before a return; receive-only and send-only links; a removed member's late entries after the drop; a
+      replay of old entries; the voids; the early rejoin and its retry), pe-replica tests/peworld.rs.
   - **Assumption: governance never authorizes a Byzantine member.** The authorized run breaks agreement, as
     expected (model v1's remove-auth-byz): removing an honest member at n = 4 leaves n = 3 with t = 0 and the
     Byzantine member still in. Agreement holds only while every key that may sign `Admit` or `Remove` is honest

@@ -52,7 +52,7 @@ pub use agree::{
     Outgoing, SelfTest, SubmitError, VoidReason, VoteResult, is_leave, quorum,
 };
 pub use entry::{Class, DomainId, Entry, EntryError, MAX_PAYLOAD, Signature, SignedEntry, Signer, Verifier};
-pub use gov::{ADMIT, Admit, GovState, GovVerdict, ROLE_ADMIN};
+pub use gov::{ADMIT, Admit, GovState, GovVerdict, REMOVE, ROLE_ADMIN, Remove, RemoveReason};
 pub use ids::{
     ChainId, EntryRef, Frame, Hash, Hasher, LineId, MemberKey, ORIGIN_ENTRY, ObjectId, Offset, OutOfRange, Pos,
 };
