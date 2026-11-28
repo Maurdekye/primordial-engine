@@ -356,6 +356,10 @@ pub struct ReplicaImpl<W: WorldModel> {
     /// The held objects the last publication marked `HELD_AWAY` (D4's break-away): one stays away until it is back
     /// within `BREAK_BACK`. The view's state, not the simulation's: a rollback doesn't restore it.
     away: BTreeSet<ObjectId>,
+    /// The away objects the last publication marked `HELD_BLOCKED`, with the publications it still holds for without a
+    /// contact ([`crate::hands::BLOCKED_HOLD`]): a scrape that makes and breaks contact doesn't flip the drawn pose
+    /// between the hand and the simulation each frame. The view's state, like `away`.
+    blocked: BTreeMap<ObjectId, u8>,
     /// The author's check after its own interactions (3.4): per frame, each body the local member's grab begin, push
     /// or throw touched there, with its digest after the first live step of that frame and after the latest. Local,
     /// never hashed; judged once the frame is below an agreed final cut.
@@ -580,6 +584,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
             excused: Vec::new(),
             corrected: BTreeSet::new(),
             away: BTreeSet::new(),
+            blocked: BTreeMap::new(),
             checks: BTreeMap::new(),
             scratch_checks: BTreeMap::new(),
             interactions: InteractionChecks::default(),
@@ -2056,6 +2061,10 @@ impl<W: WorldModel> ReplicaImpl<W> {
         let mut objects = self.world.view_objects();
         let rows = self.world.players();
         let mut away = BTreeSet::new();
+        let mut blocked = BTreeMap::new();
+        // Each member's hands, for a hold's contacts: neither of the holder's own hands blocks (both run the same lead).
+        let hands: Vec<(MemberKey, ObjectId)> =
+            objects.iter().filter_map(|o| o.hand_of.map(|(m, _)| (m, o.id))).collect();
         for o in &mut objects {
             // A body's parts move with its player (S5 v1.12): the body's velocities, so they extrapolate with it.
             let moves_as = o.body_of.and_then(|m| rows.iter().find(|r| r.owner == m)).map_or(o.id, |r| r.body);
@@ -2085,6 +2094,15 @@ impl<W: WorldModel> ReplicaImpl<W> {
                 if crate::hands::held_away(self.away.contains(&o.id), gap) {
                     o.flags = o.flags.with(ViewFlags::HELD_AWAY);
                     away.insert(o.id);
+                    // Blocked: away and touching something other than the holder's hands, or within `BLOCKED_HOLD`
+                    // publications of the last such touch. Only then is it drawn where it is.
+                    let own: Vec<ObjectId> =
+                        hands.iter().filter(|(m, _)| *m == holder.member).map(|&(_, h)| h).collect();
+                    let touching = self.physics.touches_other_than(o.id, &own).unwrap_or(false);
+                    if let Some(left) = crate::hands::blocked_hold(self.blocked.get(&o.id).copied(), touching) {
+                        o.flags = o.flags.with(ViewFlags::HELD_BLOCKED);
+                        blocked.insert(o.id, left);
+                    }
                 }
             }
             // The local member's hands and what they hold are drawn from tracking, never corrected (S5).
@@ -2095,6 +2113,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
         }
         self.corrected.clear();
         self.away = away;
+        self.blocked = blocked;
         let sim_time = self.config.clock.host_time_of(self.frame);
         let mut view = empty_view(self.domain);
         view.frame = self.frame;

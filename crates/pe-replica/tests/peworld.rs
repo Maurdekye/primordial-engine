@@ -2251,8 +2251,11 @@ fn a_held_ball_kept_from_its_place_by_a_wall_is_marked_away_in_the_view() {
     r.advance(Frame(clear), &mut s);
     assert!(gap(&r) > pe_seams::BREAK_AWAY, "kept from its place: {}", gap(&r));
     assert!(flags(&r).contains(local) && flags(&r).contains(away), "kept away by the wall: {:?}", flags(&r));
+    // Against the wall it is blocked, so the display draws it where it is.
+    assert!(flags(&r).contains(pe_seams::ViewFlags::HELD_BLOCKED), "blocked by the wall: {:?}", flags(&r));
     r.advance(Frame(120), &mut s);
     assert!(flags(&r).contains(local) && !flags(&r).contains(away), "back in its place: {:?}", flags(&r));
+    assert!(!flags(&r).contains(pe_seams::ViewFlags::HELD_BLOCKED), "in its place, not blocked: {:?}", flags(&r));
     assert_eq!(r.faults(), 0);
 }
 
@@ -2389,6 +2392,75 @@ fn a_light_held_ball_follows_the_hand_within_millimetres() {
         println!("RESULT {hz} Hz: a 100 m/s^2 flick trails {:.1} mm; ball {ball:.3}, hand {hand:.3} m/s", trail * 1e3);
         assert!(trail < 0.004, "{hz} Hz: trails {trail} m");
         assert!((ball - hand).abs() < 0.02, "{hz} Hz: the ball at {ball} m/s, the hand at {hand}");
+    }
+}
+
+/// A spawned box (0.2 m, density 300: 2.4 kg) held at the default strength, lifted to 1 m, then swept along x: speeding
+/// up at 60 m/s^2 to `v` m/s, carried 0.2 s, stopped at `stop` m/s^2, then held still 0.5 s. The most it is from its
+/// place in the hand (m), the frames it is break-away (`hands::held_away`, D4), and the most it is from its place in
+/// the 0.5 s after the stop (its overshoot).
+fn sweep_box(v: f64, stop: f64) -> (f64, u32, f64) {
+    let hr = f64::from(pe_replica::world::HAND_RADIUS);
+    let start = [-0.1 - hr, 0.1, 0.0];
+    let (t0, up, cruise, down) = (1.0, v / 60.0, 0.2, v / stop);
+    let p = move |t: f64| {
+        let lift = lerp(start, [start[0], 1.0, 0.0], (t - 0.2) / 0.5);
+        let s = (t - t0).max(0.0);
+        let x = if s < up {
+            30.0 * s * s
+        } else if s < up + cruise {
+            30.0 * up * up + v * (s - up)
+        } else {
+            let d = (s - up - cruise).min(down);
+            30.0 * up * up + v * cruise + v * d - 0.5 * stop * d * d
+        };
+        [lift[0] + x, lift[1], 0.0]
+    };
+    let hz = 60;
+    let stopped = t0 + up + cruise + down;
+    let end = ((stopped + 0.5) * f64::from(hz)) as u64;
+    let mut b = EntryBuilder::new(&keys(), 0);
+    let mut s = Source::default();
+    path_inputs(&mut b, HAND, hz, 2, end, &p).into_iter().for_each(|e| s.add(e));
+    s.add(input(&mut b, 6, &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) }));
+    let crate_box = Shape { density: 300.0, ..cuboid([0.1, 0.1, 0.1]) };
+    let mut r = replica_at(with_hands_and_balls(&[(HAND, start)], &[(BALL, [0.0, 0.1, 0.0], crate_box)]), hz);
+    let (mut most, mut away_frames, mut after, mut away) = (0.0_f64, 0_u32, 0.0_f64, false);
+    while r.frame().0 < end {
+        let next = r.frame().0 + 1;
+        r.advance(Frame(next), &mut s);
+        if (next as f64) < t0 * f64::from(hz) {
+            continue;
+        }
+        let gap = pe_replica::hands::hold_gap(r.physics(), oid(BALL), oid(HAND));
+        away = pe_replica::hands::held_away(away, gap);
+        away_frames += u32::from(away);
+        let g = gap.expect("still held");
+        most = most.max(g);
+        // In the air nothing touches it: away only by lagging, never blocked (the display keeps it at the hand).
+        if away {
+            assert!(!r.physics().touches_other_than(oid(BALL), &[oid(HAND)]).unwrap(), "frame {next}: touches nothing");
+        }
+        if next as f64 >= stopped * f64::from(hz) {
+            after = after.max(g);
+        }
+    }
+    assert_eq!(r.faults(), 0);
+    (most, away_frames, after)
+}
+
+/// Measurement for the arc (@ticket:primordial-engine/friend-test-11-27-feedback-held-object-arc-still): how far a
+/// 2.4 kg box lags its place at the default 110 N on quick sweeps and stops, and whether it breaks away (over 5 cm),
+/// which switches its drawing to where it is simulated.
+#[test]
+fn a_spawned_box_on_a_quick_sweep_at_the_default_strength() {
+    for (v, stop) in [(1.5, 60.0), (3.0, 60.0), (3.0, 150.0), (5.0, 150.0)] {
+        let (most, away, after) = sweep_box(v, stop);
+        println!(
+            "RESULT 2.4 kg box, {v} m/s, stop at {stop} m/s^2: most {:.1} cm from its place, {away} frames break-away, {:.1} cm after the stop",
+            most * 100.0,
+            after * 100.0
+        );
     }
 }
 

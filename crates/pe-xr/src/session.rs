@@ -514,6 +514,9 @@ impl<B: Backend> XrSession<B> {
             self.counters.missed_frames += 1;
         }
         self.last_display_time = Some(timing.predicted_display_time);
+        if let Some(line) = self.diag.ring(&self.ring.counters, timing.predicted_display_time.0) {
+            diag::emit(&line);
+        }
         if period != self.counters.last_display_period_ns {
             self.counters.last_display_period_ns = period;
             self.ring.set_display_period(period);

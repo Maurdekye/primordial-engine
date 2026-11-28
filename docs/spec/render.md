@@ -493,9 +493,20 @@ that decays to zero. The simulated pose comes from S5; time-resolving it (sectio
   - **The break-away** (the user's ruling of 2026-11-19: a blocked held object stays held and visibly
     separates from the hand; @coordinator-opus; S5 v1.9): a held object the simulation keeps more than
     `BREAK_AWAY` (5 cm, provisional) from its place in the hand, blocked by a wall the hand went through, say, or too
-    heavy to follow (world-model.md 8.1, the tight hold), is drawn where it is simulated instead, at its time-resolved
-    pose with no offset and no cue, so it is never drawn through what blocks it. pe-replica marks it `HELD_AWAY` at
-    publication, since only it knows each grab's place; it stays `HELD_LOCAL`, never corrected, and is no hold end.
+    heavy to follow (world-model.md 8.1, the tight hold), is marked `HELD_AWAY` by pe-replica at publication, since
+    only it knows each grab's place; it stays `HELD_LOCAL`, never corrected, and is no hold end. **Only one that also
+    touches something** other than its holder's hands in the simulation (`HELD_BLOCKED`, from pe-physics's touching
+    contacts; neither of the holder's hands counts, since both run the same lead; another player's hand does), or did
+    within the last `BLOCKED_HOLD` publications (8, about 130 ms, provisional; so a scrape that makes and breaks
+    contact doesn't flip the drawn pose by the hand's lead every frame, @shader-reviewer), is drawn where it is simulated, at its time-resolved pose with no offset and no cue, so it is never drawn through
+    what blocks it. One away only because it lags (too heavy or too fast to follow, nothing touching it) stays at the
+    drawn hand at its simulated offset from the simulated hand, as a held object in its place is: drawn where
+    simulated, it would follow the simulated hand, which under Shown runs up to the display's lead (about 49 ms) past
+    the newest tracked sample, so every quick stop threw it out along the hand's path and back (the 11-27 friend
+    test's arc; @coordinator-opus after @fable-reviewer, 11-27;
+    @item:primordial-engine/friend-test-11-27-feedback-held-object-arc-still). This is D4's reading, not a change to it:
+    the break-away shows what stops a held object, and with nothing touching it the only cause of the gap is lag, which
+    the drawn hand's offset shows honestly and steadily.
     It is drawn at the hand again once back within `BREAK_BACK` (3 cm, provisional), so a gap hovering near 5 cm
     doesn't flicker between the two (@design-reviewer's L1): a jump of the hand's lead, which the user's ruling on
     responsiveness accepts.

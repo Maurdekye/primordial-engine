@@ -51,7 +51,12 @@ pub struct Diag {
     hand_logged: [bool; 2],
     /// Each hand's pose source in the last FOCUSED frame, to log its changes.
     source: [Option<PoseSource>; 2],
+    /// The display time of the last hand-ring line.
+    ring_logged_ns: Option<i64>,
 }
+
+/// How often the hand ring's counters are logged, in display time (5 s).
+pub const RING_LINE_EVERY_NS: i64 = 5_000_000_000;
 
 /// Where a hand's pose came from in one frame (spec 5.4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -183,6 +188,16 @@ impl Diag {
         })
     }
 
+    /// The hand ring's counters every [`RING_LINE_EVERY_NS`] of display time, the first at the first frame
+    /// (the held-object arc of the 11-27 friend test could not be counted without them).
+    pub fn ring(&mut self, ring: &crate::ring::RingCounters, at_ns: i64) -> Option<String> {
+        if !self.on || self.ring_logged_ns.is_some_and(|t| at_ns - t < RING_LINE_EVERY_NS) {
+            return None;
+        }
+        self.ring_logged_ns = Some(at_ns);
+        Some(ring.line())
+    }
+
     pub fn ended(&self, why: Option<EndReason>, counters: &Counters) -> Option<String> {
         self.on.then(|| {
             let never = if self.hand_logged == [false, false] { "; no hand was ever tracked while drawn" } else { "" };
@@ -195,6 +210,20 @@ impl Diag {
 mod tests {
     use super::*;
     use crate::backend::Fov;
+
+    #[test]
+    fn the_hand_ring_line_comes_every_five_seconds_and_only_when_on() {
+        let ring = crate::ring::RingCounters::default();
+        ring.extrapolated.fetch_add(3, std::sync::atomic::Ordering::Relaxed);
+        ring.sample_age.record(2_000_000);
+        let mut d = Diag::new(true);
+        let first = d.ring(&ring, 10).expect("the first frame logs");
+        assert!(first.contains("1 reads, extrapolated 3 (clamped 0), older than the ring 0"), "{first}");
+        assert!(first.contains("max 2.0 ms"), "{first}");
+        assert_eq!(d.ring(&ring, 10 + RING_LINE_EVERY_NS - 1), None);
+        assert!(d.ring(&ring, 10 + RING_LINE_EVERY_NS).is_some());
+        assert_eq!(Diag::new(false).ring(&ring, 0), None);
+    }
 
     #[test]
     fn space_changes_log_the_first_five_and_every_hundredth() {

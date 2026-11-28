@@ -785,7 +785,9 @@ pe-xr reports, per second and as distributions over a run:
 - the display rate the runtime gave, and session state changes;
 - frames skipped for an invalid head pose, frames closed after an error short of a loss, degraded runs, and lost
   events;
-- the hand sample's age at each read: its maximum and p99.9 (section 6.2);
+- the hand sample's age at each read: its maximum and p99.9 (section 6.2). Under `PE_XR_LOG`, a `hand ring:` line
+  at the first frame and every 5 s of display time after: the reads, those extrapolated past the newest sample and
+  those cut short at the limit, those older than the ring, and the sample age's p50, p99 and maximum;
 - recentres, and how each was measured: by the runtime's pose, by the head, or not at all, and of those, how many
   had no head jump (section 3.2). Under `PE_XR_LOG`, a line for the first five changes and every hundredth after
   them: how long after its change time it applied, and how it was measured.

@@ -207,6 +207,13 @@ impl ViewFlags {
     /// view hides it, in VR and on the desktop, as the player's own head is never drawn either. Set by pe-replica on
     /// every object whose [`ViewObject::body_of`] is the local member.
     pub const OWN_BODY: ViewFlags = ViewFlags(32);
+    /// A [`ViewFlags::HELD_AWAY`] object that touches something other than its holder's hands, in the simulation, or
+    /// did within the last few publications: a wall, the floor, another object (render.md 8, D4's break-away). Only such an object is drawn where it is
+    /// simulated. One that is away only because it lags its place, too heavy or too fast to follow, is still drawn at
+    /// the drawn hand, at its simulated offset from the simulated hand, so the hand's run-ahead doesn't throw it out
+    /// along the hand's path (@item:primordial-engine/friend-test-11-27-feedback-held-object-arc-still). Set by
+    /// pe-replica at publication.
+    pub const HELD_BLOCKED: ViewFlags = ViewFlags(64);
 
     pub fn contains(self, f: ViewFlags) -> bool {
         self.0 & f.0 == f.0
@@ -657,7 +664,9 @@ mod tests {
             ViewFlags::CORRECTED,
             ViewFlags::RELEASED_LOCAL,
             ViewFlags::HELD_AWAY,
+            ViewFlags::OWN_BODY,
+            ViewFlags::HELD_BLOCKED,
         ];
-        assert_eq!(all.iter().fold(0, |bits, f| bits | f.0), 0b11111, "each flag its own bit");
+        assert_eq!(all.iter().fold(0, |bits, f| bits | f.0), 0b111_1111, "each flag its own bit");
     }
 }

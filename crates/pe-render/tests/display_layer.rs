@@ -828,37 +828,42 @@ fn an_own_release_is_a_hand_off_with_no_blend_and_no_cue() {
 }
 
 /// D4's break-away (render.md 8; @item:primordial-engine/tight-hold-for-light-objects-capped-by-a-per-pla): a held
-/// object the simulation keeps more than `BREAK_AWAY` from its place in the hand (`HELD_AWAY`: a ball held against a
-/// wall the hand has gone through) is drawn where it is simulated, not at the drawn hand, still with no offset and no
-/// cue. Back in its place it is drawn at the hand again, a jump of the hand's lead.
+/// object the simulation keeps more than `BREAK_AWAY` from its place in the hand and that touches something
+/// (`HELD_AWAY` and `HELD_BLOCKED`: a ball held against a wall the hand has gone through) is drawn where it is
+/// simulated, not at the drawn hand, still with no offset and no cue. Away but touching nothing (`HELD_AWAY` alone: it
+/// lags its place, too heavy or too fast to follow), it stays at the drawn hand at its simulated offset from the
+/// simulated hand (@item:primordial-engine/friend-test-11-27-feedback-held-object-arc-still). Back in its place it is
+/// drawn at the hand again, a jump of the hand's lead.
 #[test]
 fn a_held_object_kept_from_its_place_is_drawn_where_it_is() {
     let me = MemberKey([7; 32]);
     let mut layer = DisplayLayer::new(DisplaySettings { drawn_time: DrawnTime::present(60), ..Default::default() });
     let vols = volumes();
     // The hand's body at z -0.5 holds the ball 10 cm on; the tracked hand is drawn 20 cm further on.
-    let world = |f: u64, away: bool| {
+    let world = |f: u64, flags: ViewFlags| {
         let mut hand = ball(10, at(0.0, 0.1, -0.5), [0.0; 3]);
         hand.hand_of = Some((me, Hand::Right));
         hand.flags = ViewFlags::OWN_HAND;
         let mut b = ball(1, at(0.0, 0.1, -0.6), [0.0; 3]);
         b.held_by = Some(Holder { member: me, hand: ObjectId::from_u128(10) });
-        b.flags = if away { ViewFlags::HELD_LOCAL.with(ViewFlags::HELD_AWAY) } else { ViewFlags::HELD_LOCAL };
+        b.flags = flags;
         view(f, frame_time(f, 60), vec![hand, b])
     };
     let drawn =
         DisplayHand { pose: RigPose { position: [0.0, 0.1, -0.7], orientation: [0.0, 0.0, 0.0, 1.0] }, joints: None };
-    for (f, away) in [(1, false), (2, false), (3, true), (4, true), (5, false)] {
-        let v = world(f, away);
+    let (held, away) = (ViewFlags::HELD_LOCAL, ViewFlags::HELD_LOCAL.with(ViewFlags::HELD_AWAY));
+    let blocked = away.with(ViewFlags::HELD_BLOCKED);
+    for (f, flags) in [(1, held), (2, held), (3, blocked), (4, blocked), (5, away), (6, held)] {
+        let v = world(f, flags);
         let now = HostTime(frame_time(f, 60).0 + 2_000_000);
         let local = LocalPresentation { display_time: now, hands: [None, Some(drawn)] };
         let out = layer.frame(FrameInput { view: &v, display_time: now, volumes: &vols, local: &local });
         let b = out.objects.iter().find(|o| o.id == ObjectId::from_u128(1)).expect("the ball is drawn");
         let z = (b.pose.pos - Pos::ORIGIN).0[2];
-        if away {
-            assert!(dist(b.pose.pos, b.target.pos) < 1e-9, "frame {f}: away, drawn where simulated, at z {z}");
+        if flags == blocked {
+            assert!(dist(b.pose.pos, b.target.pos) < 1e-9, "frame {f}: blocked, drawn where simulated, at z {z}");
         } else {
-            assert!((z + 0.8).abs() < 1e-6, "frame {f}: held in its place, drawn at the hand, at z {z}");
+            assert!((z + 0.8).abs() < 1e-6, "frame {f}: drawn at the hand at its simulated offset, at z {z}");
         }
         assert!(b.cue.is_none(), "frame {f}: no cue");
     }

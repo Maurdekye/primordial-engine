@@ -43,6 +43,25 @@ pub struct RingCounters {
     pub sample_age: AgeHistogram,
 }
 
+impl RingCounters {
+    /// The counters as one log line (spec 9): reads past the newest sample (extrapolated, and cut short at the limit),
+    /// reads older than the ring, and the newest sample's age at a read (p50, p99, max).
+    pub fn line(&self) -> String {
+        let ms = |ns: Option<i64>| ns.map_or("-".to_string(), |v| format!("{:.1}", v as f64 / 1e6));
+        let a = &self.sample_age;
+        format!(
+            "hand ring: {} reads, extrapolated {} (clamped {}), older than the ring {}, sample age p50 {} p99 {} max {} ms",
+            a.count(),
+            self.extrapolated.load(Ordering::Relaxed),
+            self.extrapolation_clamped.load(Ordering::Relaxed),
+            self.older_than_ring.load(Ordering::Relaxed),
+            ms(a.quantile_ns(0.5)),
+            ms(a.quantile_ns(0.99)),
+            ms((a.count() > 0).then(|| a.max_ns())),
+        )
+    }
+}
+
 /// Width of one [`AgeHistogram`] bucket: 0.25 ms.
 pub const AGE_BUCKET_NS: i64 = 250_000;
 /// Buckets up to 64 ms; older ages land in the last.

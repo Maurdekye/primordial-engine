@@ -770,6 +770,21 @@ pub fn held_away(was_away: bool, gap: Option<f64>) -> bool {
     gap.is_some_and(|gap| gap > bound)
 }
 
+/// How many publications a [`pe_seams::ViewFlags::HELD_BLOCKED`] object stays blocked after its last touching contact
+/// (about 130 ms at 60 Hz; provisional, @shader-reviewer's Medium on the held-object draw): a scrape along a table makes
+/// and breaks contact from frame to frame, and each flip would move the drawn object by the hand's display lead.
+pub const BLOCKED_HOLD: u8 = 8;
+
+/// Whether an away held object is blocked at this publication, and the publications it then holds for: set at once
+/// while `touching` (to [`BLOCKED_HOLD`]); without a touch, one less than `was` (its count at the last publication),
+/// and no longer once that runs out.
+pub fn blocked_hold(was: Option<u8>, touching: bool) -> Option<u8> {
+    if touching {
+        return Some(BLOCKED_HOLD);
+    }
+    was.and_then(|n| n.checked_sub(1)).filter(|&n| n > 0)
+}
+
 /// A throw (world-model.md 8.1; @item:primordial-engine/friend-test-11-27-hold-and-release-unfiltered-th): if
 /// `t.object` is held by a hand's grab joint, it leaves with the throw's velocity, as far as the hold's force could have
 /// changed its velocity in a frame of `dt` s: the change from its solver velocity is at most `F dt / m`, `F` the hold's
@@ -805,4 +820,27 @@ const BOX3D_TOP_SPEED: f32 = 400.0;
 fn capped(v: [f32; 3], max: f32) -> [f32; 3] {
     let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
     if len > max && len > 0.0 { v.map(|c| c * (max / len)) } else { v }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A scrape: contact on and off every other publication keeps it blocked throughout; it clears only after
+    /// `BLOCKED_HOLD` publications with no touch (@shader-reviewer's Medium).
+    #[test]
+    fn a_flickering_contact_holds_blocked_and_it_clears_after_the_hold() {
+        let mut state = None;
+        for k in 0..20 {
+            state = blocked_hold(state, k % 2 == 0);
+            assert!(state.is_some(), "blocked at publication {k}");
+        }
+        let mut held = 0;
+        while state.is_some() {
+            state = blocked_hold(state, false);
+            held += u8::from(state.is_some());
+        }
+        assert_eq!(held, BLOCKED_HOLD - 2, "the last touch was at publication 18, one untouched publication since");
+        assert_eq!(blocked_hold(None, false), None, "never touched, never blocked");
+    }
 }

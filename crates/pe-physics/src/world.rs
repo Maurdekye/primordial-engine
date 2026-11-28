@@ -4,10 +4,11 @@ use std::collections::BTreeMap;
 
 use box3d_rust::body::{
     body_apply_angular_impulse, body_apply_force, body_apply_force_to_center, body_apply_linear_impulse,
-    body_apply_linear_impulse_to_center, body_apply_torque, body_get_angular_velocity, body_get_linear_velocity,
-    body_get_local_center, body_get_mass, body_get_shape_count, body_get_shapes, body_get_transform, body_get_type,
-    body_is_awake, body_is_valid, body_reset_history, body_set_angular_velocity, body_set_awake,
-    body_set_linear_velocity, body_set_target_transform, body_set_transform, create_body, destroy_body,
+    body_apply_linear_impulse_to_center, body_apply_torque, body_get_angular_velocity, body_get_contact_capacity,
+    body_get_contact_data, body_get_linear_velocity, body_get_local_center, body_get_mass, body_get_shape_count,
+    body_get_shapes, body_get_transform, body_get_type, body_is_awake, body_is_valid, body_reset_history,
+    body_set_angular_velocity, body_set_awake, body_set_linear_velocity, body_set_target_transform, body_set_transform,
+    create_body, destroy_body,
 };
 use box3d_rust::core::get_length_units_per_meter;
 use box3d_rust::geometry::{Capsule, ShapeType, Sphere, compute_capsule_mass, compute_sphere_mass};
@@ -643,6 +644,21 @@ impl PhysicsWorld {
             position: [xf.p.x as f64, xf.p.y as f64, xf.p.z as f64],
             rotation: [xf.q.v.x, xf.q.v.y, xf.q.v.z, xf.q.s],
         })
+    }
+
+    /// Whether `id`'s body is touching a body that is none of `except`'s: only contacts Box3D reports as touching
+    /// (`GetContactData` returns those; a near contact without manifold points is not one), against an object's body
+    /// or one of no object (render.md 8: a held object kept from its place is drawn where it
+    /// is simulated only while something blocks it, @item:primordial-engine/friend-test-11-27-feedback-held-object-arc-still).
+    /// A read of the last step's contacts; changes nothing.
+    pub fn touches_other_than(&self, id: ObjectId, except: &[ObjectId]) -> Result<bool, PhysicsError> {
+        let body = self.live_body(id)?;
+        let capacity = usize::try_from(body_get_contact_capacity(&self.world, body)).unwrap_or(0);
+        Ok(body_get_contact_data(&self.world, body, capacity).iter().any(|cd| {
+            let (a, b) = (shape_get_body(&self.world, cd.shape_id_a), shape_get_body(&self.world, cd.shape_id_b));
+            let other = if a.index1 == body.index1 { b } else { a };
+            self.objects.get(&other.index1).is_none_or(|o| !except.contains(o))
+        }))
     }
 
     /// Linear and angular velocity.
