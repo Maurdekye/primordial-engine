@@ -1,0 +1,9 @@
+P-M1: 5199 inputs
+  step 1 true, the definition's false
+  Input { e_o: [(Entry { stamp: 0, author: 0, seq: 1, op: Grab(P) }, Valid)], e_o2: [], e_t: [Entry { stamp: 0, author: 2, seq: 1, op: Grab(P) }], witnessed: [], contact: None, tie: 1 }
+P-M5: 1 inputs
+  delete (2, 1) vs add-on (0, 1): Some(Applied)
+  Input { e_o: [(Entry { stamp: 0, author: 0, seq: 1, op: Create(P) }, Valid)], e_o2: [], e_t: [Entry { stamp: 0, author: 2, seq: 1, op: Delete(P) }], witnessed: [(2, 1)], contact: None, tie: 1 }
+P-M6: 1317 inputs
+  step 1 passes but (2, 1) is not admitted
+  Input { e_o: [(Entry { stamp: 0, author: 0, seq: 1, op: Grab(P) }, Valid)], e_o2: [], e_t: [Entry { stamp: 0, author: 2, seq: 1, op: Grab(P) }], witnessed: [(2, 1)], contact: None, tie: 1 }

@@ -1,0 +1,9 @@
+P-M1: 9 inputs
+  (2, 1): Some(Refused(Moving)), the reference's MergedIn(Granted)
+  Input { e_o: [], e_o2: [], e_t: [Entry { stamp: 0, author: 2, seq: 1, op: Grab(P) }, Entry { stamp: 0, author: 2, seq: 2, op: Write(P, 1) }], witnessed: [(2, 2)], contact: Some(0), tie: 0 }
+P-M2: 1 inputs
+  the result depends on the arrival order
+  Input { e_o: [], e_o2: [], e_t: [Entry { stamp: 0, author: 2, seq: 1, op: Grab(P) }, Entry { stamp: 0, author: 2, seq: 2, op: Write(P, 1) }], witnessed: [(2, 1), (2, 2)], contact: None, tie: 0 }
+P-M6: 3 inputs
+  fast-forward (2, 1): Some(Refused(Moving)), theirs Some(Granted)
+  Input { e_o: [], e_o2: [], e_t: [Entry { stamp: 0, author: 2, seq: 1, op: Grab(P) }, Entry { stamp: 0, author: 2, seq: 2, op: Write(P, 1) }], witnessed: [(2, 2)], contact: Some(0), tie: 0 }

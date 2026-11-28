@@ -1,0 +1,6 @@
+P-M1: 4 inputs
+  Adm {}, the definition's {(2, 1)}
+  Input { e_o: [], e_o2: [], e_t: [Entry { stamp: 0, author: 2, seq: 1, op: Grab(P) }], witnessed: [], contact: None, tie: 0 }
+P-M6: 2 inputs
+  step 1 passes but (2, 1) is not admitted
+  Input { e_o: [], e_o2: [], e_t: [Entry { stamp: 0, author: 2, seq: 1, op: Grab(P) }], witnessed: [], contact: None, tie: 0 }

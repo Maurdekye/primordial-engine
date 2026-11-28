@@ -1,0 +1,6 @@
+P-M1: 1 inputs
+  Adm {(0, 1)}, the definition's {}
+  Input { e_o: [(Entry { stamp: 0, author: 0, seq: 1, op: Grab(P) }, Valid)], e_o2: [], e_t: [Entry { stamp: 0, author: 0, seq: 1, op: Grab(P) }], witnessed: [], contact: Some(0), tie: 0 }
+P-M7: 1 inputs
+  (0, 1) took effect 2 times
+  Input { e_o: [(Entry { stamp: 0, author: 0, seq: 1, op: Grab(P) }, Valid)], e_o2: [], e_t: [Entry { stamp: 0, author: 0, seq: 1, op: Grab(P) }], witnessed: [], contact: Some(0), tie: 0 }

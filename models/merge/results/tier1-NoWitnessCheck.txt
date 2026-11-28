@@ -1,0 +1,6 @@
+P-M1: 6 inputs
+  Adm {(2, 1)}, the definition's {}
+  Input { e_o: [(Entry { stamp: 0, author: 0, seq: 1, op: Grab(P) }, Valid)], e_o2: [], e_t: [Entry { stamp: 0, author: 2, seq: 1, op: Grab(P) }], witnessed: [], contact: None, tie: 1 }
+P-M4: 2 inputs
+  final Some((0, 1)) changed by an unwitnessed admitted entry
+  Input { e_o: [(Entry { stamp: 0, author: 0, seq: 1, op: Grab(P) }, Valid)], e_o2: [], e_t: [Entry { stamp: 0, author: 2, seq: 1, op: Grab(P) }], witnessed: [], contact: None, tie: 1 }

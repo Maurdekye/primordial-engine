@@ -1,0 +1,16 @@
+[package]
+name = "merge-model"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Model v2 (WS-model, M2 S7): the merge against finality, checked before merge engine v1 is built"
+
+# Its own workspace, as models/cuts: the model is not part of the engine's build.
+[workspace]
+
+[dependencies]
+stateright = "0.31"
+
+[profile.release]
+debug = 1

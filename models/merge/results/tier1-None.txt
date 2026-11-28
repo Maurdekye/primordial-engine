@@ -1,0 +1,26 @@
+example 'a lone returner's back-stamped grab loses': 246964
+  Some(Input { e_o: [(Entry { stamp: 0, author: 0, seq: 1, op: Grab(P) }, Valid)], e_o2: [], e_t: [Entry { stamp: 0, author: 2, seq: 1, op: Grab(P) }], witnessed: [], contact: None, tie: 1 })
+example 'its back-stamped delete of an object main later edited loses': 86604
+  Some(Input { e_o: [(Entry { stamp: 0, author: 0, seq: 1, op: Write(P, 1) }, Valid)], e_o2: [], e_t: [Entry { stamp: 0, author: 2, seq: 1, op: Delete(P) }], witnessed: [], contact: None, tie: 1 })
+example 'a returning push that hits a ball a final grab holds is refused': 5096
+  Some(Input { e_o: [(Entry { stamp: 1, author: 0, seq: 1, op: Grab(P) }, Valid)], e_o2: [], e_t: [Entry { stamp: 0, author: 2, seq: 1, op: Write(X, 1) }], witnessed: [], contact: Some(0), tie: 0 })
+example 'a run whose early entry conflicts keeps its later independent entries': 87744
+  Some(Input { e_o: [(Entry { stamp: 0, author: 0, seq: 1, op: Grab(P) }, Valid)], e_o2: [], e_t: [Entry { stamp: 0, author: 2, seq: 1, op: Grab(P) }, Entry { stamp: 0, author: 2, seq: 2, op: Write(X, 1) }], witnessed: [], contact: None, tie: 1 })
+example 'a witnessed earlier delete orphans main's later add-on': 89348
+  Some(Input { e_o: [(Entry { stamp: 0, author: 0, seq: 1, op: Create(P) }, Valid)], e_o2: [], e_t: [Entry { stamp: 0, author: 2, seq: 1, op: Delete(P) }], witnessed: [(2, 1)], contact: None, tie: 1 })
+example 'a witnessed earlier delete orphans main's later reparent': 2352
+  Some(Input { e_o: [(Entry { stamp: 0, author: 0, seq: 1, op: Create(P) }, Valid), (Entry { stamp: 0, author: 0, seq: 2, op: Reparent(P) }, Valid)], e_o2: [], e_t: [Entry { stamp: 0, author: 2, seq: 1, op: Delete(P) }], witnessed: [(2, 1)], contact: None, tie: 1 })
+example 'a returning entry main voided as Late that changes no final outcome is merged in': 38902822
+  Some(Input { e_o: [(Entry { stamp: 0, author: 0, seq: 1, op: Grab(P) }, Late)], e_o2: [], e_t: [Entry { stamp: 0, author: 0, seq: 1, op: Grab(P) }], witnessed: [], contact: None, tie: 0 })
+example 'a returning write to an object main never touched is kept': 4019176
+  Some(Input { e_o: [], e_o2: [], e_t: [Entry { stamp: 0, author: 2, seq: 1, op: Write(P, 1) }], witnessed: [], contact: Some(0), tie: 0 })
+example 'an entry both lines hold is applied once': 3692556
+  Some(Input { e_o: [(Entry { stamp: 0, author: 0, seq: 1, op: Create(P) }, Valid)], e_o2: [], e_t: [Entry { stamp: 0, author: 0, seq: 1, op: Create(P) }], witnessed: [], contact: None, tie: 0 })
+example 'a returning create and a final create both stand': 1003352
+  Some(Input { e_o: [(Entry { stamp: 0, author: 0, seq: 1, op: Create(P) }, Valid)], e_o2: [], e_t: [Entry { stamp: 0, author: 2, seq: 1, op: Create(P) }], witnessed: [], contact: None, tie: 1 })
+example 'a witnessed returning grab ranked first at a final grab's stamp wins it': 22324
+  Some(Input { e_o: [(Entry { stamp: 0, author: 0, seq: 1, op: Grab(P) }, Valid)], e_o2: [], e_t: [Entry { stamp: 0, author: 2, seq: 1, op: Grab(P) }], witnessed: [(2, 1)], contact: None, tie: 1 })
+example 'a returning removal of an admin who then acts is lost to final': 332584
+  Some(Input { e_o: [(Entry { stamp: 0, author: 0, seq: 1, op: RemoveAdmin(2) }, Valid)], e_o2: [], e_t: [Entry { stamp: 0, author: 2, seq: 1, op: RemoveAdmin(0) }], witnessed: [], contact: None, tie: 1 })
+example 'a returning removal against main's addition of one member is decided by order': 154840
+  Some(Input { e_o: [(Entry { stamp: 0, author: 0, seq: 1, op: AddAdmin(3) }, Valid)], e_o2: [], e_t: [Entry { stamp: 1, author: 2, seq: 1, op: RemoveAdmin(3) }], witnessed: [], contact: Some(0), tie: 0 })

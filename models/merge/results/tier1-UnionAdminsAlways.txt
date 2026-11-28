@@ -1,0 +1,6 @@
+P-M1: 2 inputs
+  S_1 World { objs: [ObjState { exists: true, field: 0, hold: None, comp: false, version: 0, parent: None }, ObjState { exists: false, field: 0, hold: None, comp: false, version: 0, parent: None }, ObjState { exists: true, field: 0, hold: None, comp: false, version: 0, parent: None }, ObjState { exists: false, field: 0, hold: None, comp: false, version: 0, parent: None }], g: 0, admins: 7, pos: [0, 0] } differs from the reference World { objs: [ObjState { exists: true, field: 0, hold: None, comp: false, version: 0, parent: None }, ObjState { exists: false, field: 0, hold: None, comp: false, version: 0, parent: None }, ObjState { exists: true, field: 0, hold: None, comp: false, version: 0, parent: None }, ObjState { exists: false, field: 0, hold: None, comp: false, version: 0, parent: None }], g: 0, admins: 3, pos: [0, 0] }
+  Input { e_o: [], e_o2: [], e_t: [Entry { stamp: 0, author: 2, seq: 1, op: RemoveAdmin(2) }], witnessed: [], contact: Some(0), tie: 0 }
+P-M8: 1 inputs
+  admin 2: 0b111, 9.6 says false
+  Input { e_o: [], e_o2: [], e_t: [Entry { stamp: 0, author: 2, seq: 1, op: RemoveAdmin(2) }], witnessed: [], contact: Some(0), tie: 0 }

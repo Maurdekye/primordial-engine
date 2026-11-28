@@ -1,0 +1,3 @@
+P-M3: 1 inputs
+  frame 1 changed below A
+  Input { e_o: [], e_o2: [], e_t: [Entry { stamp: 0, author: 2, seq: 1, op: Grab(P) }], witnessed: [], contact: None, tie: 0 }
