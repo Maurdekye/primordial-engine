@@ -966,6 +966,31 @@ Ruled by the coordinator (epochs, as DiemBFT v4 reconfigures), with @design-revi
   - (f1) a restart that forgets the views it voted and timed out in; (f2) one that keeps them but forgets its
     `high_qc` (n = 4 with the Byzantine member).
 
+## 8a. Packages and the merge entry (S3 v1.15; M2 S7, seam only)
+
+The seam a cut-off member's package and its merge entry `M` use (pe-seams `package`; divergence.md 9, package delta
+r2 Fix 1, model v2's layer 2). This version defines the types and the event. pe-agree's rules for them (the store,
+the fetch by name, inclusion once q voters hold the package, the vote gate and the verdicts at `M`'s final cut) come
+with S7 row 4a's Part 2 (@ticket:primordial-engine/s7-row-4a-pe-agree-pe-seams-the-merge-back-seams).
+
+- **Intents** (`PackageIntent`, signed under `pe.sig.package.intent.v1`): B's actions while cut off, numbered by
+  their place in the segment. They are never chain entries: no cut includes one, and they execute only through `M`.
+- **The commitment** (`Commitment`, signed under `pe.sig.package.commitment.v1`): the segment (B, the line, the base
+  cut, a generation number, the predecessor package), B's ordinary chain head at the seal, the intents' count, their
+  highest stamp `top`, and a hash over them. The package's id is the hash of the commitment's bytes. It doesn't cover
+  the signature, so a commitment signed again after a crash keeps its id (@design-reviewer's L1).
+- **`M`** is a Protocol entry by the segment's author whose payload (`MergePayload`, tag `pe.agree.merge/`) is the
+  signed commitment itself (@design-reviewer's H1): every member, a non-voter or a later joiner included, decides
+  `M` from the final log and the entry alone. Only applying it needs the intents, fetched by the package's id from
+  any holder and checked against the commitment (`verify_package`).
+- **The verdicts** (`MergeOutcome`): `Accepted`; `AlreadyMerged`, a retry; or `Refused` with `MBelowIntents` (`M`
+  stamped at or below `top`), `SecondPackage`, `PredecessorNotMerged` (the id and segment stay free),
+  `NotAuthorized`, `BaseNotKept` (the base isn't a final cut of this line members keep history from) or
+  `HistoryBudget` (the final log from the base to `M` is over the protocol's byte budget, the coordinator's ruling C).
+- **The event** `AgreeEvent::Merged { entry, package, segment, final_frame, outcome }`. `final_frame` is `F_M`.
+  `A = F_M + D` and the order of application are pe-diverge's and pe-app's (divergence.md 9.3a).
+- **`Agreement::package(id)`** returns a held package, verified, or `None`.
+
 ## 9. Not in v0
 
 One branch merging with the main line (model v2); quorum loss, unconfirmed play, the one-minute bound and split

@@ -339,10 +339,16 @@ pub enum AgreeEvent {
         line: LineId,
         at: Frame,
     },
-    /// A merge entry took effect (provisional: M2).
+    /// (S3 v1.15; package.rs.) A merge entry `M` became final and S3 decided it: every member reports the same
+    /// outcome for the same entry. `final_frame` is `F_M`, the frame of the final cut that first includes `M`; the
+    /// merge applies at `A = F_M + D` (pe-diverge and pe-app compute `D` and order the merges by `A`, a predecessor
+    /// first). An `Accepted` package's intents are fetched by its id ([`Agreement::package`]).
     Merged {
-        from: LineId,
-        at: Frame,
+        entry: EntryRef,
+        package: crate::package::PackageId,
+        segment: crate::package::SegmentId,
+        final_frame: Frame,
+        outcome: crate::package::MergeOutcome,
     },
     /// Play paused. Must never fire (P8): it is in the vocabulary so the harness can prove it never appears.
     Paused {
@@ -450,6 +456,16 @@ pub trait Agreement: EntrySource + Send {
 
     /// The members of the current epoch, sorted by key (S3 v1.7: they change when a reconfiguring cut is final).
     fn members(&self) -> Vec<MemberKey>;
+
+    /// (S3 v1.15; package.rs.) A package this member holds, verified against its commitment: what merge.rs reads a
+    /// merge's intents from. `None` until it has been fetched.
+    fn package(
+        &self,
+        id: &crate::package::PackageId,
+    ) -> Option<(crate::package::SignedCommitment, Vec<crate::package::SignedIntent>)> {
+        let _ = id;
+        None
+    }
 
     /// (S3 v1.11; agreement.md 8, app.md 4 "Joining from a cut".) The epoch this member is in: 0 from genesis, one
     /// more at each reconfiguring cut. An invite pins it, so the inviter's app can tell whether the session is still in
