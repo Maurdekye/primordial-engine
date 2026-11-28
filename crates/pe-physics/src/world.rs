@@ -235,6 +235,17 @@ pub struct PhysicsWorld {
     pub(crate) players: BTreeMap<ObjectId, crate::player::PlayerState>,
     pub(crate) images: crate::image::ImageRegistry,
     pub(crate) poisoned: bool,
+    /// A new generation ([`fresh_gen`]) whenever the bound bodies or the players may have changed
+    /// ([`PhysicsWorld::bodies_gen`]).
+    pub(crate) bodies_gen: u64,
+}
+
+/// The source of [`PhysicsWorld::bodies_gen`]'s values: each is handed out once in the process.
+static NEXT_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// A generation no world has had.
+pub(crate) fn fresh_gen() -> u64 {
+    NEXT_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// The fork's worker-count limit.
@@ -434,6 +445,7 @@ impl PhysicsWorld {
             players: BTreeMap::new(),
             images: crate::image::ImageRegistry::default(),
             poisoned: false,
+            bodies_gen: fresh_gen(),
         })
     }
 
@@ -569,6 +581,7 @@ impl PhysicsWorld {
         }
         self.bodies.insert(id, body);
         self.objects.insert(body.index1, id);
+        self.bodies_gen = fresh_gen();
         Ok(())
     }
 
@@ -576,6 +589,7 @@ impl PhysicsWorld {
     pub fn remove_body(&mut self, id: ObjectId) -> Result<(), PhysicsError> {
         self.usable()?;
         let body = self.bodies.remove(&id).ok_or(PhysicsError::NotBound(id))?;
+        self.bodies_gen = fresh_gen();
         self.objects.remove(&body.index1);
         self.players.remove(&id);
         destroy_body(&mut self.world, body);
@@ -587,6 +601,14 @@ impl PhysicsWorld {
 
     pub fn has_body(&self, id: ObjectId) -> bool {
         self.bodies.contains_key(&id)
+    }
+
+    /// A generation of the bound bodies and the players: equal values, from any two states of any worlds in this
+    /// process, mean the same [`objects`](Self::objects) and the same players. Adding or removing a body or a player
+    /// takes a value never handed out before, and so does every image restore. For callers that cache what they derive
+    /// from the body set (pe-replica's stale-body pass, E4); never hashed or sent.
+    pub fn bodies_gen(&self) -> u64 {
+        self.bodies_gen
     }
 
     /// The bound objects, in id order.
@@ -897,6 +919,12 @@ impl PhysicsWorld {
         };
         self.joints.insert(key, JointEntry { id, kind });
         Ok(())
+    }
+
+    /// The keys of every [`JointKind::Grab`] joint, in key order (no Box3D call, so poisoned or not). For pe-replica's
+    /// grab pass over held objects only (E4).
+    pub fn grab_joints(&self) -> impl Iterator<Item = JointKey> + '_ {
+        self.joints.iter().filter(|(_, j)| j.kind == JointKind::Grab).map(|(&k, _)| k)
     }
 
     /// The kind of the joint under `key`.

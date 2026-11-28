@@ -175,11 +175,53 @@ pub fn is_physical(hand: &HandRow, holding: bool) -> bool {
     hand.mode == hand_mode::ALWAYS_WITHIN_REACH || hand.engaged || holding
 }
 
+/// What [`sync`] keeps from step to step to skip the passes that provably change nothing (E4, re-solve step 2;
+/// diverge-eng/resolve-e4-design.md): the stale-body pass only when its inputs changed, and the grab pass only over
+/// claimed objects and the objects of existing grab joints. Either way the same calls on the physics, in the same order,
+/// so the same faults and the same state. Off ([`Passes::full`]), every step runs both passes over every body.
+#[derive(Clone, Debug, Default)]
+pub struct Passes {
+    /// Whether the passes run on what is active.
+    pub active: bool,
+    /// Whether each active pass is checked against the full one beside it (tests): a disagreement adds to `misses`.
+    pub check: bool,
+    /// The disagreements [`Passes::check`] found: each stale body the full pass would remove that the active one
+    /// skipped, each grab the full pass would change outside the active set, each grab joint not under its object's
+    /// [`grab_key`], and each wrong cached physical list.
+    pub misses: u64,
+    /// The steps whose stale-body pass was skipped, its inputs unchanged.
+    pub skips: u64,
+    /// The world model's physical objects, sorted, and the [`WorldModel::physical_key`] they were read at.
+    physical: Option<([u64; 4], Vec<ObjectId>)>,
+    /// The inputs of the latest stale-body pass that found nothing to remove: the world model's key, the physics'
+    /// [`PhysicsWorld::bodies_gen`] and the physical hands. While they are the same, the pass finds nothing again: the
+    /// stale bodies are the bound bodies outside the physical objects, the physical hands and the players, and the first
+    /// two are functions of the key, the bound bodies and the players of the generation. A pass that removed a body or
+    /// was refused is never kept (its next run must retry, as the full pass does). Restores need no clearing: a
+    /// restored world model's key is the one its rows had (keys never repeat across states), and every physics image
+    /// restore takes a new generation.
+    clean: Option<([u64; 4], u64, Vec<ObjectId>)>,
+}
+
+impl Passes {
+    /// Both passes over every body, every step.
+    pub fn full() -> Passes {
+        Passes::default()
+    }
+
+    /// The passes over what is active, and with `check`, the full ones beside them.
+    pub fn active(check: bool) -> Passes {
+        Passes { active: true, check, ..Passes::default() }
+    }
+}
+
 /// Bring the hand bodies in line with the world model's hands, before a frame's step: a body for every physical
 /// hand, driven towards its target, and no other body that the world model does not list as physical. `hands` is
 /// the world model's [`WorldModel::hands`], in id order. Returns the number of refused physics calls (faults, 3.1),
 /// and each grab's reach for the step ([`reaches`]), for [`PhysicsWorld::step_holding`]. With `grab_ns`, adds the
-/// time the grab joints' pass over every physical object took (the replay costs, crate::costs).
+/// time the grab joints' pass took (the replay costs, crate::costs). `passes` says whether the passes run over every
+/// body or over what is active, and keeps what the latter reuses.
+#[allow(clippy::too_many_arguments)]
 pub fn sync<W: WorldModel + ?Sized>(
     world: &W,
     physics: &mut PhysicsWorld,
@@ -188,6 +230,7 @@ pub fn sync<W: WorldModel + ?Sized>(
     rate: SimRate,
     frame: Frame,
     grab_ns: Option<&mut u64>,
+    passes: &mut Passes,
 ) -> (u64, Vec<(JointKey, HoldReach)>) {
     let claims = world.claims();
     let holding: Vec<ObjectId> = {
@@ -200,33 +243,167 @@ pub fn sync<W: WorldModel + ?Sized>(
         hands.iter().filter(|h| is_physical(h, holding.binary_search(&h.hand).is_ok())).collect();
     // A body the world model lists neither as a physical object nor as a physical hand: a hand that opened, changed
     // mode or is gone. Players are crate::players's, synced before the hands.
-    let mut bodies = world.physical();
-    bodies.sort_unstable();
-    let stale: Vec<ObjectId> = physics
-        .objects()
-        .filter(|id| {
-            bodies.binary_search(id).is_err()
-                && !physical_hands.iter().any(|h| h.hand == *id)
-                && !physics.is_player(*id)
-        })
-        .collect();
+    let Some(key) = passes.active.then(|| world.physical_key()).flatten() else {
+        (passes.physical, passes.clean) = (None, None);
+        let mut bodies = world.physical();
+        bodies.sort_unstable();
+        return sync_with(
+            world,
+            physics,
+            hands,
+            &claims,
+            &physical_hands,
+            &bodies,
+            None,
+            origin,
+            rate,
+            frame,
+            grab_ns,
+            passes,
+        );
+    };
+    match &passes.physical {
+        Some((k, kept)) if *k == key => {
+            if passes.check {
+                let mut fresh = world.physical();
+                fresh.sort_unstable();
+                passes.misses += u64::from(*kept != fresh);
+            }
+        }
+        _ => {
+            let mut bodies = world.physical();
+            bodies.sort_unstable();
+            passes.physical = Some((key, bodies));
+        }
+    }
+    let bodies = std::mem::take(&mut passes.physical.as_mut().expect("kept above").1);
+    let out = sync_with(
+        world,
+        physics,
+        hands,
+        &claims,
+        &physical_hands,
+        &bodies,
+        Some(key),
+        origin,
+        rate,
+        frame,
+        grab_ns,
+        passes,
+    );
+    if let Some((_, kept)) = passes.physical.as_mut() {
+        *kept = bodies;
+    }
+    out
+}
+
+/// [`sync`] on `bodies`, the world model's physical objects, sorted, read at `key` (`None`: no key, no reuse).
+#[allow(clippy::too_many_arguments)]
+fn sync_with<W: WorldModel + ?Sized>(
+    world: &W,
+    physics: &mut PhysicsWorld,
+    hands: &[HandRow],
+    claims: &[ClaimRow],
+    physical_hands: &[&HandRow],
+    bodies: &[ObjectId],
+    key: Option<[u64; 4]>,
+    origin: Pos,
+    rate: SimRate,
+    frame: Frame,
+    grab_ns: Option<&mut u64>,
+    passes: &mut Passes,
+) -> (u64, Vec<(JointKey, HoldReach)>) {
+    let stale_of = |physics: &PhysicsWorld| -> Vec<ObjectId> {
+        physics
+            .objects()
+            .filter(|id| {
+                bodies.binary_search(id).is_err()
+                    && !physical_hands.iter().any(|h| h.hand == *id)
+                    && !physics.is_player(*id)
+            })
+            .collect()
+    };
+    let mut hand_ids: Vec<ObjectId> = physical_hands.iter().map(|h| h.hand).collect();
+    hand_ids.sort_unstable();
+    let inputs = key.map(|k| (k, physics.bodies_gen(), hand_ids));
     let mut faults: u64 = 0;
-    for id in stale {
-        faults += u64::from(physics.remove_body(id).is_err());
+    if inputs.is_some() && passes.clean == inputs && !physics.is_poisoned() {
+        passes.skips += 1;
+        if passes.check {
+            passes.misses += stale_of(physics).len() as u64;
+        }
+    } else {
+        let stale = stale_of(physics);
+        let removed = !stale.is_empty();
+        for id in stale {
+            faults += u64::from(physics.remove_body(id).is_err());
+        }
+        // Kept only after a pass that found nothing: a removal takes a new generation anyway, and a refused one must
+        // be retried next step, as the full pass would.
+        passes.clean = if removed || faults > 0 { None } else { inputs };
     }
     let gravity = world.settings().gravity;
     let g = (gravity[0] * gravity[0] + gravity[1] * gravity[1] + gravity[2] * gravity[2]).sqrt();
-    for hand in physical_hands {
+    for &hand in physical_hands {
         let held: Vec<ObjectId> =
             claims.iter().filter(|c| c.hand == hand.hand && physics.has_body(c.object)).map(|c| c.object).collect();
         faults += u64::from(drive(physics, hand, &held, origin, rate, frame, g).is_err());
     }
     let t = grab_ns.is_some().then(std::time::Instant::now);
-    faults += grabs(physics, &claims, &bodies, hands);
+    if passes.active && !physics.is_poisoned() {
+        let held = held_objects(physics, claims, bodies);
+        if passes.check {
+            passes.misses += grab_misses(physics, claims, bodies, &held);
+        }
+        faults += grabs(physics, claims, &held, hands);
+        debug_assert_eq!(passes.misses, 0, "the hand sync's active passes disagree with the full ones at {frame:?}");
+    } else {
+        faults += grabs(physics, claims, bodies, hands);
+    }
     if let (Some(ns), Some(t)) = (grab_ns, t) {
         *ns += crate::costs::since(t);
     }
-    (faults, reaches(physics, &claims, 1.0 / rate.hz() as f32, gravity))
+    (faults, reaches(physics, claims, 1.0 / rate.hz() as f32, gravity))
+}
+
+/// The objects [`grabs`] can act on, sorted: of `bodies`, those a claim names with a hand, and those with a grab joint
+/// (each joint's `b`, so a key that is not its object's [`grab_key`] is still found, and checked as the full pass
+/// checks it). Every arm of `grabs` needs a grab joint under the object's key or a claim with a hand, so `grabs` over
+/// these makes the same calls, in the same order, as over every body (@design-reviewer).
+fn held_objects(physics: &PhysicsWorld, claims: &[ClaimRow], bodies: &[ObjectId]) -> Vec<ObjectId> {
+    let joined = physics.grab_joints().filter_map(|k| physics.joint_objects(k).and_then(|(_, b)| b));
+    let mut ids: Vec<ObjectId> = claims
+        .iter()
+        .filter(|c| c.hand != ObjectId::NONE)
+        .map(|c| c.object)
+        .chain(joined)
+        .filter(|id| bodies.binary_search(id).is_ok())
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+/// The check beside the grab pass over `held` ([`Passes::check`]): each object of `bodies` outside `held` that the full
+/// pass would act on, and each grab joint not under its object's [`grab_key`] (only [`hold`] makes grab joints, always
+/// under that key).
+fn grab_misses(physics: &PhysicsWorld, claims: &[ClaimRow], bodies: &[ObjectId], held: &[ObjectId]) -> u64 {
+    let hand_of = |id: ObjectId| claims.iter().find(|c| c.object == id && c.hand != ObjectId::NONE).map(|c| c.hand);
+    let acts = |object: ObjectId| {
+        let key = grab_key(object);
+        let hand = hand_of(object).filter(|&hand| physics.has_body(hand) && physics.has_body(object));
+        match (physics.joint_kind(key), hand) {
+            (Some(JointKind::Grab), None) | (None, Some(_)) => true,
+            (Some(JointKind::Grab), Some(hand)) => physics.joint_objects(key).map(|(a, _)| a) != Some(Some(hand)),
+            _ => false,
+        }
+    };
+    let outside = bodies.iter().filter(|&&o| held.binary_search(&o).is_err() && acts(o)).count() as u64;
+    let misplaced = physics
+        .grab_joints()
+        .filter(|&k| physics.joint_objects(k).and_then(|(_, b)| b).map(grab_key) != Some(k))
+        .count();
+    outside + misplaced as u64
 }
 
 /// How far from its place each held object's spring sees it in this frame's step, m, for

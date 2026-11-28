@@ -482,6 +482,10 @@ impl WorldModel for PeWorld {
         self.world.physical()
     }
 
+    fn physical_key(&self) -> Option<[u64; 4]> {
+        Some(self.world.physical_key())
+    }
+
     fn hands(&self) -> Vec<HandRow> {
         let store = self.world.store();
         let mut hands: Vec<HandRow> = store

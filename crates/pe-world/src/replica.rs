@@ -5,9 +5,9 @@ use pe_core::commit::Hasher;
 use pe_core::{Hash, ObjectId, Pos};
 use pe_seams::SimRate;
 use pe_sim::transform::quat_normalize;
-use pe_sim::{Transform, WorldTransform};
+use pe_sim::{Component, Transform, WorldTransform};
 
-use crate::components::{Body, BodyState, Shape};
+use crate::components::{Body, BodyState, Name, Shape};
 use crate::world::{Claim, World, depth};
 
 /// The world settings the physics takes (replica.md 8.1).
@@ -37,6 +37,21 @@ impl World {
     /// [`crate::templates`]).
     pub fn physical(&self) -> Vec<ObjectId> {
         self.store.iter::<Body>().map(|(id, _)| id).filter(|&id| self.has_shape(id) && !self.inert(id)).collect()
+    }
+
+    /// A key for [`World::physical`]'s result: equal keys, from any two states of any worlds in this process, mean
+    /// equal results (pe-sim's [`SimStore::column_gens`](pe_sim::SimStore::column_gens)). It covers everything
+    /// `physical` reads: which objects have a `Body` or a `Shape`, the hierarchy (`Node` rows, which also come and go
+    /// with the objects) and `Name` rows (a template folder's root makes its subtree inert). A key that differs says
+    /// only that the result may have changed. For pe-replica's stale-body pass (E4); never hashed or sent.
+    pub fn physical_key(&self) -> [u64; 4] {
+        let s = &self.store;
+        [
+            s.column_gens(Body::ID).0,
+            s.column_gens(Shape::ID).0,
+            s.column_gens(pe_sim::ComponentId::NODE).1,
+            s.column_gens(Name::ID).1,
+        ]
     }
 
     fn has_shape(&self, body: ObjectId) -> bool {

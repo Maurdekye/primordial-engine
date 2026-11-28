@@ -474,6 +474,7 @@ impl PhysicsWorld {
         self.bodies.insert(id, body);
         self.objects.insert(body.index1, id);
         self.players.insert(id, PlayerState::default());
+        self.bodies_gen = crate::world::fresh_gen();
         Ok(())
     }
 

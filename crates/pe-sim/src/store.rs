@@ -389,6 +389,16 @@ impl SimStore {
         }
     }
 
+    /// A component column's generations, `(members, rows)`: `members` changes whenever a row is added or removed,
+    /// and `rows` whenever a row may have been written, added or removed (edit versions aside). Equal values, from
+    /// any two states of any stores in this process, mean the same ids (members) or the same ids and rows (rows): each
+    /// change takes a value never handed out before, and a copy or a restore keeps the values of the state it copies.
+    /// `(0, 0)` for a component with no column (no rows). For callers that cache what they derive from a few
+    /// components (pe-replica's stale-body pass, E4); never hashed or sent.
+    pub fn column_gens(&self, c: ComponentId) -> (u64, u64) {
+        self.columns.get(&c).map_or((0, 0), |col| (col.members_gen, col.rows_gen))
+    }
+
     /// The ids and writable rows of a component, in id order (not validated). Copies the column first if a
     /// snapshot shares it.
     pub fn column_mut<T: Component>(&mut self) -> (&[ObjectId], &mut [T]) {
@@ -402,6 +412,8 @@ impl SimStore {
         }
         match self.columns.get_mut(&T::ID) {
             Some(col) => {
+                // Every row may change, so the rows' generation moves (E4's caches key on it).
+                col.rows_gen = crate::column::fresh_gen();
                 let n = col.ids.len() * col.size;
                 // Disjoint fields: the ids are read, the data buffer is written.
                 let ids: &[ObjectId] = &col.ids;

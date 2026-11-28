@@ -563,6 +563,7 @@ impl PhysicsWorld {
             players.insert(*id, state);
         }
         self.bodies = image.bodies.iter().copied().collect();
+        self.bodies_gen = crate::world::fresh_gen();
         self.objects = self.bodies.iter().map(|(&id, &body)| (body.index1, id)).collect();
         // The latest step's hits were of the replaced state.
         self.world.contact_hit_events.clear();

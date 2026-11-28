@@ -223,7 +223,7 @@ impl Snapshot {
             columns.push(SnapColumn {
                 id,
                 schema_hash,
-                col: Column { size, ids: Arc::new(ids), data: Arc::new(words), versions: Arc::new(versions) },
+                col: Column::of(size, Arc::new(ids), Arc::new(words), Arc::new(versions)),
             });
         }
         if r.at != bytes.len() {

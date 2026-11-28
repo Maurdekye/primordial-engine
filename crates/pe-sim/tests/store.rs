@@ -508,3 +508,42 @@ fn a_zero_size_component_registers_live_and_rolls_back() {
     assert!(s.remove_raw(tag, a).unwrap());
     assert_eq!(s.get_raw(tag, a), None);
 }
+
+/// Column generations (E4): a row added or removed moves both, a write only `rows` (through `get_mut`, `insert` over a
+/// row or `column_mut`); two branches from one snapshot, each with one change, never share a value, and a restore
+/// gives back the snapshot's.
+#[test]
+fn column_generations_move_with_every_change_and_never_repeat_across_branches() {
+    let id = <Velocity as pe_sim::Component>::ID;
+    let mut s = new_store();
+    assert_eq!(s.column_gens(id), (0, 0), "no column");
+    let (a, b) = (s.mk(1), s.mk(2));
+    let v = Velocity { v: [1.0, 2.0, 3.0], spin: 0.5 };
+    s.insert(a, v).unwrap();
+    let g0 = s.column_gens(id);
+    assert!(g0.0 != 0 && g0.1 != 0);
+    s.get_mut::<Velocity>(a).unwrap().spin = 1.0;
+    let g1 = s.column_gens(id);
+    assert!(g1.0 == g0.0 && g1.1 != g0.1, "a write moves rows only: {g0:?} {g1:?}");
+    s.insert(a, v).unwrap();
+    assert!(s.column_gens(id).0 == g0.0 && s.column_gens(id).1 != g1.1, "an overwrite moves rows only");
+    let g2 = s.column_gens(id);
+    s.column_mut::<Velocity>().1[0].spin = 2.0;
+    assert!(s.column_gens(id).0 == g0.0 && s.column_gens(id).1 != g2.1, "a column_mut write moves rows only");
+    let snap = s.snapshot();
+    let at_snap = s.column_gens(id);
+    s.insert(b, v).unwrap();
+    let branch_1 = s.column_gens(id);
+    s.restore(&snap).unwrap();
+    assert_eq!(s.column_gens(id), at_snap, "a restore gives back the snapshot's generations");
+    s.destroy(a).unwrap();
+    let branch_2 = s.column_gens(id);
+    assert!(
+        branch_1.0 != branch_2.0 && branch_1.0 != at_snap.0 && branch_2.0 != at_snap.0,
+        "{branch_1:?} {branch_2:?}"
+    );
+    // The hierarchy's column moves with objects made and destroyed.
+    let n = s.column_gens(ComponentId::NODE).1;
+    s.mk(3);
+    assert_ne!(s.column_gens(ComponentId::NODE).1, n);
+}

@@ -1,6 +1,7 @@
 //! One component's rows, sorted by object id, in copy-on-write buffers.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use bytemuck::{Pod, Zeroable};
 use pe_core::ObjectId;
@@ -36,6 +37,15 @@ impl RowVersion {
     }
 }
 
+/// The source of columns' generations ([`Column::members_gen`], [`Column::rows_gen`]): each value is handed out once in
+/// the process, so two columns, or two states of one column, share a generation only if one is a copy of the other.
+static NEXT_GEN: AtomicU64 = AtomicU64::new(1);
+
+/// A generation no column has had.
+pub(crate) fn fresh_gen() -> u64 {
+    NEXT_GEN.fetch_add(1, Ordering::Relaxed)
+}
+
 /// Rows are stored back to back in a `u64` buffer, so the bytes are 8-byte aligned and typed views
 /// (`bytemuck::cast_slice`) work for any component with alignment up to 8. Bytes past the last row are
 /// always zero.
@@ -46,6 +56,11 @@ pub(crate) struct Column {
     pub data: Arc<Vec<u64>>,
     /// One per row, beside it: the row's edit version.
     pub versions: Arc<Vec<RowVersion>>,
+    /// A new generation ([`fresh_gen`]) whenever a row is added or removed: equal values mean the same ids.
+    pub members_gen: u64,
+    /// A new generation whenever a row may have been written, added or removed: equal values mean the same ids and
+    /// rows. (Edit versions are not covered.)
+    pub rows_gen: u64,
 }
 
 fn words(bytes: usize) -> usize {
@@ -54,7 +69,13 @@ fn words(bytes: usize) -> usize {
 
 impl Column {
     pub fn new(size: usize) -> Self {
-        Column { size, ids: Arc::new(Vec::new()), data: Arc::new(Vec::new()), versions: Arc::new(Vec::new()) }
+        Column::of(size, Arc::new(Vec::new()), Arc::new(Vec::new()), Arc::new(Vec::new()))
+    }
+
+    /// A column of the given rows, with new generations.
+    pub fn of(size: usize, ids: Arc<Vec<ObjectId>>, data: Arc<Vec<u64>>, versions: Arc<Vec<RowVersion>>) -> Self {
+        let g = fresh_gen();
+        Column { size, ids, data, versions, members_gen: g, rows_gen: g }
     }
 
     pub fn len(&self) -> usize {
@@ -72,6 +93,7 @@ impl Column {
 
     /// The used bytes, writable. Copies the buffer first if a snapshot shares it.
     pub fn bytes_mut(&mut self) -> &mut [u8] {
+        self.rows_gen = fresh_gen();
         let n = self.len() * self.size;
         let data: &mut Vec<u64> = Arc::make_mut(&mut self.data);
         &mut bytemuck::cast_slice_mut::<u64, u8>(data.as_mut_slice())[..n]
@@ -97,6 +119,7 @@ impl Column {
     /// Inserts a row at position `at` (from `find`'s `Err`), with no edit version.
     pub fn insert(&mut self, at: usize, id: ObjectId, row: &[u8]) {
         debug_assert_eq!(row.len(), self.size);
+        (self.members_gen, self.rows_gen) = (fresh_gen(), fresh_gen());
         let (n, s) = (self.len(), self.size);
         Arc::make_mut(&mut self.ids).insert(at, id);
         Arc::make_mut(&mut self.versions).insert(at, RowVersion::NONE);
@@ -109,6 +132,7 @@ impl Column {
 
     /// Removes the row at position `at`.
     pub fn remove(&mut self, at: usize) {
+        (self.members_gen, self.rows_gen) = (fresh_gen(), fresh_gen());
         let (n, s) = (self.len(), self.size);
         Arc::make_mut(&mut self.ids).remove(at);
         Arc::make_mut(&mut self.versions).remove(at);

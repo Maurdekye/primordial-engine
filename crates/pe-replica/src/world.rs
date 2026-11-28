@@ -456,6 +456,13 @@ pub trait WorldModel: Send {
     /// Every physical object, in id order: for building a physics world from scratch. Exactly the objects whose
     /// [`body`](WorldModel::body) is not `Ok(None)`.
     fn physical(&self) -> Vec<ObjectId>;
+    /// A key for [`physical`](WorldModel::physical)'s result, if the model keeps one: equal keys, from any two states
+    /// of any models in this process, mean equal results, and a key that differs says only that the result may have
+    /// changed. With one, [`hands::sync`](crate::hands::sync) reads `physical` again, and runs its stale-body pass,
+    /// only when something it depends on changed (E4). `None` (the default): every step reads and runs both.
+    fn physical_key(&self) -> Option<[u64; 4]> {
+        None
+    }
     /// Every `Hand` row, in id order.
     fn hands(&self) -> Vec<HandRow>;
     /// The claims, in the held objects' id order.

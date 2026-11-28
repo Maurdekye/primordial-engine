@@ -130,6 +130,14 @@ pub struct ReplicaConfig {
     /// finalize, which roots the cut from the keyframe there (E3, re-solve step 2; diverge-eng/resolve-e3-design.md).
     /// The same roots either way. On by default; tests turn it off to compare.
     pub skip_replay_roots: bool,
+    /// Whether each step's stale-body pass runs only when its inputs changed, and its grab pass only over claimed and
+    /// held objects (E4, re-solve step 2; [`hands::Passes`]): the same physics calls in the same order either way. On
+    /// by default; tests turn it off to compare.
+    pub active_passes: bool,
+    /// Whether, with `active_passes`, each active pass is checked against the full one beside it, the disagreements
+    /// counted in [`ReplicaImpl::active_misses`] (and a debug assertion fails on the first one). It costs the full
+    /// passes and more, so it is on by default only in debug builds, where every test that steps a replica runs it.
+    pub check_active_passes: bool,
 }
 
 impl ReplicaConfig {
@@ -145,6 +153,8 @@ impl ReplicaConfig {
             local: None,
             reuse_live: true,
             skip_replay_roots: true,
+            active_passes: true,
+            check_active_passes: cfg!(debug_assertions),
         }
     }
 }
@@ -372,6 +382,8 @@ pub struct ReplicaImpl<W: WorldModel> {
     runner: Option<Box<dyn ScriptRunner>>,
     /// The replay costs it measures for its driver, if given a probe (crate::costs); without one no step is timed.
     costs: Option<Box<costs::Probe>>,
+    /// What the hand sync's active passes keep from step to step (`ReplicaConfig::active_passes`).
+    passes: hands::Passes,
     /// The frame the live history stopped at for want of a runner, so that each stop counts one fault; cleared once a
     /// live step passes it (@engine-architect's Low 2 on 4ac9019f).
     refused_at: Option<Frame>,
@@ -519,6 +531,11 @@ impl<W: WorldModel> ReplicaImpl<W> {
             }
         }
         let domain = world.domain();
+        let passes = if config.active_passes {
+            hands::Passes::active(config.check_active_passes)
+        } else {
+            hands::Passes::full()
+        };
         let mut r = ReplicaImpl {
             world,
             physics,
@@ -573,6 +590,7 @@ impl<W: WorldModel> ReplicaImpl<W> {
             repairing_since: None,
             runner: None,
             costs: None,
+            passes,
             refused_at: None,
             scratch_refused_at: None,
             fx: BTreeMap::new(),
@@ -615,6 +633,17 @@ impl<W: WorldModel> ReplicaImpl<W> {
     /// Faults counted so far.
     pub fn faults(&self) -> u64 {
         self.faults
+    }
+
+    /// The disagreements between the hand sync's active passes and the full ones, counted only with
+    /// `ReplicaConfig::check_active_passes` (tests): zero is right.
+    pub fn active_misses(&self) -> u64 {
+        self.passes.misses
+    }
+
+    /// The steps whose stale-body pass the active passes skipped (`ReplicaConfig::active_passes`).
+    pub fn active_skips(&self) -> u64 {
+        self.passes.skips
     }
 
     /// The replica with its script runner (crate::logic): without one it refuses to step a world with scripts.
@@ -880,7 +909,8 @@ impl<W: WorldModel> ReplicaImpl<W> {
             digest_ns += costs::since(t);
         }
         let grab_ns = probe.then_some(&mut scan_ns);
-        let (faults, reaches) = hands::sync(&self.world, &mut self.physics, &hands, self.origin, self.rate, f, grab_ns);
+        let (faults, reaches) =
+            hands::sync(&self.world, &mut self.physics, &hands, self.origin, self.rate, f, grab_ns, &mut self.passes);
         self.faults += faults;
         let inner = (digest_ns - d_hands) + (scan_ns - s_hands);
         stage.hands = t_hands.map_or(0, costs::since).saturating_sub(inner);

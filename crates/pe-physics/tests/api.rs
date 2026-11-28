@@ -1268,3 +1268,40 @@ fn ids_with_the_high_word_set_round_trip() {
     let differ = c.body_digests().unwrap().iter().zip(&digests).filter(|(x, y)| x.1 != y.1).count();
     assert_eq!(differ, 2, "the two bodies with a high word have other digests");
 }
+
+/// `bodies_gen` (E4) moves with every body or player added or removed and every image restore, and nothing else;
+/// `grab_joints` lists the grab joints' keys in key order.
+#[test]
+fn the_bodies_generation_moves_with_the_body_set_and_restores() {
+    let mut pw = world(PhysicsConfig::engine());
+    let g0 = pw.bodies_gen();
+    pw.add_body(id(1), &ground()).unwrap();
+    pw.add_body(id(2), &ball(0.5)).unwrap();
+    let g1 = pw.bodies_gen();
+    assert_ne!(g0, g1);
+    pw.step(DT).unwrap();
+    let grab = |b: u32| JointDesc::Grab {
+        a: None,
+        b: id(b),
+        anchor_a: [0.0, 0.5, 0.0],
+        anchor_b: [0.0; 3],
+        max_force: 100.0,
+        max_torque: 10.0,
+        spring: None,
+    };
+    pw.add_joint(JointKey(7), &grab(2)).unwrap();
+    assert_eq!(pw.bodies_gen(), g1, "steps and joints leave it");
+    assert_eq!(pw.grab_joints().collect::<Vec<_>>(), [JointKey(7)]);
+    let image = pw.save_image().unwrap();
+    pw.add_body(id(3), &ball(2.0)).unwrap();
+    let g2 = pw.bodies_gen();
+    assert_ne!(g2, g1);
+    pw.remove_body(id(3)).unwrap();
+    assert!(pw.bodies_gen() != g2 && pw.bodies_gen() != g1, "a removal takes a new one, even back to the same set");
+    let g3 = pw.bodies_gen();
+    pw.restore_image(&image).unwrap();
+    assert!(pw.bodies_gen() != g3 && pw.bodies_gen() != g1, "a restore takes a new one");
+    assert_eq!(pw.grab_joints().collect::<Vec<_>>(), [JointKey(7)]);
+    pw.remove_body(id(2)).unwrap();
+    assert_eq!(pw.grab_joints().count(), 0, "the grab went with its body");
+}
