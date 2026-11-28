@@ -29,6 +29,7 @@ pub mod desktop_move;
 pub mod display;
 pub mod drawn_time;
 pub mod effects;
+pub mod gnomon;
 pub mod gpu;
 pub mod hands;
 pub mod labels;

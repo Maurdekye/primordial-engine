@@ -961,7 +961,9 @@ fn main() {
         eye: RigPose { position: [0.0, 1.4, 0.0], orientation: [0.0, 0.0, 0.0, 1.0] },
         // What is left of the run after VR, never zero, which the window would take as no time at all.
         run_for: run_for.map(|d| d.saturating_sub(started.elapsed()).max(Duration::from_millis(1))),
-        snapshot: None,
+        // A test aid: PE_WINDOW_SNAPSHOT=<png path> saves the window's own frame (read back, never a screen capture)
+        // 4 s into the run, the menu included.
+        snapshot: std::env::var_os("PE_WINDOW_SNAPSHOT").map(|p| (Duration::from_secs(4), p.into())),
         captures: captures.clone(),
         // The menu, if VR didn't take it (a run in the window, or VR that ended), with the frame-rate counter at the top
         // of the window (pe_app::fps), menu or not.

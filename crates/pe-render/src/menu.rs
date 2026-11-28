@@ -2,8 +2,10 @@
 //! image, where its buttons are, which button a ray hits, and the ray and cursor that show the aim. The caller (pe-app)
 //! owns what the buttons do, where the panels sit, and puts them in `Scene::overlays`.
 //!
-//! - **The look:** plain for the friend test (the coordinator's working default): a dark translucent panel, one
-//!   full-width button per row, centred labels, a title above and text lines below. D-menus' styling comes later.
+//! - **The look:** the Gnomon's (the user's pick D; the gold-line style approved 10-31): a dark
+//!   frosted veil edged with a thin gold line, a gold title over a gold rule, one full-width button per row outlined
+//!   in faint gold, warm chalk text. Hover fills a button with faint gold, a press with more. [`crate::gnomon`] draws
+//!   the dash around these panels.
 //! - **A panel's image** is rebuilt only when its content, the hovered button or the pressed button changes.
 //! - **Hit-testing** is in the panel's own plane: its quad lies in the pose's XY plane, facing +Z (`Overlay`). A ray
 //!   hits only from the front.
@@ -74,33 +76,45 @@ pub fn layout(spec: &PanelSpec) -> Layout {
     Layout { size: [w, h], title, buttons, lines }
 }
 
-/// The colours, linear RGB with an opacity.
-const PANEL: ([f32; 3], f32) = ([0.02, 0.02, 0.03], 0.82);
-const BUTTON: [f32; 3] = [0.10, 0.11, 0.13];
-const HOVER: [f32; 3] = [0.22, 0.25, 0.30];
-const PRESSED: [f32; 3] = [0.10, 0.30, 0.55];
-const TEXT: [f32; 3] = [1.0, 1.0, 1.0];
-const DIM: [f32; 3] = [0.35, 0.35, 0.38];
+/// The colours, linear RGB (the approved mock-ups' sRGB: gold #F5D27A, chalk #F2E9D8, ink #17283C, veil #0D1724).
+pub(crate) const GOLD: [f32; 3] = [0.913, 0.645, 0.194];
+pub(crate) const CHALK: [f32; 3] = [0.888, 0.815, 0.687];
+pub(crate) const INK: [f32; 3] = [0.0086, 0.0212, 0.0451];
+pub(crate) const VEIL: ([f32; 3], f32) = ([0.004, 0.0086, 0.0176], 0.86);
+const BUTTON: ([f32; 3], f32) = (INK, 0.9);
+const HOVER: f32 = 0.16;
+const PRESSED: f32 = 0.38;
+const TEXT: [f32; 3] = CHALK;
+const DIM: [f32; 3] = [0.20, 0.19, 0.17];
 
 /// The panel's image with `hover` and `pressed` (button ids) shown.
 pub fn render(spec: &PanelSpec, hover: Option<u32>, pressed: Option<u32>) -> OverlayImage {
     let l = layout(spec);
     let mut c = Canvas::new(l.size);
-    c.fill([0, 0, l.size[0], l.size[1]], PANEL.0, PANEL.1);
+    let (w, h) = (l.size[0] as f32, l.size[1] as f32);
+    c.fill([0, 0, l.size[0], l.size[1]], VEIL.0, VEIL.1);
+    c.outline([1.5, 1.5, w - 1.5, h - 1.5], 1.6, GOLD, 0.85);
     if let (Some(t), Some(r)) = (&spec.title, l.title) {
-        c.text_centred(r, t, TEXT_PX, TEXT);
+        c.text_centred(r, t, TEXT_PX, GOLD);
+        let y = r[3] as f32 + GAP_PX as f32 / 2.0;
+        c.stroke(&[[r[0] as f32, y], [r[2] as f32, y]], false, 1.2, GOLD, 0.6);
     }
     for (b, r) in spec.buttons.iter().zip(&l.buttons) {
-        let fill = if !b.enabled {
-            BUTTON
+        c.fill(*r, BUTTON.0, BUTTON.1);
+        let glow = if !b.enabled {
+            0.0
         } else if pressed == Some(b.id) {
             PRESSED
         } else if hover == Some(b.id) {
             HOVER
         } else {
-            BUTTON
+            0.0
         };
-        c.fill(*r, fill, 1.0);
+        if glow > 0.0 {
+            c.fill(*r, GOLD, glow);
+        }
+        let edge = [r[0] as f32 + 0.5, r[1] as f32 + 0.5, r[2] as f32 - 0.5, r[3] as f32 - 0.5];
+        c.outline(edge, 1.2, GOLD, if b.enabled { 0.45 } else { 0.15 });
         c.text_centred(*r, &b.label, TEXT_PX, if b.enabled { TEXT } else { DIM });
     }
     for (t, r) in spec.lines.iter().zip(&l.lines) {
@@ -360,18 +374,18 @@ pub trait Ui: Send {
     fn frame(&mut self, input: &UiInput) -> UiOutput;
 }
 
-/// An image being drawn: premultiplied linear RGBA.
-struct Canvas {
-    size: [u32; 2],
-    px: Vec<[f32; 4]>,
+/// An image being drawn: premultiplied linear RGBA. [`crate::gnomon`] adds its lines and shapes.
+pub(crate) struct Canvas {
+    pub(crate) size: [u32; 2],
+    pub(crate) px: Vec<[f32; 4]>,
 }
 
 impl Canvas {
-    fn new(size: [u32; 2]) -> Canvas {
+    pub(crate) fn new(size: [u32; 2]) -> Canvas {
         Canvas { size, px: vec![[0.0; 4]; (size[0] * size[1]) as usize] }
     }
 
-    fn over(&mut self, x: u32, y: u32, c: [f32; 3], a: f32) {
+    pub(crate) fn over(&mut self, x: u32, y: u32, c: [f32; 3], a: f32) {
         let p = &mut self.px[(y * self.size[0] + x) as usize];
         for (k, v) in c.iter().enumerate() {
             p[k] = v * a + p[k] * (1.0 - a);
@@ -379,7 +393,7 @@ impl Canvas {
         p[3] = a + p[3] * (1.0 - a);
     }
 
-    fn fill(&mut self, r: [u32; 4], c: [f32; 3], a: f32) {
+    pub(crate) fn fill(&mut self, r: [u32; 4], c: [f32; 3], a: f32) {
         for y in r[1]..r[3].min(self.size[1]) {
             for x in r[0]..r[2].min(self.size[0]) {
                 self.over(x, y, c, a);
@@ -388,7 +402,7 @@ impl Canvas {
     }
 
     /// `text` centred in `r`, cut with an ellipsis if it doesn't fit.
-    fn text_centred(&mut self, r: [u32; 4], text: &str, px: f32, c: [f32; 3]) {
+    pub(crate) fn text_centred(&mut self, r: [u32; 4], text: &str, px: f32, c: [f32; 3]) {
         let max = (r[2] - r[0]) as f32 - 2.0 * GAP_PX as f32;
         let t = fit(text, px, max);
         let f = font().as_scaled(PxScale::from(px));
@@ -417,12 +431,20 @@ impl Canvas {
         }
     }
 
-    fn image(&self) -> OverlayImage {
-        let srgb = |l: f32| {
-            let l = l.clamp(0.0, 1.0);
-            let s = if l <= 0.003_130_8 { l * 12.92 } else { 1.055 * l.powf(1.0 / 2.4) - 0.055 };
-            (s * 255.0).round() as u8
-        };
+    pub(crate) fn image(&self) -> OverlayImage {
+        // Linear to sRGB through a table of 4097 steps: within one 8-bit step of the exact curve, and no `powf` per
+        // channel (a dial image is 640 x 384).
+        static LUT: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+        let lut = LUT.get_or_init(|| {
+            (0..=4096)
+                .map(|i| {
+                    let l = i as f32 / 4096.0;
+                    let s = if l <= 0.003_130_8 { l * 12.92 } else { 1.055 * l.powf(1.0 / 2.4) - 0.055 };
+                    (s * 255.0).round() as u8
+                })
+                .collect()
+        });
+        let srgb = |l: f32| lut[(l.clamp(0.0, 1.0) * 4096.0).round() as usize];
         let mut rgba = Vec::with_capacity(self.px.len() * 4);
         for p in &self.px {
             let a = p[3];

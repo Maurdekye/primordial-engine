@@ -19,11 +19,60 @@
 //!   back from the desktop. Any other button, or closing the menu, takes the question back.
 //! - **Every action is logged** (same ruling): each button pressed, the menu opened or closed, and what the button
 //!   said, as `menu: …` lines in the run's log.
+//! - **The Gnomon** (the user's pick D: "yes, D looks good, and those preliminary menu options
+//!   work"; [`pe_render::gnomon`]): the menu is the dash, a sundial. Its dial holds the five sections on its hour
+//!   lines, Leave · Quit, Settings, Sessions, My Domain and People, with the mic switch and Close at the ends of its
+//!   diameter. The chosen section's page stands on the gnomon. Sessions opens first. Grabbing the gnomon's tip moves
+//!   the dash, and it keeps that place relative to the player from then on. The spawn panel's test objects are on
+//!   the My Domain page (the user renamed Inventory; @domain-eng owns what it holds). People and Settings say what they will hold, and the mic switch says voice isn't built yet
+//!   [P: the placeholders' wording].
 
+use glam::DVec3;
+use pe_render::gnomon::{Arrangement, DialSpec, Glyph, Gnomon, Grip, Node, PageHit, Part, Place};
 use pe_render::menu::{
-    Button, MenuPanel, PanelSpec, Ui, UiInput, UiOutput, button_at, cursor_overlay, place_beside, place_in_front,
-    ray_overlay, wrist_place,
+    Button, MenuPanel, PanelSpec, Ui, UiInput, UiOutput, button_at, cursor_overlay, place_in_front, ray_overlay,
+    wrist_place,
 };
+
+/// The dash's sections, on the dial's hour lines from the player's left to their right.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Section {
+    Leave,
+    Settings,
+    Sessions,
+    MyDomain,
+    People,
+}
+
+impl Section {
+    pub const ALL: [Section; 5] =
+        [Section::Leave, Section::Settings, Section::Sessions, Section::MyDomain, Section::People];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Section::Leave => "Leave · Quit",
+            Section::Settings => "Settings",
+            Section::Sessions => "Sessions",
+            Section::MyDomain => "My Domain",
+            Section::People => "People",
+        }
+    }
+
+    /// Its node's id on the dial.
+    pub fn node(self) -> u32 {
+        id::SECTION + Section::ALL.iter().position(|s| *s == self).expect("listed") as u32
+    }
+
+    fn glyph(self) -> Glyph {
+        match self {
+            Section::Leave => Glyph::Exit,
+            Section::Settings => Glyph::Settings,
+            Section::Sessions => Glyph::Sessions,
+            Section::MyDomain => Glyph::Inventory,
+            Section::People => Glyph::People,
+        }
+    }
+}
 
 /// What this machine's session is, for the menu.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -101,6 +150,9 @@ pub mod id {
     /// The spawn panel's (S4): one per template, in `spawn::Kind::ALL`'s order, then Clear.
     pub const SPAWN: u32 = 20;
     pub const CLEAR: u32 = 30;
+    /// The dial's: one per section, in `Section::ALL`'s order, then the mic switch (Close is [`CLOSE`]).
+    pub const SECTION: u32 = 40;
+    pub const MIC: u32 = 49;
     pub const WRIST: u32 = 100;
 }
 
@@ -109,8 +161,14 @@ pub struct Menu {
     role: Role,
     host: Box<dyn MenuHost>,
     open: bool,
-    /// The main panel, placed in front of the head when the menu opens.
-    main: Option<MenuPanel>,
+    /// The dash, placed in front of the head when the menu opens.
+    dash: Option<Gnomon>,
+    /// The open section.
+    section: Section,
+    /// Where the player last put the dash, from their head ([`Gnomon::rel_of`]); `None`: the arrangement's default.
+    rel: Option<DVec3>,
+    /// A pointer holding the gnomon's tip, and how far along its ray it took it.
+    drag: Option<(usize, f64)>,
     /// The wrist button, placed on the left wrist each frame it is tracked.
     wrist: Option<MenuPanel>,
     /// The last thing a button did, shown on the panel: one line per `\n`.
@@ -121,8 +179,6 @@ pub struct Menu {
     leaving: bool,
     /// Where the head was when the main panel was placed.
     placed_at: Option<pe_seams::Pos>,
-    /// The spawn panel, beside the main one while it is open and the world takes spawns (S4).
-    side: Option<MenuPanel>,
     /// The head this frame, for where a spawn appears.
     head: Option<pe_render::pose::WorldPose>,
     /// The hands' pointer origins this frame, as offsets from the origin: a spawn keeps clear of them.
@@ -133,16 +189,12 @@ pub struct Menu {
     latch: [Option<bool>; 3],
 }
 
-/// Where the main panel opens from the head: 0.6 m ahead, 0.15 m down, facing the head, upright.
-const AHEAD: f64 = 0.6;
-const DOWN: f64 = 0.15;
 /// The wrist button's size against a main panel's (about 12 cm wide).
 const WRIST_SCALE: f64 = 0.35;
+/// A held tip moves only when its ray's point is this far from it, in metres at scale 1.
+const DRAG_DEADBAND_M: f64 = 0.002;
 /// A ray that meets nothing is drawn this long (metres at a rig scale of 1).
 const RAY_LEN: f64 = 2.0;
-/// The spawn panel's gap from the main one, in metres at scale 1, and its turn toward the head.
-const SIDE_GAP: f64 = 0.04;
-const SIDE_TURN_DEG: f64 = 20.0;
 /// How far the head may move from where it was when the main panel was placed before the panel follows (review L3).
 const REPLACE_M: f64 = 1.0;
 /// How long a first press of Quit or Join waits for the second, in seconds.
@@ -165,6 +217,10 @@ fn button_name(b: u32) -> String {
         id::QUIT => "Quit".into(),
         id::CLOSE => "Close menu".into(),
         id::CLEAR => "Clear".into(),
+        id::MIC => "Mic".into(),
+        b if (id::SECTION..id::SECTION + Section::ALL.len() as u32).contains(&b) => {
+            format!("section {}", Section::ALL[(b - id::SECTION) as usize].name())
+        }
         b if (id::SPAWN..id::SPAWN + crate::spawn::Kind::ALL.len() as u32).contains(&b) => {
             crate::spawn::Kind::ALL[(b - id::SPAWN) as usize].template().into()
         }
@@ -182,13 +238,15 @@ impl Menu {
             role,
             host,
             open: true,
-            main: None,
+            dash: None,
+            section: Section::Sessions,
+            rel: None,
+            drag: None,
             wrist: None,
             message: None,
             confirm: None,
             leaving: false,
             placed_at: None,
-            side: None,
             head: None,
             hands: Vec::new(),
             latch: [None; 3],
@@ -199,7 +257,75 @@ impl Menu {
         self.open
     }
 
-    /// The main panel's content now.
+    /// The open section.
+    pub fn section(&self) -> Section {
+        self.section
+    }
+
+    /// The open section's page now.
+    pub fn page(&self, now_unix: u64) -> PanelSpec {
+        self.page_of(self.section, now_unix)
+    }
+
+    /// A section's page now: its title, its buttons, then its lines and the last message.
+    pub fn page_of(&self, s: Section, now_unix: u64) -> PanelSpec {
+        let mut spec = match s {
+            Section::Sessions => return self.spec(now_unix),
+            Section::Leave => {
+                let mut b = Vec::new();
+                if matches!(self.role, Role::Joiner { .. }) {
+                    b.push(Button::new(id::LEAVE, "Leave (back to my own session)"));
+                }
+                b.push(Button::new(id::QUIT, "Quit"));
+                PanelSpec { title: None, buttons: b, lines: Vec::new() }
+            }
+            Section::MyDomain => self.side_spec(),
+            Section::People => PanelSpec {
+                title: None,
+                buttons: Vec::new(),
+                lines: vec!["Your contacts will be here:".into(), "friends, requests, confidants, blocked".into()],
+            },
+            Section::Settings => PanelSpec {
+                title: None,
+                buttons: Vec::new(),
+                lines: vec!["Settings will be here: volume, voice,".into(), "comfort, controls, graphics".into()],
+            },
+        };
+        spec.title = Some(s.name().into());
+        self.confirming(&mut spec.buttons, now_unix);
+        if self.leaving {
+            spec.buttons.iter_mut().for_each(|x| x.enabled = false);
+        }
+        if let Some(m) = &self.message {
+            spec.lines.extend(m.lines().map(String::from));
+        }
+        spec
+    }
+
+    /// A press waiting for its second says so on its button.
+    fn confirming(&self, b: &mut [Button], now_unix: u64) {
+        if let Some((c, until)) = self.confirm
+            && now_unix <= until
+            && let Some(x) = b.iter_mut().find(|x| x.id == c)
+        {
+            x.label = if c == id::QUIT { "Press again to quit".into() } else { "Press again to join".into() };
+        }
+    }
+
+    /// The dial now.
+    pub fn dial(&self) -> DialSpec {
+        let places = [150.0, 120.0, 90.0, 60.0, 30.0];
+        let mut nodes: Vec<Node> = Section::ALL
+            .iter()
+            .zip(places)
+            .map(|(s, t)| Node { id: s.node(), label: s.name().into(), glyph: s.glyph(), place: Place::Hour(t) })
+            .collect();
+        nodes.push(Node { id: id::MIC, label: "Mic off".into(), glyph: Glyph::MicOff, place: Place::Left });
+        nodes.push(Node { id: id::CLOSE, label: "Close".into(), glyph: Glyph::Close, place: Place::Right });
+        DialSpec { nodes, selected: Some(self.section.node()) }
+    }
+
+    /// The Sessions page's content now.
     pub fn spec(&self, now_unix: u64) -> PanelSpec {
         let mut b = Vec::new();
         let mut lines = Vec::new();
@@ -238,15 +364,7 @@ impl Menu {
             }
             lines.extend(note.lines);
         }
-        b.push(Button::new(id::QUIT, "Quit"));
-        b.push(Button::new(id::CLOSE, "Close menu"));
-        // A press waiting for its second says so on its button.
-        if let Some((c, until)) = self.confirm
-            && now_unix <= until
-            && let Some(x) = b.iter_mut().find(|x| x.id == c)
-        {
-            x.label = if c == id::QUIT { "Press again to quit".into() } else { "Press again to join".into() };
-        }
+        self.confirming(&mut b, now_unix);
         if self.leaving {
             for x in &mut b {
                 x.enabled = false;
@@ -255,7 +373,7 @@ impl Menu {
         if let Some(m) = &self.message {
             lines.extend(m.lines().map(String::from));
         }
-        PanelSpec { title: Some("Primordial Engine".into()), buttons: b, lines }
+        PanelSpec { title: Some(Section::Sessions.name().into()), buttons: b, lines }
     }
 
     /// Press button `b`.
@@ -349,6 +467,12 @@ impl Menu {
                 self.toggle();
                 None
             }
+            id::MIC => Some("Voice chat isn't built yet: this switch will mute you".into()),
+            b if (id::SECTION..id::SECTION + Section::ALL.len() as u32).contains(&b) => {
+                self.section = Section::ALL[(b - id::SECTION) as usize];
+                self.message = None;
+                None
+            }
             _ => None,
         };
         if b != id::WRIST && b != id::CLOSE {
@@ -364,9 +488,10 @@ impl Menu {
         self.open = !self.open;
         self.host.log(if self.open { "menu: opened" } else { "menu: closed" });
         if self.open {
-            self.main = None; // placed again in front of the head
+            self.dash = None; // placed again in front of the head
         } else {
             self.confirm = None;
+            self.drag = None;
         }
     }
 
@@ -381,10 +506,17 @@ impl Menu {
         if self.leaving {
             buttons.iter_mut().for_each(|b| b.enabled = false);
         }
-        PanelSpec { title: Some("Spawn".into()), buttons, lines: self.host.spawn_status().into_iter().collect() }
+        if !self.host.can_spawn() {
+            return PanelSpec {
+                title: None,
+                buttons: Vec::new(),
+                lines: vec!["Nothing to take out in this domain".into()],
+            };
+        }
+        PanelSpec { title: None, buttons, lines: self.host.spawn_status().into_iter().collect() }
     }
 
-    /// The main panel is placed again when the head is more than [`REPLACE_M`] from where it was at the placing (review
+    /// The dash is placed again when the head is more than [`REPLACE_M`] from where it was at the placing (review
     /// L3): a first frame located before the head was tracked, or a walk away from it.
     fn stale_place(&self, head: pe_seams::Pos, scale: f64) -> bool {
         self.placed_at.is_some_and(|p| (head - p).length() > REPLACE_M * scale)
@@ -398,39 +530,34 @@ impl Ui for Menu {
         }
         let now = self.host.unix_now();
         let mut out = UiOutput::default();
-        // The panels this frame: the main one while open, the wrist button while the wrist is tracked.
+        let head = input.head;
+        let scale = input.scale;
+        // The dash while open: placed where the player last put it, relative to their head, or by default in front.
+        // The window draws no rays: it gets the flat arrangement.
         if self.open {
-            let spec = self.spec(now);
-            let head = input.head;
-            let scale = input.scale;
-            if self.stale_place(head.pos, scale) {
-                self.main = None;
+            let arrangement = if input.draw_rays { Arrangement::VR } else { Arrangement::WINDOW };
+            if self.drag.is_none() && self.stale_place(head.pos, scale) {
+                self.dash = None;
             }
-            if self.main.is_none() {
-                self.placed_at = Some(head.pos);
-            }
-            let placed = self.main.is_none();
-            let p = self
-                .main
-                .get_or_insert_with(|| MenuPanel::new(spec.clone(), place_in_front(&head, AHEAD, DOWN, scale), scale));
-            p.spec = spec;
-            let main_pose = p.pose;
-            // The spawn panel sits to the main one's right, turned toward the head, placed with it.
-            if self.host.can_spawn() {
-                let spec = self.side_spec();
-                match self.side.as_mut() {
-                    Some(s) if !placed => s.spec = spec,
-                    _ => {
-                        let across =
-                            (pe_render::menu::PANEL_PX as f64 * pe_render::menu::METRES_PER_PX + SIDE_GAP) * scale;
-                        self.side = Some(MenuPanel::new(spec, place_beside(&main_pose, across, SIDE_TURN_DEG), scale));
+            let (dial, page) = (self.dial(), self.page(now));
+            match self.dash.as_mut() {
+                Some(d) if d.arrangement == arrangement => {
+                    d.dial = dial;
+                    d.set_page(page);
+                    if d.scale != scale {
+                        let a = d.anchor;
+                        d.set_anchor(a, scale);
                     }
                 }
-            } else {
-                self.side = None;
+                _ => {
+                    let rel = self.rel.unwrap_or_else(|| Gnomon::default_rel(&arrangement));
+                    let anchor = Gnomon::anchor_at(&head, rel, scale);
+                    self.dash = Some(Gnomon::new(dial, page, anchor, scale, arrangement));
+                    self.placed_at = Some(head.pos);
+                }
             }
         }
-        self.head = Some(input.head);
+        self.head = Some(head);
         self.hands =
             input.rays.iter().filter(|r| r.pointer < 2).map(|r| (r.origin - pe_seams::Pos::ORIGIN).0).collect();
         // The wrist button follows the left hand; it is gone while that hand isn't tracked. The panel is kept while it
@@ -438,35 +565,73 @@ impl Ui for Menu {
         // (friend test 2026-11-26, the VR stall on NVIDIA 620.73 with the menu closed).
         match (input.wrist, self.wrist.as_mut()) {
             (Some(w), Some(p)) => {
-                p.pose = wrist_place(&w, input.scale);
-                p.scale = WRIST_SCALE * input.scale;
+                p.pose = wrist_place(&w, scale);
+                p.scale = WRIST_SCALE * scale;
             }
             (Some(w), None) => {
                 let spec = PanelSpec { title: None, buttons: vec![Button::new(id::WRIST, "Menu")], lines: Vec::new() };
-                self.wrist = Some(MenuPanel::new(spec, wrist_place(&w, input.scale), WRIST_SCALE * input.scale));
+                self.wrist = Some(MenuPanel::new(spec, wrist_place(&w, scale), WRIST_SCALE * scale));
             }
             (None, _) => self.wrist = None,
         }
-        // Each ray: the nearest panel it meets, its button, and its presses.
-        let mut hover: [Option<u32>; 3] = [None; 3];
-        // A panel's button shows pressed only while a ray on that panel holds its select.
-        let mut held = [false; 3];
+        // The pointer holding the tip moves the dash first, so this frame's hits see it where it now is.
+        if let Some((p, dist)) = self.drag {
+            match input.rays.iter().find(|r| r.pointer == p) {
+                Some(r) if r.pressed && self.open => {
+                    // Aim jitter under 2 mm is ignored: a held trigger or pinch shakes the ray (@xr-eng).
+                    if let Some(d) = self.dash.as_mut()
+                        && (r.at(dist) - d.tip()).length() > DRAG_DEADBAND_M * scale
+                    {
+                        d.move_tip_to(r.at(dist), &head);
+                    }
+                }
+                _ => {
+                    self.drag = None;
+                    if let Some(d) = &self.dash {
+                        self.rel = Some(Gnomon::rel_of(&head, &d.anchor, scale));
+                        self.placed_at = Some(head.pos);
+                        self.host.log("menu: moved the dash");
+                    }
+                }
+            }
+        }
+        // Each ray: the nearest part it meets, and its presses.
+        let (mut dial_hover, mut page_hover, mut wrist_hover) = (None, None, None);
+        let (mut dial_held, mut page_held, mut wrist_held) = (false, false, false);
+        let mut grip = if self.drag.is_some() { Grip::Held } else { Grip::Plain };
         let mut presses = Vec::new();
         let mut hits = Vec::new();
         let mut seen = [false; 3];
         for r in &input.rays {
-            let mut best: Option<(usize, f64, Option<u32>, pe_seams::Pos)> = None;
-            let main = self.main.as_ref().filter(|_| self.open);
-            let side = self.side.as_ref().filter(|_| self.open);
+            /// What a ray meets: a part of the dash, or the wrist button and its button there.
+            enum On {
+                Dash(Part),
+                Wrist(Option<u32>),
+            }
+            let mut best: Option<(On, f64, pe_seams::Pos)> = None;
+            if self.open
+                && let Some(d) = &self.dash
+                && let Some((part, h)) = d.hit(r.origin, r.dir)
+            {
+                best = Some((On::Dash(part), h.distance, h.point));
+            }
             // The left hand can't click its own wrist.
-            let wrist = self.wrist.as_ref().filter(|_| r.pointer != 0);
-            for (k, p) in [(0usize, main), (1, wrist), (2, side)] {
-                if let Some(p) = p
-                    && let Some(h) = p.hit(r.origin, r.dir)
-                    && best.is_none_or(|b| h.distance < b.1)
-                {
-                    best = Some((k, h.distance, button_at(&p.spec, h.uv), h.point));
+            if let Some(w) = self.wrist.as_ref().filter(|_| r.pointer != 0)
+                && let Some(h) = w.hit(r.origin, r.dir)
+                && best.as_ref().is_none_or(|b| h.distance < b.1)
+            {
+                best = Some((On::Wrist(button_at(&w.spec, h.uv)), h.distance, h.point));
+            }
+            // The dragging pointer is the dash's until it lets go, and its ray ends at the tip.
+            if self.drag.is_some_and(|(p, _)| p == r.pointer)
+                && let Some(d) = &self.dash
+            {
+                if r.pointer < 3 {
+                    seen[r.pointer] = true;
+                    out.took[r.pointer] = true;
                 }
+                hits.push((r, d.tip()));
+                continue;
             }
             // Whose press this is: decided when it begins (a click, or a held select with no latch yet), kept
             // until its release.
@@ -485,19 +650,44 @@ impl Ui for Menu {
                 }
                 _ => best.is_some(),
             };
-            if let Some((k, _, b, point)) = best {
-                hover[k] = hover[k].or(b);
-                held[k] |= r.pressed && mine && b.is_some();
-                hits.push((r, point));
-                if r.clicks > 0
-                    && mine
-                    && let Some(b) = b
-                {
-                    presses.push(b);
+            let held = r.pressed && mine;
+            match best {
+                Some((on, distance, point)) => {
+                    hits.push((r, point));
+                    let click = r.clicks > 0 && mine;
+                    match on {
+                        On::Dash(Part::Grip) => {
+                            grip = if grip == Grip::Held { grip } else { Grip::Hover };
+                            if click && self.drag.is_none() {
+                                self.drag = Some((r.pointer, distance));
+                                grip = Grip::Held;
+                            }
+                        }
+                        On::Dash(Part::Page(b)) => {
+                            page_hover = page_hover.or(b.map(PageHit::Button));
+                            page_held |= held && b.is_some();
+                            presses.extend(b.filter(|_| click));
+                        }
+                        // A custom page's point (`PageView`): no section sets one yet; My Domain's map will take it.
+                        On::Dash(Part::PageAt(uv)) => {
+                            page_hover = page_hover.or(Some(PageHit::Point(uv)));
+                            page_held |= held;
+                        }
+                        On::Dash(Part::Dial(n)) => {
+                            dial_hover = dial_hover.or(n);
+                            dial_held |= held && n.is_some();
+                            presses.extend(n.filter(|_| click));
+                        }
+                        On::Wrist(b) => {
+                            wrist_hover = wrist_hover.or(b);
+                            wrist_held |= held && b.is_some();
+                            presses.extend(b.filter(|_| click));
+                        }
+                    }
                 }
-            } else if input.draw_rays && self.open {
                 // While the menu is open every ray shows; closed, only one that touches the wrist button.
-                hits.push((r, r.at(RAY_LEN * input.scale)));
+                None if input.draw_rays && self.open => hits.push((r, r.at(RAY_LEN * scale))),
+                None => {}
             }
         }
         // A pointer missing this frame (an untracked hand) has let go.
@@ -509,26 +699,29 @@ impl Ui for Menu {
         for b in presses {
             self.press(b);
         }
+        // A press may have changed the page or the dial.
+        let (dial, page) = (self.dial(), self.page(now));
         if self.open
-            && let Some(p) = self.main.as_mut()
+            && let Some(d) = self.dash.as_mut()
         {
-            out.overlays.push(p.overlay(hover[0], hover[0].filter(|_| held[0])));
-        }
-        if self.open
-            && let Some(s) = self.side.as_mut()
-        {
-            out.overlays.push(s.overlay(hover[2], hover[2].filter(|_| held[2])));
+            d.dial = dial;
+            d.set_page(page);
+            out.overlays.extend(d.overlays(
+                (dial_hover, dial_hover.filter(|_| dial_held)),
+                (page_hover, page_held),
+                grip,
+            ));
         }
         if let Some(w) = self.wrist.as_mut() {
-            out.overlays.push(w.overlay(hover[1], hover[1].filter(|_| held[1])));
+            out.overlays.push(w.overlay(wrist_hover, wrist_hover.filter(|_| wrist_held)));
         }
         if input.draw_rays {
-            let eye = input.head.pos;
+            let eye = head.pos;
             for (r, end) in hits {
-                if let Some(o) = ray_overlay(r.origin, end, eye, 0.003 * input.scale) {
+                if let Some(o) = ray_overlay(r.origin, end, eye, 0.003 * scale) {
                     out.overlays.push(o);
                 }
-                out.overlays.push(cursor_overlay(end, eye, 0.012 * input.scale));
+                out.overlays.push(cursor_overlay(end, eye, 0.012 * scale));
             }
         }
         out
@@ -801,7 +994,7 @@ pub fn relaunch_if_asked() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pe_render::menu::{UiRay, layout};
+    use pe_render::menu::UiRay;
     use pe_seams::{HostTime, Offset, Pos, RigPose, RigTransform};
     use std::sync::{Arc, Mutex};
 
@@ -916,7 +1109,7 @@ mod tests {
         let s = m.spec(1_000);
         let ids: Vec<u32> = s.buttons.iter().map(|b| b.id).collect();
         // Paste reply is the console's alone now, the fallback (invite-only, the user's ruling).
-        assert_eq!(ids, [id::INVITE, id::JOIN, id::NEW_SESSION, id::QUIT, id::CLOSE]);
+        assert_eq!(ids, [id::INVITE, id::JOIN, id::NEW_SESSION]);
         assert!(s.lines[0].contains("52 min"), "{:?}", s.lines);
         assert!(m.spec(1_000 + 3_600).lines[0].contains("expired"));
         assert!(m.is_open(), "open at launch");
@@ -940,17 +1133,13 @@ mod tests {
         let role = Role::Opener { invite: "pe1:abc".into(), expires_unix_s: 1_000 + 52 * 60 };
         let ids = |s: &PanelSpec| s.buttons.iter().map(|b| b.id).collect::<Vec<u32>>();
         let dropped = Menu::new(role.clone(), Box::new(host(note(false)))).spec(1_000);
-        assert_eq!(ids(&dropped), [id::INVITE, id::JOIN, id::NEW_SESSION, id::QUIT, id::CLOSE], "dropped: as before");
+        assert_eq!(ids(&dropped), [id::INVITE, id::JOIN, id::NEW_SESSION], "dropped: as before");
         assert_eq!(dropped.lines, ["Your session. Invite valid for 52 min", "note false"]);
         let gone = Menu::new(role, Box::new(host(note(true)))).spec(1_000);
-        assert_eq!(
-            ids(&gone),
-            [id::NEW_SESSION, id::JOIN, id::QUIT, id::CLOSE],
-            "closed: New session first, no invite"
-        );
+        assert_eq!(ids(&gone), [id::NEW_SESSION, id::JOIN], "closed: New session first, no invite");
         assert_eq!(gone.lines, ["note true"], "the invite's time left goes too");
         let joiner = Menu::new(Role::Joiner { reply: "pe1r:x".into() }, Box::new(host(note(true)))).spec(1_000);
-        assert_eq!(ids(&joiner), [id::LEAVE, id::QUIT, id::CLOSE]);
+        assert_eq!(ids(&joiner), [id::LEAVE]);
         assert_eq!(joiner.lines.last().map(String::as_str), Some("note true"));
     }
 
@@ -1010,7 +1199,9 @@ mod tests {
         let (mut m, log) = opener(Ok("pe1:friend".into()), true);
         m.press(id::QUIT);
         assert!(calls(&log).is_empty());
-        let quit = |m: &Menu, now| m.spec(now).buttons.iter().find(|b| b.id == id::QUIT).unwrap().label.clone();
+        let quit = |m: &Menu, now| {
+            m.page_of(Section::Leave, now).buttons.iter().find(|b| b.id == id::QUIT).unwrap().label.clone()
+        };
         assert_eq!(quit(&m, 1_000), "Press again to quit");
         assert_eq!(quit(&m, 1_000 + CONFIRM_S + 1), "Quit", "lapsed");
         m.press(id::QUIT);
@@ -1090,7 +1281,7 @@ mod tests {
         let mut m = Menu::new(Role::Joiner { reply: "pe1r:me".into() }, Box::new(host));
         let ids: Vec<u32> = m.spec(0).buttons.iter().map(|b| b.id).collect();
         // No reply to copy: the invite let it in. The press still works, for the fallback.
-        assert_eq!(ids, [id::LEAVE, id::QUIT, id::CLOSE]);
+        assert_eq!(ids, [id::LEAVE]);
         m.press(id::COPY_REPLY);
         m.press(id::LEAVE);
         assert_eq!(calls(&log), ["copy reply pe1r:me", "relaunch NewSession"]);
@@ -1100,21 +1291,17 @@ mod tests {
         Pos::ORIGIN.checked_add(Offset(d)).unwrap()
     }
 
-    /// The head at 1.6 m looking along -Z, and (with `b`) a ray from the head at the main panel's button `b`.
-    fn input(menu: &Menu, b: Option<usize>, clicks: u32, toggled: bool, wrist: bool) -> UiInput {
+    /// The head at 1.6 m looking along -Z, and (with `to`) a ray from the head to that point.
+    fn input(to: Option<Pos>, clicks: u32, toggled: bool, wrist: bool) -> UiInput {
         let rig = RigTransform { pos: Pos::ORIGIN, rotation: [0.0, 0.0, 0.0, 1.0], scale: 1.0 };
         let head = pe_render::pose::rig_to_world(
             &rig,
             &RigPose { position: [0.0, 1.6, 0.0], orientation: [0.0, 0.0, 0.0, 1.0] },
         );
         let mut rays = Vec::new();
-        if let Some(b) = b {
-            let l = layout(&menu.spec(1_000));
-            let r = l.buttons[b];
-            let h = l.size[1] as f64 * pe_render::menu::METRES_PER_PX;
-            let y = 1.6 - DOWN + h * (0.5 - (r[1] + r[3]) as f64 / 2.0 / l.size[1] as f64);
-            let dir = pe_render::pose::offset_vec(at([0.0, y, -AHEAD]) - at([0.0, 1.6, 0.0])).normalize();
-            rays.push(UiRay { pointer: 1, origin: at([0.0, 1.6, 0.0]), dir, pressed: clicks > 0, clicks });
+        if let Some(to) = to {
+            let dir = pe_render::pose::offset_vec(to - head.pos).normalize();
+            rays.push(UiRay { pointer: 1, origin: head.pos, dir, pressed: clicks > 0, clicks });
         }
         let grip = RigPose { position: [-0.2, 1.1, -0.3], orientation: [0.0, 0.0, 0.0, 1.0] };
         UiInput {
@@ -1128,69 +1315,153 @@ mod tests {
         }
     }
 
+    fn button(m: &Menu, b: u32) -> Option<Pos> {
+        m.dash.as_ref().and_then(|d| d.button_point(b))
+    }
+
+    fn node(m: &Menu, n: u32) -> Option<Pos> {
+        m.dash.as_ref().and_then(|d| d.node_point(n))
+    }
+
+    /// The dash's four parts: the dial, the gnomon, the page and the grip.
+    const DASH: usize = 4;
+
     #[test]
     fn a_click_presses_the_button_the_ray_points_at_and_the_toggle_closes_the_menu() {
         let (mut m, log) = opener(Ok("pe1r:abc".into()), true);
-        // Hover only: the panel, the ray and its cursor; nothing pressed.
-        let out = m.frame(&input(&m, Some(0), 0, false, false));
-        assert_eq!(out.overlays.len(), 3);
+        let out = m.frame(&input(None, 0, false, false));
+        assert_eq!(out.overlays.len(), DASH, "open at launch, on Sessions");
+        assert_eq!(m.section(), Section::Sessions);
+        // Hover only: the dash, the ray and its cursor; nothing pressed.
+        let invite = button(&m, id::INVITE);
+        let out = m.frame(&input(invite, 0, false, false));
+        assert_eq!(out.overlays.len(), DASH + 2);
         assert!(calls(&log).is_empty() && !out.took[1]);
-        // A click on Invite a friend, the first button.
-        let out = m.frame(&input(&m, Some(0), 1, false, false));
+        // A click on Invite a friend.
+        let out = m.frame(&input(invite, 1, false, false));
         assert!(out.took[1], "the press went to the menu");
         assert_eq!(calls(&log), ["copy invite pe1:abc"]);
-        // The menu button closes it: no panel, and a ray that meets nothing is not drawn while closed.
-        let out = m.frame(&input(&m, Some(0), 0, true, false));
+        // The menu button closes it: no dash, and a ray that meets nothing is not drawn while closed.
+        let out = m.frame(&input(invite, 0, true, false));
         assert!(!m.is_open());
         assert!(out.overlays.is_empty(), "{}", out.overlays.len());
     }
 
     #[test]
-    fn the_panel_follows_a_head_that_moved_more_than_a_metre_since_it_was_placed() {
+    fn the_dial_opens_each_section_and_close_closes_the_dash() {
+        let (mut m, log) = opener(Err("x".into()), true);
+        m.frame(&input(None, 0, false, false));
+        for s in Section::ALL {
+            let n = node(&m, s.node());
+            m.frame(&input(n, 1, false, false));
+            assert_eq!(m.section(), s);
+            m.frame(&input(None, 0, false, false));
+            assert_eq!(m.dash.as_ref().unwrap().page.spec.title.as_deref(), Some(s.name()), "its page shows");
+        }
+        // Leave · Quit holds Quit, which still asks first.
+        m.frame(&input(node(&m, Section::Leave.node()), 1, false, false));
+        m.frame(&input(None, 0, false, false));
+        let quit = button(&m, id::QUIT);
+        m.frame(&input(quit, 1, false, false));
+        m.frame(&input(None, 0, false, false));
+        assert_eq!(m.page(1_000).buttons[0].label, "Press again to quit");
+        // Another section takes the question back.
+        m.frame(&input(node(&m, Section::People.node()), 1, false, false));
+        assert!(m.confirm.is_none());
+        // The mic switch says voice isn't built yet, on the open page.
+        m.frame(&input(node(&m, id::MIC), 1, false, false));
+        assert!(m.page(1_000).lines.last().unwrap().contains("Voice chat isn't built yet"));
+        // Close, at the diameter's right end.
+        m.frame(&input(node(&m, id::CLOSE), 1, false, false));
+        assert!(!m.is_open());
+        assert!(logged(&log).iter().any(|l| l == "menu: section My Domain"), "{:?}", logged(&log));
+    }
+
+    #[test]
+    fn grabbing_the_tip_moves_the_dash_and_it_keeps_that_place_from_the_head() {
+        let (mut m, log) = opener(Err("x".into()), true);
+        m.frame(&input(None, 0, false, false));
+        let tip = m.dash.as_ref().unwrap().tip();
+        let out = m.frame(&input(Some(tip), 1, false, false));
+        assert!(out.took[1] && m.drag.is_some(), "the press took the tip");
+        // Held, the ray swings 0.3 m to the right at the same distance: the tip follows it.
+        let d = (tip - at([0.0, 1.6, 0.0])).length();
+        let mut swung = input(Some(tip), 0, false, false);
+        swung.rays[0].pressed = true;
+        let dir = pe_render::pose::offset_vec(tip - at([0.0, 1.6, 0.0])) + glam::DVec3::new(0.3, 0.0, 0.0);
+        swung.rays[0].dir = dir.normalize();
+        let out = m.frame(&swung);
+        assert!(out.took[1], "dragging: still the dash's");
+        let moved = m.dash.as_ref().unwrap().tip();
+        assert!((moved - swung.rays[0].at(d)).length() < 1e-6, "the rig pose is f32");
+        assert!((moved - tip).0[0] > 0.2, "to the right");
+        // Let go: the place is kept. Closed and opened again, the dash comes back there.
+        m.frame(&input(None, 0, false, false));
+        assert!(m.drag.is_none() && m.rel.is_some());
+        assert!(logged(&log).iter().any(|l| l == "menu: moved the dash"));
+        m.frame(&input(None, 0, true, false));
+        m.frame(&input(None, 0, true, false));
+        assert!((m.dash.as_ref().unwrap().tip() - moved).length() < 1e-6);
+    }
+
+    #[test]
+    fn the_dash_follows_a_head_that_moved_more_than_a_metre_since_it_was_placed() {
         let (mut m, _) = opener(Err("x".into()), true);
         // The first frame located before tracking: the head at the rig's origin.
-        let mut first = input(&m, None, 0, false, false);
+        let mut first = input(None, 0, false, false);
         first.head.pos = at([0.0, 0.0, 0.0]);
         m.frame(&first);
-        let low = m.main.as_ref().unwrap().pose.pos;
+        let low = m.dash.as_ref().unwrap().anchor.pos;
         // Tracked a frame later, 1.6 m up: placed again in front of the real head.
-        m.frame(&input(&m, None, 0, false, false));
-        let placed = m.main.as_ref().unwrap().pose.pos;
+        m.frame(&input(None, 0, false, false));
+        let placed = m.dash.as_ref().unwrap().anchor.pos;
         assert!((placed - low).length() > 1.0, "re-placed");
-        assert!((placed - at([0.0, 1.6 - DOWN, -AHEAD])).length() < 1e-6, "the rig pose is f32");
+        let a = Arrangement::VR;
+        assert!((placed - at([0.0, 1.6 - a.down, -a.ahead])).length() < 1e-6, "the rig pose is f32");
         // A small move of the head leaves it where it is.
-        let mut near = input(&m, None, 0, false, false);
+        let mut near = input(None, 0, false, false);
         near.head.pos = at([0.3, 1.6, 0.0]);
         m.frame(&near);
-        assert_eq!(m.main.as_ref().unwrap().pose.pos, placed);
+        assert_eq!(m.dash.as_ref().unwrap().anchor.pos, placed);
+    }
+
+    #[test]
+    fn the_window_gets_the_flat_arrangement() {
+        let (mut m, _) = opener(Err("x".into()), true);
+        let mut i = input(None, 0, false, false);
+        i.draw_rays = false;
+        m.frame(&i);
+        assert_eq!(m.dash.as_ref().unwrap().arrangement, Arrangement::WINDOW);
     }
 
     #[test]
     fn a_press_belongs_to_the_menu_or_not_from_its_start_to_its_release() {
         let (mut m, log) = opener(Err("x".into()), true);
-        let held = |m: &Menu, on: bool, clicks: u32| {
-            let mut i = input(m, Some(1), 1, false, false);
+        m.frame(&input(None, 0, false, false));
+        let join = button(&m, id::JOIN);
+        let held = |on: bool, clicks: u32| {
+            let mut i = input(join, 1, false, false);
             let r = &mut i.rays[0];
             if !on {
-                r.dir = -r.dir; // behind the head, away from the panel
+                r.dir = -r.dir; // behind the head, away from the dash
             }
             r.clicks = clicks;
             i
         };
-        // A press that begins off the panel and is dragged onto it, held: never the menu's.
-        assert!(!m.frame(&held(&m, false, 1)).took[1]);
-        assert!(!m.frame(&held(&m, true, 0)).took[1], "a held grab crossing the panel stays the hand's");
+        // A press that begins off the dash and is dragged onto it, held: never the menu's.
+        assert!(!m.frame(&held(false, 1)).took[1]);
+        assert!(!m.frame(&held(true, 0)).took[1], "a held grab crossing the dash stays the hand's");
         assert!(calls(&log).is_empty(), "and presses no button");
-        // Released (a frame without the select), then a press that begins on the panel and is dragged off: the menu's.
-        let mut up = held(&m, false, 0);
+        // Released (a frame without the select), then a press that begins on the dash and is dragged off: the menu's.
+        let mut up = held(false, 0);
         up.rays[0].pressed = false;
         assert!(!m.frame(&up).took[1]);
-        assert!(m.frame(&held(&m, true, 1)).took[1]);
-        assert!(m.frame(&held(&m, false, 0)).took[1], "dragged off, it still starts no grab");
+        assert!(m.frame(&held(true, 1)).took[1]);
+        assert!(m.frame(&held(false, 0)).took[1], "dragged off, it still starts no grab");
     }
 
     #[test]
-    fn the_spawn_panel_sits_beside_the_menu_and_spawns_in_front_of_the_head() {
+    fn the_my_domain_page_holds_the_test_objects_and_spawns_in_front_of_the_head() {
         let log = Log::default();
         let host = FakeHost {
             log: log.clone(),
@@ -1201,14 +1472,12 @@ mod tests {
             note: None,
         };
         let mut m = Menu::new(Role::Opener { invite: "pe1:abc".into(), expires_unix_s: 9_000 }, Box::new(host));
-        let out = m.frame(&input(&m, None, 0, false, false));
-        assert_eq!(out.overlays.len(), 2, "the main panel and the spawn panel");
-        let side = m.side.as_ref().expect("the spawn panel");
-        let labels: Vec<&str> = side.spec.buttons.iter().map(|b| b.label.as_str()).collect();
+        m.press(Section::MyDomain.node());
+        let page = m.page(1_000);
+        let labels: Vec<&str> = page.buttons.iter().map(|b| b.label.as_str()).collect();
         assert_eq!(labels, ["Box", "Sphere", "Capsule", "Box stack", "Big crate", "Platform", "Slab", "Clear"]);
-        assert_eq!(side.spec.lines, ["Box: spawned"], "the last result shows");
-        let main = m.main.as_ref().unwrap().pose.pos;
-        assert!((side.pose.pos - main).0[0] > 0.3, "to the right of the main panel");
+        assert_eq!(page.lines, ["Box: spawned"], "the last result shows");
+        m.frame(&input(None, 0, false, false));
         // The head is at (0, 1.6, 0) facing -Z: a box 0.5 m ahead and 0.2 m down, a stack 0.8 m ahead on the floor.
         m.press(id::SPAWN);
         m.press(id::SPAWN + 3);
@@ -1218,25 +1487,23 @@ mod tests {
         assert!(c[0].starts_with("Spawn(Box, [-0.25, 1.4") && c[0].contains(", -0.5"), "{}", c[0]);
         assert!(c[1].starts_with("Spawn(Stack, [-0.25, 0.01, -0.8"), "{}", c[1]);
         assert_eq!(c[2], "Clear");
-        // Closed: no spawn panel.
-        let out = m.frame(&input(&m, None, 0, true, false));
-        assert!(out.overlays.is_empty());
     }
 
     #[test]
-    fn no_spawn_panel_where_the_world_takes_no_spawns() {
+    fn the_my_domain_page_says_so_where_the_world_takes_no_spawns() {
         let (mut m, _) = opener(Err("x".into()), true);
-        let out = m.frame(&input(&m, None, 0, false, false));
-        assert_eq!(out.overlays.len(), 1);
-        assert!(m.side.is_none());
+        m.press(Section::MyDomain.node());
+        let page = m.page(1_000);
+        assert!(page.buttons.is_empty());
+        assert_eq!(page.lines, ["Nothing to take out in this domain"]);
     }
 
     #[test]
     fn the_wrist_button_is_there_while_the_left_hand_is_tracked() {
         let (mut m, _) = opener(Err("x".into()), true);
-        let out = m.frame(&input(&m, None, 0, false, true));
-        assert_eq!(out.overlays.len(), 2, "the panel and the wrist button");
-        let out = m.frame(&input(&m, None, 0, false, false));
-        assert_eq!(out.overlays.len(), 1, "no wrist: no wrist button");
+        let out = m.frame(&input(None, 0, false, true));
+        assert_eq!(out.overlays.len(), DASH + 1, "the dash and the wrist button");
+        let out = m.frame(&input(None, 0, false, false));
+        assert_eq!(out.overlays.len(), DASH, "no wrist: no wrist button");
     }
 }
