@@ -58,7 +58,9 @@
 //!   on an object with one gets a grab joint from the hand to the object, keyed from the object's id, which holds
 //!   the object by the point the hand took hold of (the user's ruling of 2026-11-27: "grab them by the
 //!   point i grab"): the object's point nearest the hand's centre, the centre itself when the hand is inside it
-//!   ([`PhysicsWorld::nearest_point`]). That point stays where it was in the hand when the joint was made: a spring
+//!   ([`PhysicsWorld::nearest_point`]), or the object's centre of mass when that point lies within
+//!   [`CENTRE_HOLD_RADIUS`] (the hand's radius) of it, so an object that fits in the hand is held as a held ball
+//!   always was. That point stays where it was in the hand when the joint was made: a spring
 //!   pulls it to that place ([`grab_spring`]), so a heavy object the grip can't lift is pulled by that point,
 //!   and an angular spring keeps its rotation relative to the hand with at most the grip's torque
 //!   ([`grab_torque`], an angular spring). A grab joint whose claim has gone
@@ -698,6 +700,16 @@ fn grabs(physics: &mut PhysicsWorld, claims: &[ClaimRow], bodies: &[ObjectId], h
     faults
 }
 
+/// How near its centre of mass, m, the point a hand takes hold of must be for the object to be held by that centre
+/// instead of the point: the hand's radius, so an object that fits in the hand (a pit ball, 3 cm from its centre to
+/// the point) is held as a held ball always was (@coordinator-opus's ruling of 2026-11-28, after @fable-reviewer).
+/// Held by a point off its centre, such an object follows a fast hand loosely: its rotation leads its centre, and a
+/// spin past Box3D's eighth of a turn a frame turns the point away (measured on a pit ball: a 0.6 m arc at 20 m/s
+/// 10 mm from its place, a 60 rad/s twist 35 mm, against 1.8 mm and 9.4 mm by its centre). Larger objects, the user's
+/// ruling's ("grab them by the point i grab"), are held by the point. The centre of mass, not the origin: held there,
+/// a compound object's weight doesn't turn it (for a single shape at its origin the two are the same).
+pub const CENTRE_HOLD_RADIUS: f32 = crate::world::HAND_RADIUS;
+
 /// A grab joint from `hand` to `object`, holding the object where it is now in the hand, with the spring
 /// [`grab_spring`] gives for the hand's `strength`.
 fn hold(
@@ -711,8 +723,12 @@ fn hold(
     let o = physics.pose(object)?;
     let spring = grab_spring(strength);
     // Held by the point the hand took hold of (the user's ruling of 2026-11-27): the object's point
-    // nearest the hand's centre, the centre itself when the hand is inside the object.
-    let anchor_b = physics.nearest_point(object, h.position)?;
+    // nearest the hand's centre, the centre itself when the hand is inside the object; by its centre of mass when
+    // that point is within [`CENTRE_HOLD_RADIUS`] of it (an object that fits in the hand).
+    let point = physics.nearest_point(object, h.position)?;
+    let centre = physics.local_center(object)?;
+    let near = (0..3).map(|i| (point[i] - centre[i]).powi(2)).sum::<f32>() <= CENTRE_HOLD_RADIUS * CENTRE_HOLD_RADIUS;
+    let anchor_b = if near { centre } else { point };
     let at = rotate(o.rotation, anchor_b);
     let offset = [0usize, 1, 2].map(|i| o.position[i] + f64::from(at[i]) - h.position[i]);
     let anchor_a = inverse_rotate(h.rotation, offset.map(|c| c as f32));

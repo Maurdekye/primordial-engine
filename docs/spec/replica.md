@@ -362,7 +362,17 @@ The rules are world-model.md 8.1's (the speed cap, the teleport distance and the
 - **Grab joints mirror the claims,** after the hands are driven. A claim by a hand with a body, on an object with one,
   gets a grab joint from the hand to the object, keyed from the object's id. It holds the object by the point the
   hand took hold of (the user's ruling of 2026-11-27): the object's point nearest the hand's centre,
-  the centre itself when the hand is inside it (pe-physics `nearest_point`). That point stays where it was in the hand
+  the centre itself when the hand is inside it (pe-physics `nearest_point`). An object whose point lies within
+  `CENTRE_HOLD_RADIUS` (the hand's radius, 9 cm) of its centre of mass fits in the hand and is held by that centre
+  instead, as a held ball always was (@coordinator-opus, 2026-11-28): held by a point off its centre, a pit ball trailed
+  a 0.6 m arc at 20 m/s by 10 mm and a 60 rad/s twist by 35 mm, against 1.8 mm and 9.4 mm by its centre [V, measured
+  on 46d87686]. Just over the radius, a 20 cm ball of 100 g, held by the point, follows within 0.2 mm on straight
+  swings to 40 m/s, 1.4 to 4.8 mm on a 0.6 m arc to 15 m/s and 18.1 mm at 20 m/s, and 1.0 to 8.0 mm in twists to
+  45 rad/s (85 mm at 60 rad/s, past Box3D's spin limit) [V, pe-replica `a_fast_swing_s_throw_leaves_at_the_hand_s_speed`,
+  `a_fast_twist_keeps_the_ball_in_the_hand`]. What a hold can't keep within the grip, it loses: that ball leaves the
+  hand on the arc at 25 m/s (m v^2 / r = 104 N, plus the speeding up, past the 110 N grip), and at 0.67 kg it does so
+  at a 30 rad/s twist (115 N) and on a straight 40 m/s swing that speeds up at 267 m/s^2 (178 N) [V, measured on
+  96fd3c07]. That point stays where it was in the hand
   when the joint was made: a spring pulls it to that place (`grab_spring`: `HOLD_HZ`, 60 Hz, critically damped), and
   an angular spring keeps the object's rotation relative to the hand with at most the holder's strength times
   `GRAB_LEVER` (0.3 m: 33 N m at 110 N, the coordinator's ruling of 2026-11-27), so an object whose weight turns it harder

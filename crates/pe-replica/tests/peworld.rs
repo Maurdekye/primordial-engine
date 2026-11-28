@@ -2091,7 +2091,8 @@ fn a_throw_is_limited_by_the_grip_and_its_spin_by_box3d_alone() {
         let most = (strength / mass / 60.0).min(15.0);
         let along = (dv[0] * 0.8 + dv[2] * 0.6, dv[0] * 0.6 - dv[2] * 0.8);
         println!(
-            "RESULT a {label} ball held, thrown at 15 m/s: its velocity changes by {:.2} m/s along the throw, {:.3}              across (the grip's {most:.2}); released instead it moves at {v0:.2?}",
+            "RESULT a {label} ball held, thrown at 15 m/s: its velocity changes by {:.2} m/s along the throw, {:.3} \
+             across (the grip's {most:.2}); released instead it moves at {v0:.2?}",
             along.0, along.1
         );
         assert!((along.0 - most).abs() < 0.03 * most + 0.02 && along.1.abs() < 0.02, "{label}: {dv:?}");
@@ -3809,69 +3810,80 @@ fn a_body_the_physics_refuses_is_a_fault_at_the_start() {
 #[test]
 fn a_fast_swing_s_throw_leaves_at_the_hand_s_speed() {
     use pe_world::input::MAX_POSES;
-    for radius in [None, Some(0.6_f64)] {
-        for v in [8.0, 12.0, 15.0, 20.0, 25.0, 40.0] {
-            let keys = keys();
-            let mut b = EntryBuilder::new(&keys, 0);
-            let mut s = Source::default();
-            let hr = f64::from(pe_replica::world::HAND_RADIUS);
-            let start = [2.0 - 0.03 - hr, 0.03, 0.0];
-            let mut path: Vec<[f64; 3]> =
-                (1..=30).map(|k| [start[0], 0.03 + 0.97 * f64::from(k) / 30.0, 0.0]).collect();
-            path.extend(std::iter::repeat_n([start[0], 1.0, 0.0], 30));
-            let top = [start[0], 1.0, 0.0];
-            // Arc length s along the swing, to a point and the swing's direction there.
-            let place = |s: f64| -> ([f64; 3], [f64; 3]) {
-                match radius {
-                    None => ([top[0] + s, top[1], top[2]], [1.0, 0.0, 0.0]),
-                    Some(r) => {
-                        let th = s / r;
-                        ([top[0] + r * th.sin(), top[1], top[2] + r * (1.0 - th.cos())], [th.cos(), 0.0, th.sin()])
-                    }
+    // The pit ball fits in the hand and is held by its centre; the 20 cm ball of 100 g, 10 cm from its centre to the
+    // point the hand takes, just doesn't and is held by that point (`CENTRE_HOLD_RADIUS`, 9 cm), so it follows more
+    // loosely (measured: 0.2 mm on every straight swing, 1.4 to 4.8 mm on the arc up to 15 m/s, 18.1 mm at 20 m/s).
+    // Past 20 m/s on the arc it leaves the hand, as the grip's ruling has it: at 25 m/s it needs m v^2 / r = 104 N
+    // plus the speeding up, more than the 110 N grip.
+    for (ball, rb, density, held) in [("pit ball", 0.03_f64, 160.0, 0.005), ("20 cm ball", 0.1, 24.0, 0.025)] {
+        for radius in [None, Some(0.6_f64)] {
+            for v in [8.0, 12.0, 15.0, 20.0, 25.0, 40.0] {
+                if rb > 0.05 && radius.is_some() && v > 20.0 {
+                    continue;
                 }
-            };
-            let (speeding, steady) = (9_usize, 6_usize);
-            let mut arc = 0.0;
-            for k in 1..=speeding + steady {
-                arc += v * (k.min(speeding) as f64 / speeding as f64) / 60.0;
-                path.push(place(arc).0);
-            }
-            let open = path.len();
-            let dir = place(arc).1;
-            for _ in 0..12 {
-                arc += v / 60.0;
-                path.push(place(arc).0);
-            }
-            s.add(input(&mut b, 2, &hand_at(&[start; 8], true)));
-            s.add(input(&mut b, 6, &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) }));
-            for (i, pack) in path[..open].chunks(MAX_POSES).enumerate() {
-                s.add(input(&mut b, 10 + (i * MAX_POSES) as u64, &hand_at(pack, true)));
-            }
-            let release = 10 + open as u64;
-            let linear = dir.map(|c| (c * v) as f32);
-            s.add(input(&mut b, release, &hand_at(&path[open..], false)));
-            s.add(input(&mut b, release, &Input::Throw { object: oid(BALL), linear, angular: [0.0; 3] }));
-            let mut r = replica_of(with_hands_and_balls(&[(HAND, start)], &[(BALL, [2.0, 0.03, 0.0], pit_ball())]));
-            r.advance(Frame(release), &mut s);
-            let gap = pe_replica::hands::hold_gap(r.physics(), oid(BALL), oid(HAND));
-            let trail = distance(r.physics().pose(oid(HAND)).expect("the hand's body").position, at(&r, HAND));
-            r.advance(Frame(release + 2), &mut s);
-            let left = r.physics().velocity(oid(BALL)).expect("the ball's body").0.map(f64::from);
-            let speed = left.iter().map(|c| c * c).sum::<f64>().sqrt();
-            let along = (0..3).map(|i| left[i] * dir[i]).sum::<f64>();
-            let shape = radius.map_or("straight".to_string(), |r| format!("arc r {r} m"));
-            println!(
-                "RESULT swing {shape}, {v} m/s: hand body trails its target by {trail:.3} m, ball {} from its place \
+                let keys = keys();
+                let mut b = EntryBuilder::new(&keys, 0);
+                let mut s = Source::default();
+                let hr = f64::from(pe_replica::world::HAND_RADIUS);
+                let start = [2.0 - rb - hr, rb, 0.0];
+                let mut path: Vec<[f64; 3]> =
+                    (1..=30).map(|k| [start[0], rb + (1.0 - rb) * f64::from(k) / 30.0, 0.0]).collect();
+                path.extend(std::iter::repeat_n([start[0], 1.0, 0.0], 30));
+                let top = [start[0], 1.0, 0.0];
+                // Arc length s along the swing, to a point and the swing's direction there.
+                let place = |s: f64| -> ([f64; 3], [f64; 3]) {
+                    match radius {
+                        None => ([top[0] + s, top[1], top[2]], [1.0, 0.0, 0.0]),
+                        Some(r) => {
+                            let th = s / r;
+                            ([top[0] + r * th.sin(), top[1], top[2] + r * (1.0 - th.cos())], [th.cos(), 0.0, th.sin()])
+                        }
+                    }
+                };
+                let (speeding, steady) = (9_usize, 6_usize);
+                let mut arc = 0.0;
+                for k in 1..=speeding + steady {
+                    arc += v * (k.min(speeding) as f64 / speeding as f64) / 60.0;
+                    path.push(place(arc).0);
+                }
+                let open = path.len();
+                let dir = place(arc).1;
+                for _ in 0..12 {
+                    arc += v / 60.0;
+                    path.push(place(arc).0);
+                }
+                s.add(input(&mut b, 2, &hand_at(&[start; 8], true)));
+                s.add(input(&mut b, 6, &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) }));
+                for (i, pack) in path[..open].chunks(MAX_POSES).enumerate() {
+                    s.add(input(&mut b, 10 + (i * MAX_POSES) as u64, &hand_at(pack, true)));
+                }
+                let release = 10 + open as u64;
+                let linear = dir.map(|c| (c * v) as f32);
+                s.add(input(&mut b, release, &hand_at(&path[open..], false)));
+                s.add(input(&mut b, release, &Input::Throw { object: oid(BALL), linear, angular: [0.0; 3] }));
+                let shape = Shape { size: [rb as f32, 0.0, 0.0], density, ..pit_ball() };
+                let mut r = replica_of(with_hands_and_balls(&[(HAND, start)], &[(BALL, [2.0, rb, 0.0], shape)]));
+                r.advance(Frame(release), &mut s);
+                let gap = pe_replica::hands::hold_gap(r.physics(), oid(BALL), oid(HAND));
+                let trail = distance(r.physics().pose(oid(HAND)).expect("the hand's body").position, at(&r, HAND));
+                r.advance(Frame(release + 2), &mut s);
+                let left = r.physics().velocity(oid(BALL)).expect("the ball's body").0.map(f64::from);
+                let speed = left.iter().map(|c| c * c).sum::<f64>().sqrt();
+                let along = (0..3).map(|i| left[i] * dir[i]).sum::<f64>();
+                let shape = radius.map_or("straight".to_string(), |r| format!("arc r {r} m"));
+                println!(
+                    "RESULT swing {ball}, {shape}, {v} m/s: hand body trails its target by {trail:.3} m, ball {} from its place \
                  before the open; leaves at {speed:.2} m/s ({along:.2} along the throw's {v} m/s), velocity {:?}",
-                gap.map_or("unheld".to_string(), |g| format!("{:.1} mm", g * 1000.0)),
-                left.map(|c| (c * 100.0).round() / 100.0)
-            );
-            // The hand is never placed (a 40 m/s swing included, @fable-reviewer), and the ball leaves
-            // at the hand's speed from within millimetres of its place.
-            assert!(trail < 1e-6, "{shape}, {v} m/s: the hand's body is on its target: {trail}");
-            assert!(gap.is_some_and(|g| g < 0.005), "{shape}, {v} m/s: held within 5 mm: {gap:?}");
-            assert!((along - v).abs() < 0.01 * v, "{shape}, {v} m/s: leaves at {along}");
-            assert_eq!(r.faults(), 0);
+                    gap.map_or("unheld".to_string(), |g| format!("{:.1} mm", g * 1000.0)),
+                    left.map(|c| (c * 100.0).round() / 100.0)
+                );
+                // The hand is never placed (a 40 m/s swing included, @fable-reviewer), and the ball leaves
+                // at the hand's speed from within millimetres of its place.
+                assert!(trail < 1e-6, "{shape}, {v} m/s: the hand's body is on its target: {trail}");
+                assert!(gap.is_some_and(|g| g < held), "{ball}, {shape}, {v} m/s: held within {held} m: {gap:?}");
+                assert!((along - v).abs() < 0.01 * v, "{ball}, {shape}, {v} m/s: leaves at {along}");
+                assert_eq!(r.faults(), 0);
+            }
         }
     }
 }
@@ -3987,55 +3999,63 @@ fn hand_turned(hand: u128, poses: &[([f64; 3], [f32; 4])], closed: bool) -> Inpu
 fn a_fast_twist_keeps_the_ball_in_the_hand() {
     use pe_world::input::MAX_POSES;
     let hr = f64::from(pe_replica::world::HAND_RADIUS);
-    for w in [10.0_f64, 20.0, 30.0, 45.0, 60.0] {
-        let keys = keys();
-        let mut b = EntryBuilder::new(&keys, 0);
-        let mut s = Source::default();
-        let start = [2.0 - 0.03 - hr, 0.03, 0.0];
-        let top = [start[0], 1.0, 0.0];
-        let mut poses: Vec<([f64; 3], [f32; 4])> =
-            (1..=30).map(|k| ([start[0], 0.03 + 0.97 * f64::from(k) / 30.0, 0.0], UNTURNED)).collect();
-        poses.extend(std::iter::repeat_n((top, UNTURNED), 20));
-        let mut angle = 0.0_f64;
-        let rate = |k: usize| match k {
-            0..3 => w * (k + 1) as f64 / 3.0,
-            3..15 => w,
-            15..18 => w * (17 - k) as f64 / 3.0,
-            _ => 0.0,
-        };
-        for k in 0..30 {
-            angle += rate(k) / 60.0;
-            let h = (angle / 2.0) as f32;
-            poses.push((top, [0.0, h.sin(), 0.0, h.cos()]));
-        }
-        s.add(input(&mut b, 2, &hand_at(&[start; 8], true)));
-        s.add(input(&mut b, 6, &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) }));
-        for (i, pack) in poses.chunks(MAX_POSES).enumerate() {
-            s.add(input(&mut b, 10 + (i * MAX_POSES) as u64, &hand_turned(HAND, pack, true)));
-        }
-        let mut r = replica_of(with_hands_and_balls(&[(HAND, start)], &[(BALL, [2.0, 0.03, 0.0], pit_ball())]));
-        r.advance(Frame(10 + 50), &mut s);
-        let hand = |r: &ReplicaImpl<PeWorld>| r.physics().pose(oid(HAND)).expect("the hand's body").position;
-        let ball = |r: &ReplicaImpl<PeWorld>| r.physics().pose(oid(BALL)).expect("the ball's body").position;
-        let grip = distance(hand(&r), ball(&r));
-        let (mut gap, mut out) = (0.0_f64, 0.0_f64);
-        for f in 10 + 50..10 + poses.len() as u64 + 20 {
-            r.advance(Frame(f + 1), &mut s);
-            gap = gap.max(pe_replica::hands::hold_gap(r.physics(), oid(BALL), oid(HAND)).unwrap_or(f64::NAN));
-            out = out.max(distance(hand(&r), ball(&r)) - grip);
-        }
-        println!(
-            "RESULT twist {w} rad/s (ball {:.0} mm from the hand's centre): largest gap from its place {:.1} mm, arc \
+    // As in the swing: the pit ball held by its centre, the 20 cm ball of 100 g by the point (just over
+    // `CENTRE_HOLD_RADIUS`; measured 1.0 to 8.0 mm up to 45 rad/s, and 85 mm at 60 rad/s, past Box3D's spin limit).
+    for (label, rb, density, held) in [("pit ball", 0.03_f64, 160.0, 0.02), ("20 cm ball", 0.1, 24.0, 0.012)] {
+        for w in [10.0_f64, 20.0, 30.0, 45.0, 60.0] {
+            let keys = keys();
+            let mut b = EntryBuilder::new(&keys, 0);
+            let mut s = Source::default();
+            let start = [2.0 - rb - hr, rb, 0.0];
+            let top = [start[0], 1.0, 0.0];
+            let mut poses: Vec<([f64; 3], [f32; 4])> =
+                (1..=30).map(|k| ([start[0], rb + (1.0 - rb) * f64::from(k) / 30.0, 0.0], UNTURNED)).collect();
+            poses.extend(std::iter::repeat_n((top, UNTURNED), 20));
+            let mut angle = 0.0_f64;
+            let rate = |k: usize| match k {
+                0..3 => w * (k + 1) as f64 / 3.0,
+                3..15 => w,
+                15..18 => w * (17 - k) as f64 / 3.0,
+                _ => 0.0,
+            };
+            for k in 0..30 {
+                angle += rate(k) / 60.0;
+                let h = (angle / 2.0) as f32;
+                poses.push((top, [0.0, h.sin(), 0.0, h.cos()]));
+            }
+            s.add(input(&mut b, 2, &hand_at(&[start; 8], true)));
+            s.add(input(&mut b, 6, &Input::Grab { object: oid(BALL), hand: Some(oid(HAND)) }));
+            for (i, pack) in poses.chunks(MAX_POSES).enumerate() {
+                s.add(input(&mut b, 10 + (i * MAX_POSES) as u64, &hand_turned(HAND, pack, true)));
+            }
+            let shape = Shape { size: [rb as f32, 0.0, 0.0], density, ..pit_ball() };
+            let mut r = replica_of(with_hands_and_balls(&[(HAND, start)], &[(BALL, [2.0, rb, 0.0], shape)]));
+            r.advance(Frame(10 + 50), &mut s);
+            let hand = |r: &ReplicaImpl<PeWorld>| r.physics().pose(oid(HAND)).expect("the hand's body").position;
+            let ball = |r: &ReplicaImpl<PeWorld>| r.physics().pose(oid(BALL)).expect("the ball's body").position;
+            let grip = distance(hand(&r), ball(&r));
+            let (mut gap, mut out) = (0.0_f64, 0.0_f64);
+            for f in 10 + 50..10 + poses.len() as u64 + 20 {
+                r.advance(Frame(f + 1), &mut s);
+                gap = gap.max(pe_replica::hands::hold_gap(r.physics(), oid(BALL), oid(HAND)).unwrap_or(f64::NAN));
+                out = out.max(distance(hand(&r), ball(&r)) - grip);
+            }
+            println!(
+                "RESULT twist {label}, {w} rad/s ({:.0} mm from the hand's centre): largest gap from its place {:.1} mm, arc \
              outward {:.1} mm (turned {angle:.2} rad)",
-            grip * 1000.0,
-            gap * 1000.0,
-            out * 1000.0
-        );
-        // Box3D turns the hand's body at most an eighth of a turn a frame (47.1 rad/s), so at 60 rad/s it lags its
-        // target and the ball with it; the ball still stays in the hand. On main c7cbc175 it fell 414 mm from its
-        // place at 45 rad/s (the 200 m/s^2 cap on the hold).
-        assert!(gap < 0.02, "{w} rad/s: the ball stays within 2 cm of its place: {gap}");
-        assert_eq!(r.faults(), 0);
+                grip * 1000.0,
+                gap * 1000.0,
+                out * 1000.0
+            );
+            // Box3D turns the hand's body at most an eighth of a turn a frame (47.1 rad/s), so at 60 rad/s it lags its
+            // target and the ball with it; the ball still stays in the hand. On main c7cbc175 it fell 414 mm from its
+            // place at 45 rad/s (the 200 m/s^2 cap on the hold).
+            // Past Box3D's 47.1 rad/s the ball's own spin lags the hand's, so a ball held by a point off its centre turns
+            // that point away; it stays held.
+            let held = if rb > 0.05 && w > 47.1 { 0.1 } else { held };
+            assert!(gap < held, "{label}, {w} rad/s: stays within {held} m of its place: {gap}");
+            assert_eq!(r.faults(), 0);
+        }
     }
 }
 
