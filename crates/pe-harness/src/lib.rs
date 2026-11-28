@@ -24,6 +24,7 @@
 pub mod ballpit;
 pub mod changes;
 pub mod clock;
+pub mod gate;
 pub mod kv;
 pub mod kvrep;
 pub mod lockstep;
