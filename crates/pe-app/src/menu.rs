@@ -1295,6 +1295,8 @@ mod tests {
         let (mut m, log, _) = in_game(Ok("pe1:friend".into()));
         // Quit is on the Leave page and Close on the dial (the Gnomon dash), outside a swap.
         assert_eq!(ids(&m), [id::INVITE, id::JOIN, id::NEW_SESSION], "the manager's role");
+        let leave: Vec<u32> = m.page_of(Section::Leave, 1_000).buttons.iter().map(|b| b.id).collect();
+        assert_eq!(leave, [id::QUIT], "Quit is on the Leave page");
         assert!(m.spec(1_000).lines[0].contains("30 min"), "{:?}", m.spec(1_000).lines);
         m.press(id::JOIN);
         assert!(calls(&log).is_empty());

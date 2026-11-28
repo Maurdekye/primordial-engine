@@ -1124,6 +1124,7 @@ mod tests {
     fn a_world_swap_keeps_the_xr_session_drawing_every_frame() {
         use crate::session::{self, Kept, Spec, Start};
         use std::sync::atomic::AtomicBool;
+        let _slot = crate::spawn::test_slot::opens_sessions();
 
         struct Presenting {
             views: ViewReader,

@@ -724,6 +724,24 @@ fn said(what: &str, r: Result<Outcome, pe_seams::world_api::ApiError>) -> String
     }
 }
 
+/// The slot is one per process, and the lib's tests open sessions in parallel, each installing its spawner there
+/// (session.rs, vr.rs): a test that opens a session holds this for reading, and a test that checks the slot is empty
+/// at its end holds it for writing.
+#[cfg(test)]
+pub(crate) mod test_slot {
+    use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+
+    static SLOT: RwLock<()> = RwLock::new(());
+
+    pub(crate) fn opens_sessions() -> RwLockReadGuard<'static, ()> {
+        SLOT.read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub(crate) fn checks_the_slot() -> RwLockWriteGuard<'static, ()> {
+        SLOT.write().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

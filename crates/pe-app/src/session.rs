@@ -876,15 +876,6 @@ mod tests {
     use super::*;
     use crate::sim::tests::StillHands;
 
-    /// The spawn slot is one per process (spawn.rs), and these tests open sessions in parallel, each installing its
-    /// spawner there: a test that opens one holds this for reading, and the one that checks the slot is empty at its
-    /// end holds it for writing.
-    static SPAWN_SLOT: std::sync::RwLock<()> = std::sync::RwLock::new(());
-
-    fn opens_sessions() -> std::sync::RwLockReadGuard<'static, ()> {
-        SPAWN_SLOT.read().unwrap_or_else(|e| e.into_inner())
-    }
-
     /// A loopback port nothing holds now.
     fn free_port() -> u16 {
         std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
@@ -945,7 +936,7 @@ mod tests {
     /// threads are joined (nothing left behind). The quit ends the manager.
     #[test]
     fn new_session_twice_rebinds_the_same_port_and_leaves_nothing_behind() {
-        let _slot = SPAWN_SLOT.write().unwrap_or_else(|e| e.into_inner());
+        let _slot = crate::spawn::test_slot::checks_the_slot();
         let port = free_port();
         let (spec, kept) = (spec(31, port), kept());
         let first = start(&spec, &kept, &Start::Open, &AtomicBool::new(false), 1).expect("session 1");
@@ -990,7 +981,7 @@ mod tests {
     /// on the invite alone, and imports A's world; a join that then fails isn't what happens here.
     #[test]
     fn a_manager_joins_a_running_opener_on_its_invite() {
-        let _slot = opens_sessions();
+        let _slot = crate::spawn::test_slot::opens_sessions();
         let (spec_a, kept_a) = (spec(41, free_port()), kept());
         let a = start(&spec_a, &kept_a, &Start::Open, &AtomicBool::new(false), 1).expect("A's session");
         let invite = Invite::decode(a.invite().expect("A's invite")).unwrap();
@@ -1024,7 +1015,7 @@ mod tests {
     /// second, the failure says it was cancelled, and the join's network thread is gone (its port binds again).
     #[test]
     fn a_cancelled_join_to_an_invite_nobody_answers_opens_a_session_of_your_own() {
-        let _slot = opens_sessions();
+        let _slot = crate::spawn::test_slot::opens_sessions();
         let (spec_a, kept_a) = (spec(51, free_port()), kept());
         let a = start(&spec_a, &kept_a, &Start::Open, &AtomicBool::new(false), 1).expect("A's session");
         let invite = Invite::decode(a.invite().expect("A's invite")).unwrap();
@@ -1066,7 +1057,7 @@ mod tests {
     /// invite again, B is in), and B is back in a session of its own.
     #[test]
     fn rejoining_a_session_just_left_is_answered_at_once() {
-        let _slot = opens_sessions();
+        let _slot = crate::spawn::test_slot::opens_sessions();
         let (spec_a, kept_a) = (spec(61, free_port()), kept());
         let a = start(&spec_a, &kept_a, &Start::Open, &AtomicBool::new(false), 1).expect("A's session");
         let invite = Invite::decode(a.invite().expect("A's invite")).unwrap();
@@ -1143,7 +1134,7 @@ mod tests {
     /// quit the join to the dead invite would hold the quit for its 300 s.
     #[test]
     fn a_quit_while_a_join_leaves_ends_the_manager_and_dials_nobody() {
-        let _slot = opens_sessions();
+        let _slot = crate::spawn::test_slot::opens_sessions();
         let (m, ask, kept_b, dead, a) = joined_with_a_dead_invite();
         let world = kept_b.slot.world();
         let asked = Instant::now();
@@ -1160,7 +1151,7 @@ mod tests {
     /// a session of its own within seconds, and the menu says the join was cancelled (@design-reviewer's M1).
     #[test]
     fn a_cancel_while_a_join_leaves_opens_a_session_of_your_own() {
-        let _slot = opens_sessions();
+        let _slot = crate::spawn::test_slot::opens_sessions();
         let (m, ask, _, dead, a) = joined_with_a_dead_invite();
         assert!(ask.ask(Want::Join(dead)));
         assert!(ask.ask(Want::Cancel));
