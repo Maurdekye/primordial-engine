@@ -19,17 +19,16 @@ use crate::shape::{Shape, ShapeGeometry};
 use std::sync::Once;
 
 /// Query mesh triangles overlapping `bounds`. (b3QueryMeshTriangles)
-fn query_mesh_triangles(indices: &mut [i32], capacity: i32, mesh: &Mesh<'_>, bounds: Aabb) -> i32 {
-    let mut count = 0i32;
+///
+/// Primordial Engine fork (E2): every triangle overlapping `bounds`, with no capacity. Upstream stops at
+/// [`MAX_MESH_CONTACT_TRIANGLES`] (512) and warns once, and the triangles past it are left out of the contact, so a
+/// dense mesh let what landed on it fall through (a 4,608-triangle terrain 20 cm across dropped 7 of 9 balls). The
+/// list is sorted by the caller, so its order is the triangles' index order on every machine. See FORK.md.
+fn query_mesh_triangles(indices: &mut Vec<i32>, mesh: &Mesh<'_>, bounds: Aabb) {
     query_mesh(mesh, bounds, |_a, _b, _c, triangle_index| {
-        if count == capacity {
-            return false;
-        }
-        indices[count as usize] = triangle_index;
-        count += 1;
-        count < capacity
+        indices.push(triangle_index);
+        true
     });
-    count
 }
 
 /// Query height-field triangles overlapping `bounds`. (b3QueryHeightFieldTriangles)
@@ -95,40 +94,43 @@ pub(crate) fn refresh_cache(
     // Query triangles. C bumps these buffers from the step arena (they no longer fit on the
     // stack with 512 triangles); the port uses heap buffers.
     let triangle_capacity = MAX_MESH_CONTACT_TRIANGLES as i32;
-    let mut triangle_indices = vec![0i32; MAX_MESH_CONTACT_TRIANGLES];
+    let mut triangle_indices: Vec<i32> = Vec::new();
 
     // Bounds are in world space. Convert to the local mesh frame.
     let mesh_transform = to_relative_transform(xf_a, POS_ZERO);
     let local_bounds = aabb_transform(invert_transform(mesh_transform), mesh_contact.query_bounds);
 
-    let triangle_count = match &shape_a.geometry {
+    match &shape_a.geometry {
         ShapeGeometry::Mesh { data, scale } => {
             let mesh = Mesh {
                 data,
                 scale: *scale,
             };
-            query_mesh_triangles(
-                &mut triangle_indices,
-                triangle_capacity,
-                &mesh,
-                local_bounds,
-            )
+            // Primordial Engine fork (E2): no capacity for a mesh; see `query_mesh_triangles`.
+            query_mesh_triangles(&mut triangle_indices, &mesh, local_bounds);
         }
         ShapeGeometry::HeightField(hf) => {
-            query_height_field_triangles(&mut triangle_indices, triangle_capacity, hf, local_bounds)
+            triangle_indices.resize(MAX_MESH_CONTACT_TRIANGLES, 0);
+            let count = query_height_field_triangles(
+                &mut triangle_indices,
+                triangle_capacity,
+                hf,
+                local_bounds,
+            );
+            triangle_indices.truncate(count as usize);
+            if count == triangle_capacity {
+                static ONCE: Once = Once::new();
+                ONCE.call_once(|| {
+                    // Primordial Engine fork: through crate::warn, so an application's log gets it. See FORK.md.
+                    crate::warn(&format!(
+                        "WARNING: complex mesh detected, triangle buffer capacity of {triangle_capacity} reached"
+                    ));
+                });
+            }
         }
         _ => unreachable!(),
-    };
-
-    if triangle_count == triangle_capacity {
-        static ONCE: Once = Once::new();
-        ONCE.call_once(|| {
-            // Primordial Engine fork: through crate::warn, so an application's log gets it. See FORK.md.
-            crate::warn(&format!(
-                "WARNING: complex mesh detected, triangle buffer capacity of {triangle_capacity} reached"
-            ));
-        });
     }
+    let triangle_count = triangle_indices.len() as i32;
 
     // Triangle indices must be sorted to match caches (C validates this; BVH
     // traversal is not always monotonic, so sort explicitly).

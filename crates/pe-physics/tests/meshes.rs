@@ -720,3 +720,109 @@ fn a_mesh_scaled_under_the_old_floor_collides_where_it_is_drawn() {
     let golden = [0x3fbadcab5123a90c, 0x3fbadcab5123a90c, 0x3f855c224acd70f0, 0x3fac264a8ec428d0, 0x3fac264a8ec428d0];
     assert_eq!(bits, golden, "resting heights' bits");
 }
+
+/// A wave terrain of `n` x `n` quads over 2 m (amplitude 0.1 m), its front up.
+fn terrain(n: u32) -> Mesh {
+    let mut vertices = Vec::new();
+    for i in 0..=n {
+        for j in 0..=n {
+            let (x, z) = (-1.0 + 2.0 * i as f32 / n as f32, -1.0 + 2.0 * j as f32 / n as f32);
+            vertices.push([x, 0.1 * (3.0 * x).sin() * (2.5 * z).cos(), z]);
+        }
+    }
+    let at = |i: u32, j: u32| i * (n + 1) + j;
+    let mut triangles = Vec::new();
+    for i in 0..n {
+        for j in 0..n {
+            triangles.push([at(i, j), at(i, j + 1), at(i + 1, j)]);
+            triangles.push([at(i + 1, j), at(i, j + 1), at(i + 1, j + 1)]);
+        }
+    }
+    Mesh::new(&vertices, &triangles).unwrap()
+}
+
+/// E2 (@coordinator-opus, D2): a dense mesh holds what lands on it. Box3D gathers a mesh contact's
+/// triangles from the other shape's box widened by 7 cm in world units, and upstream keeps at most 512 of them, so on
+/// this 4,608-triangle terrain at scale 0.1 (20 cm across, 4 mm triangles, a scale the floor always allowed) 7 of the
+/// 9 balls fell through. The fork now keeps them all, in index order. The balls' final positions' bits are pinned.
+#[test]
+fn a_dense_mesh_holds_what_lands_on_it() {
+    let s = 0.1f32;
+    let mesh = terrain(48);
+    let mut pw = PhysicsWorld::new(PhysicsConfig::engine()).unwrap();
+    let ground = ShapeDesc::new(Geometry::Mesh { mesh, scale: [s; 3], both_sides: false });
+    pw.add_body(id(1), &BodyDesc::new(BodyKind::Static, [0.0; 3]).with_shape(ground)).unwrap();
+    let mut n = 2;
+    for i in 0..3 {
+        for j in 0..3 {
+            let (x, z) = (-0.6 + 0.6 * f64::from(i), -0.6 + 0.6 * f64::from(j));
+            pw.add_body(id(n), &ball([x * f64::from(s), 0.3 * f64::from(s), z * f64::from(s)], 0.02 * s, [0.0; 3]))
+                .unwrap();
+            n += 1;
+        }
+    }
+    for _ in 0..120 {
+        pw.step(DT).unwrap();
+    }
+    let mut bits = Vec::new();
+    for k in 2..n {
+        let p = pw.pose(id(k)).unwrap().position;
+        let (x, z) = (p[0] / f64::from(s), p[2] / f64::from(s));
+        if x.abs() <= 1.0 && z.abs() <= 1.0 {
+            let surface = 0.1 * (3.0 * x).sin() * (2.5 * z).cos() * f64::from(s);
+            assert!(p[1] > surface, "ball {k} at {p:?} is under the terrain's surface ({surface})");
+        }
+        bits.extend(p.map(f64::to_bits));
+    }
+    let digest = bits.iter().fold(0xcbf29ce484222325u64, |h, &b| (h ^ b).wrapping_mul(0x100000001b3));
+    println!("RESULT e2_dense_mesh digest={digest:016x}");
+    assert_eq!(digest, 0xde1d964bf585e701, "the balls' final positions");
+}
+
+/// E2 (@vdw-physics, L1): a dynamic mesh flattened far under the old floor. A closed 1 m box mesh at
+/// 1e-4 or 1e-6 on one axis still encloses volume, so it weighs that slab and rests on a floor like one (upstream's
+/// 5 mm mesh rest offset above it: a mesh pair); a 1 cm box mesh
+/// at 1e-6 encloses 1e-12 m^3, under the fork's MIN_MESH_VOLUME, so it has no mass and the body is refused.
+#[test]
+fn a_dynamic_mesh_flattened_far_under_the_old_floor_weighs_its_slab_or_is_refused() {
+    let metre = box_mesh([0.0; 3], [0.5; 3]);
+    let centimetre = box_mesh([0.0; 3], [0.005; 3]);
+    let flat = |mesh: &Mesh, sy: f32| {
+        ShapeDesc::new(Geometry::Mesh { mesh: mesh.clone(), scale: [1.0, sy, 1.0], both_sides: false })
+            .with_density(1000.0)
+    };
+    let mut pw = PhysicsWorld::new(PhysicsConfig::engine()).unwrap();
+    floor(&mut pw, 1);
+    let desc = BodyDesc::new(BodyKind::Dynamic, [0.0, 1.0, 0.0]).with_shape(flat(&centimetre, 1.0e-6));
+    assert_eq!(pw.add_body(id(2), &desc), Err(PhysicsError::Massless { dropped: 0 }));
+    let mut bits = Vec::new();
+    for (n, sy) in [(3u32, 1.0e-4f32), (4, 1.0e-6)] {
+        let at = [3.0 * f64::from(n), 0.1, 0.0];
+        pw.add_body(id(n), &BodyDesc::new(BodyKind::Dynamic, at).with_shape(flat(&metre, sy))).unwrap();
+        let mass = pw.mass(id(n)).unwrap();
+        assert!((mass / (1000.0 * sy) - 1.0).abs() < 1.0e-3, "1 m x {sy} m x 1 m at 1000 kg/m^3: {mass}");
+        bits.push(u64::from(mass.to_bits()));
+    }
+    for _ in 0..120 {
+        pw.step(DT).unwrap();
+    }
+    for n in [3u32, 4] {
+        let p = pw.pose(id(n)).unwrap().position;
+        let (v, w) = pw.velocity(id(n)).unwrap();
+        println!("RESULT e2_flat_dynamic_mesh n={n} p={p:?} v={v:?} w={w:?}");
+        assert!(p[1] > -1.0e-3 && p[1] < 0.01, "slab {n} rests on the floor: {p:?}");
+        assert!(v.iter().chain(&w).all(|c| c.abs() < 1.0e-2), "slab {n} is still: {v:?} {w:?}");
+        bits.extend(p.map(f64::to_bits));
+    }
+    let pinned: [u64; 8] = [
+        1036831948,
+        981668463,
+        4621256159554039114,
+        4572371951457977504,
+        13751766488242886528,
+        4622945009603324679,
+        4572320395417643424,
+        13750212478256026624,
+    ];
+    assert_eq!(bits, pinned, "masses and resting positions' bits");
+}

@@ -567,10 +567,14 @@ Players call worlds **domains** (the user's ruling); the code keeps "world".
           smaller shape (the user's ruling) was measured in E2 and does not hold: bodies sliding across a mesh then
           catch on its internal triangle edges, more so the faster they go, so the 5 mm stays for now while those edge
           contacts, and a mesh inset 5 mm instead, are studied;
-        - a mesh contact gathers at most 512 triangles, from the other shape's box widened by 7 cm in world units
-          [V `box3d-fork/src/contact/mesh_cache.rs`, `MAX_MESH_CONTACT_TRIANGLES`], so a dense mesh drops what lands
-          on it: on a 4,608-triangle terrain 20 cm across, 7 of 9 balls fell through (E2 spike f6). A fall-through
-          at an allowed scale is a bug, and E2 removes it (@coordinator-opus);
+        - a mesh contact gathers its triangles from the other shape's box widened by 7 cm in world units, so on a
+          small dense mesh it gathers many. Upstream Box3D kept at most 512 (`MAX_MESH_CONTACT_TRIANGLES`), and a
+          dense mesh dropped what landed on it: on a 4,608-triangle terrain 20 cm across, 7 of 9 balls fell through
+          (E2 spike f6). A fall-through at an allowed scale is a bug (@coordinator-opus), so the fork
+          keeps every triangle in the bounds, sorted by index as upstream sorts them [V
+          `box3d-fork/src/contact/mesh_cache.rs`, `query_mesh_triangles`; pe-physics
+          `a_dense_mesh_holds_what_lands_on_it`]. A contact then costs its triangles: on a dense mesh, much more than
+          on a coarse one (costs in FORK.md);
         - the drop (above) is judged in the blob's units, so a mesh shrunk by its scale keeps triangles that the same
           surface authored at its world size would lose (E2 spike f2), and pe-import bakes units into the vertices,
           so a model imported in millimetres loses its triangles under 0.7 mm, below what the tolerances resolve;
