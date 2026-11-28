@@ -101,9 +101,16 @@ fn threads(pid: u32) -> usize {
             .expect("powershell");
         String::from_utf8_lossy(&out.stdout).trim().parse().expect("a thread count")
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
     {
         std::fs::read_dir(format!("/proc/{pid}/task")).expect("/proc").count()
+    }
+    // macOS has no /proc: `ps -M` prints a header, then one line per thread.
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        let out = Command::new("ps").args(["-M", "-p", &pid.to_string()]).output().expect("ps");
+        assert!(out.status.success(), "ps -M: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).lines().skip(1).filter(|l| !l.trim().is_empty()).count()
     }
 }
 

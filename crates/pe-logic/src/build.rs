@@ -1035,7 +1035,9 @@ mod tests {
             ])
             .output();
         #[cfg(unix)]
-        let out = super::Command::new("sh").args(["-c", &format!("pgrep -f 'sleep {marker}' | wc -l")]).output();
+        // `[s]leep`: the pattern must not match the `sh -c` that runs pgrep, whose own command line holds the text
+        // (pgrep leaves out only itself), or the grandchild would always look alive.
+        let out = super::Command::new("sh").args(["-c", &format!("pgrep -f '[s]leep {marker}' | wc -l")]).output();
         let out = out.expect("the process list");
         String::from_utf8_lossy(&out.stdout).trim().parse::<u32>().unwrap_or(0) > 0
     }
