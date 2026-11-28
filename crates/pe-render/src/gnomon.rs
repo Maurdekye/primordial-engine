@@ -609,9 +609,20 @@ impl Gnomon {
 
     fn page_size(&self) -> [f64; 2] {
         match &self.custom {
-            Some(v) => v.size_m().map(|m| m * self.scale),
+            Some(v) => {
+                // A custom page taller than the room between the tip and the foot is shrunk to fit, so it never
+                // covers the dial (which would take the dial's clicks: the page is hit first).
+                let s = v.size_m().map(|m| m * self.scale);
+                let room = self.page_room();
+                if s[1] > room { s.map(|m| m * room / s[1]) } else { s }
+            }
             None => self.page.size(),
         }
+    }
+
+    /// The tallest page that fits under the tip with a gap above the foot, in metres.
+    fn page_room(&self) -> f64 {
+        (self.arrangement.height - 2.0 * PAGE_GAP) * self.scale
     }
 
     /// Move the dash so the gnomon's tip is at `tip`, turned to face `head`.
@@ -934,6 +945,40 @@ mod tests {
         g.set_custom(None);
         assert!(!g.has_custom());
         assert_eq!(g.hit(eye, offset_vec(g.page.pose.pos - eye).normalize()).map(|h| h.0), Some(Part::Page(Some(10))));
+    }
+
+    #[test]
+    fn a_custom_page_too_tall_for_the_gnomon_is_shrunk_to_stay_above_the_foot() {
+        let a = Arrangement::WINDOW;
+        let mut g = Gnomon::new(dial(), page(), Gnomon::anchor_at(&head(), Gnomon::default_rel(&a), 1.0), 1.0, a);
+        let img = Arc::new(OverlayImage { width: 1, height: 1, rgba: vec![0; 4] });
+        struct Tall(Arc<OverlayImage>);
+        impl PageView for Tall {
+            fn size_m(&self) -> [f64; 2] {
+                [0.36, 0.50]
+            }
+            fn image(&mut self, _: Option<PageHit>, _: bool) -> Arc<OverlayImage> {
+                self.0.clone()
+            }
+            fn hit(&self, _: [f64; 2]) -> Option<PageHit> {
+                Some(PageHit::Button(9))
+            }
+        }
+        g.set_custom(Some(Box::new(Tall(img))));
+        let o = g.overlays((None, None), (None, false), Grip::Plain);
+        let room = a.height - 2.0 * PAGE_GAP;
+        assert!((f64::from(o[2].size[1]) - room).abs() < 1e-6, "{:?}", o[2].size);
+        assert!((f64::from(o[2].size[0]) / f64::from(o[2].size[1]) - 0.36 / 0.50).abs() < 1e-6, "its shape kept");
+        let foot = g.anchor.pos;
+        let bottom = (o[2].pose.pos - foot).0[1] - f64::from(o[2].size[1]) / 2.0;
+        assert!(bottom >= PAGE_GAP - 1e-6, "its bottom stays above the foot: {bottom}");
+        // A dial node is the dial's again.
+        let eye = head().pos;
+        for n in &g.dial.nodes {
+            let at = g.node_point(n.id).unwrap();
+            let hit = g.hit(eye, offset_vec(at - eye).normalize()).map(|h| h.0);
+            assert!(matches!(hit, Some(Part::Dial(_))), "{:?}: {hit:?}", n.place);
+        }
     }
 
     /// Writes the dash's images, over the mock-ups' dark background, to `$PE_GNOMON_PREVIEW/*.png` for a look by eye.
