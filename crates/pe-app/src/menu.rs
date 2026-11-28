@@ -1293,7 +1293,8 @@ mod tests {
     #[test]
     fn in_game_join_asks_the_manager_and_leaves_the_buttons_on() {
         let (mut m, log, _) = in_game(Ok("pe1:friend".into()));
-        assert_eq!(ids(&m), [id::INVITE, id::JOIN, id::NEW_SESSION, id::QUIT, id::CLOSE], "the manager's role");
+        // Quit is on the Leave page and Close on the dial (the Gnomon dash), outside a swap.
+        assert_eq!(ids(&m), [id::INVITE, id::JOIN, id::NEW_SESSION], "the manager's role");
         assert!(m.spec(1_000).lines[0].contains("30 min"), "{:?}", m.spec(1_000).lines);
         m.press(id::JOIN);
         assert!(calls(&log).is_empty());
@@ -1354,7 +1355,9 @@ mod tests {
         assert_eq!(calls(&log), ["dismiss"]);
         assert!(!m.spec(1_000).buttons.iter().any(|b| b.id == id::DISMISS));
         view.lock().unwrap().role = Some(crate::session::Role::Joiner { opener: pe_seams::MemberKey([1; 32]) });
-        assert_eq!(ids(&m), [id::LEAVE, id::QUIT, id::CLOSE]);
+        assert_eq!(ids(&m), [id::LEAVE]);
+        let leave: Vec<u32> = m.page_of(Section::Leave, 1_000).buttons.iter().map(|b| b.id).collect();
+        assert_eq!(leave, [id::LEAVE, id::QUIT], "the Leave page follows the manager too");
         view.lock().unwrap().role = Some(crate::session::Role::Opener {
             invite: "pe1:mine".into(),
             expires_unix_s: 1_000 + 60,
