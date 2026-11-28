@@ -418,7 +418,8 @@ impl Component for Limits {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Pod, Zeroable)]
 #[repr(C)]
 pub struct Folder {
-    /// Reserved, 0.
+    /// Reserved: always 0, so a flag given a meaning later finds no old world holding junk in it. An edit writing
+    /// anything else is refused.
     pub flags: u32,
 }
 

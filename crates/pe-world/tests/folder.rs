@@ -102,6 +102,12 @@ fn adding_or_removing_a_folder_row_regroups_its_subtree() {
     let (o, fp) = edit(&mut w, &mut b, vec![Op::SetRow { id: Target::Existing(oid(1)), row: row(at) }]);
     assert!(matches!(o, Outcome::Applied { .. }), "{o:?}");
     assert_eq!(fp.regrouped, []);
+    // Folder.flags is reserved: anything but 0 is refused, and the world is unchanged.
+    let before = w.store().state_hash();
+    let (o, _) = edit(&mut w, &mut b, vec![Op::SetRow { id: Target::Existing(oid(5)), row: row(Folder { flags: 7 }) }]);
+    assert!(matches!(o, Outcome::Refused { reason: Reason::Invalid { .. }, .. }), "{o:?}");
+    assert_eq!(w.store().state_hash(), before);
+    assert!(!w.is_folder(oid(5)));
 }
 
 #[test]

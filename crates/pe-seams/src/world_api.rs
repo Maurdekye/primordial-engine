@@ -657,6 +657,23 @@ pub enum Op {
         #[serde(flatten)]
         target: Target,
     },
+    // S6 v1.13 (api.md 5.3.1a; My Domain's take-out): new objects under `parent` from `content`, pe-world's content in
+    // its `pe1c:` text form, exactly one top-level object with its subtree. Exactly one of `parent` and `root: true`
+    // (a new root, named on purpose). `components` are field writes on its top object, as on a template's copy. Left
+    // out of the tool schema: content's text is opaque bytes no tool hands an agent (pe-app's take-out sends it), and
+    // the tool list's byte budget (api.md 6.2) has no room for it. It is still accepted.
+    #[schemars(skip)]
+    Insert {
+        #[serde(rename = "as", default, skip_serializing_if = "Option::is_none")]
+        as_ref: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent: Option<ObjRef>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        root: bool,
+        content: String,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        components: ComponentValues,
+    },
     // The logic edit of U1 (api.md 7).
     // `id`: `"a:<64 hex>"`, or a `$name` for a new script; `if_version`: its current version (default) or one
     // named. `source`: the text of `lib.rs` in M1 (a blob tree `"b:…"` later). `attach`: objects to tag with its

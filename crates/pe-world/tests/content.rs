@@ -36,12 +36,28 @@ fn the_starter_set_is_top_level_physical_objects_in_one_row() {
     assert_eq!(names[0], n, "{names:?}");
     assert!(names.contains(&plane_names::STACK.to_string()), "{names:?}");
     assert_eq!(names.len(), 7, "box, sphere, capsule, stack and the three heavy objects: {names:?}");
-    // Every object with a shape is dynamic and grabbable (physics on by default).
+    // Every body is dynamic and grabbable (physics on by default).
+    use pe_world::components::ids::{BODY, SHAPE};
     for it in &c.items {
-        if let Some((_, b)) = it.rows.iter().find(|r| r.0 == pe_world::components::ids::BODY) {
+        if let Some((_, b)) = it.rows.iter().find(|r| r.0 == BODY) {
             let b: Body = bytemuck::pod_read_unaligned(b);
             assert_eq!((b.kind, b.grabbable), (body_kind::DYNAMIC, 1));
         }
+    }
+    // And every shaped object has a body, or one above it (@api-eng's condition 3: an insert applies no physics
+    // default, so the starter set must carry its own). No exceptions yet.
+    let has = |i: usize, c_id| c.items[i].rows.iter().any(|r| r.0 == c_id);
+    for (i, it) in c.items.iter().enumerate() {
+        if !has(i, SHAPE) {
+            continue;
+        }
+        let mut at = Some(i);
+        let mut bodied = false;
+        while let Some(k) = at {
+            bodied |= has(k, BODY);
+            at = c.items[k].parent.map(|p| p as usize);
+        }
+        assert!(bodied, "{} has a shape and no body above it", name_of(&c, it));
     }
 }
 
@@ -238,6 +254,23 @@ fn restore_starter_set_puts_back_only_what_the_home_lost() {
         c
     });
     assert_eq!(home::missing_starters(&restored.world).items.len(), 0);
+}
+
+#[test]
+fn the_text_form_round_trips_and_a_subtree_stands_alone() {
+    let c = starter();
+    let text = c.to_text();
+    assert!(text.starts_with(pe_world::content::TEXT_PREFIX));
+    assert_eq!(Content::from_text(&text).unwrap(), c);
+    assert!(Content::from_text("pe1c:0").is_err() && Content::from_text("pe1c:zz").is_err());
+    assert!(Content::from_text(&text[1..]).is_err(), "no prefix");
+    let reg = home(&Content::default()).world.store().registry().clone();
+    let stack_at = c.tops().find(|&t| name_of(&c, &c.items[t as usize]) == plane_names::STACK).unwrap();
+    let stack = c.subtree(stack_at, &reg).unwrap();
+    assert_eq!(stack.tops().count(), 1);
+    assert_eq!(stack.items.len(), 1 + plane_names::STACK_BOXES);
+    assert_eq!(stack.blobs.len(), 1 + plane_names::STACK_BOXES, "only its own names");
+    assert!(c.subtree(stack_at + 1, &reg).is_none(), "a child is not a top");
 }
 
 #[test]

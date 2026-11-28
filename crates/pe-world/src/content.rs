@@ -31,6 +31,9 @@ use crate::world::{BlobStore, World};
 pub const MAGIC: &[u8; 16] = b"pe.content\0\0\0\0\0\0";
 /// The format version [`Content::encode`] writes. A decoder keeps every version it ever accepted (2.3).
 pub const VERSION: u16 = 1;
+/// The prefix of content's text form ([`Content::to_text`]).
+pub const TEXT_PREFIX: &str = "pe1c:";
+const HEX: &[u8; 16] = b"0123456789abcdef";
 /// The most objects one content may hold.
 pub const MAX_OBJECTS: usize = 1 << 20;
 /// The most rows one object may carry.
@@ -211,6 +214,59 @@ impl Content {
             t.inline.dedup();
         }
         Ok(out)
+    }
+
+    /// Top-level object `top` (an index from [`Content::tops`]) with its subtree, as content of its own: the items
+    /// renumbered from 0, and only the blobs its rows reference (`registry` gives the rows' layouts; a row of a
+    /// component it lacks keeps none). `None` if `top` is not a top-level item.
+    pub fn subtree(&self, top: u32, registry: &Registry) -> Option<Content> {
+        if self.items.get(top as usize)?.parent.is_some() {
+            return None;
+        }
+        let end = self.tops().find(|&t| t > top).unwrap_or(self.items.len() as u32);
+        let mut out = Content::default();
+        for i in top..end {
+            let mut it = self.items[i as usize].clone();
+            it.parent = it.parent.map(|p| p - top);
+            for (c, bytes) in &it.rows {
+                let refs = registry.get(*c).and_then(|d| inline::row_blobs(d, bytes)).unwrap_or_default();
+                for (r, _) in refs {
+                    if let Some(b) = self.blobs.get(&r.hash) {
+                        out.blobs.insert(r.hash, b.clone());
+                    }
+                }
+            }
+            out.items.push(it);
+        }
+        Some(out)
+    }
+
+    /// The text form, for a JSON field (pe-api's `insert`): [`TEXT_PREFIX`] and the bytes in lower-case hex.
+    pub fn to_text(&self) -> String {
+        let bytes = self.encode();
+        let mut s = String::with_capacity(TEXT_PREFIX.len() + 2 * bytes.len());
+        s.push_str(TEXT_PREFIX);
+        for b in bytes {
+            s.push(char::from(HEX[usize::from(b >> 4)]));
+            s.push(char::from(HEX[usize::from(b & 15)]));
+        }
+        s
+    }
+
+    /// Reads [`Content::to_text`]'s form.
+    pub fn from_text(text: &str) -> Result<Content, ContentError> {
+        let hex = text.strip_prefix(TEXT_PREFIX).ok_or(ContentError::Malformed("text prefix"))?.as_bytes();
+        if hex.len() % 2 != 0 {
+            return Err(ContentError::Malformed("hex"));
+        }
+        let nibble = |c: u8| match c {
+            b'0'..=b'9' => Some(c - b'0'),
+            b'a'..=b'f' => Some(c - b'a' + 10),
+            _ => None,
+        };
+        let bytes: Option<Vec<u8>> =
+            hex.as_chunks::<2>().0.iter().map(|p| Some((nibble(p[0])? << 4) | nibble(p[1])?)).collect();
+        Content::decode(&bytes.ok_or(ContentError::Malformed("hex"))?)
     }
 
     /// The canonical bytes: [`MAGIC`], [`VERSION`], the items, then the blobs in ascending order of hash.

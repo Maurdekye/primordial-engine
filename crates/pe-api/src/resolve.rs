@@ -64,6 +64,16 @@ pub enum ROp {
         template: Option<ObjectId>,
         components: ComponentValues,
     },
+    /// New objects from content (api.md 5.3.1a): one pe-world `Create` per item, the first under `parent`, the rest
+    /// under their own parents among the new objects `new..new + size`.
+    Insert {
+        new: u32,
+        size: u32,
+        /// `None`: the top is a new root.
+        parent: Option<Obj>,
+        content: std::sync::Arc<pe_world::content::Content>,
+        components: ComponentValues,
+    },
     /// `Component.field` -> value.
     Set {
         target: Obj,
@@ -594,6 +604,63 @@ pub fn resolve_tx(
                     i,
                     ROp::Create { new, size, parent, name: name.clone(), template, components: components.clone() },
                 )?;
+            }
+            Op::Insert { as_ref, parent, root, content, components } => {
+                // Where the top goes is always named (as a create's parent is): an object, or a new root on purpose.
+                if parent.is_some() == *root {
+                    return Err(refusal(
+                        RefusalCode::Invalid,
+                        i,
+                        "An insert names its `parent`, or gives `\"root\": true` to make its top a new root (one of \
+                         the two).",
+                    ));
+                }
+                let parent = parent.as_ref().map(|r| c.obj(i, r)).transpose()?;
+                let content = pe_world::content::Content::from_text(content).map_err(|e| {
+                    let why = match e {
+                        pe_world::content::ContentError::Malformed("text prefix") => "it doesn't start with `pe1c:`",
+                        pe_world::content::ContentError::Malformed("hex") => "it isn't lower-case hex after `pe1c:`",
+                        pe_world::content::ContentError::Malformed(_) => "its bytes are damaged or from a newer build",
+                        _ => "its bytes don't hold content",
+                    };
+                    refusal(RefusalCode::Invalid, i, format!("`content` isn't content this build reads: {why}."))
+                })?;
+                if content.tops().count() != 1 {
+                    return Err(refusal(
+                        RefusalCode::Invalid,
+                        i,
+                        format!(
+                            "`content` holds {} top-level objects; an insert takes exactly one (one insert each).",
+                            content.tops().count()
+                        ),
+                    ));
+                }
+                let size = u32::try_from(content.items.len()).unwrap_or(u32::MAX);
+                // Each object is one pe-world create, and its placement a few more edits: refused here, naming the op,
+                // before the dry run. One insert can't be split (it takes exactly one top), so the message says so.
+                let edits =
+                    c.ops.len() + content.items.len() + components.values().map(BTreeMap::len).sum::<usize>() + 2;
+                if edits > OPS_MAX {
+                    let mut f = refusal(
+                        RefusalCode::TooLarge,
+                        i,
+                        format!(
+                            "This object's subtree has {} objects; with the rest of the change that is more than \
+                             {OPS_MAX} edits, so it can't be inserted in one change yet.",
+                            content.items.len()
+                        ),
+                    );
+                    f.details = Some(json!({ "limit": OPS_MAX, "objects": content.items.len() }));
+                    return Err(f);
+                }
+                // A root's top has no parent to track (`Obj::New(u32::MAX)`, as `parent_of` reads it).
+                let new = c.new_ref(i, as_ref.as_ref(), parent.unwrap_or(Obj::New(u32::MAX)), size)?;
+                if let Some(p) = parent {
+                    c.grown.insert(p);
+                }
+                c.count += u64::from(size);
+                let content = std::sync::Arc::new(content);
+                c.push(i, ROp::Insert { new, size, parent, content, components: components.clone() })?;
             }
             Op::Set { target, field, value, fields } => {
                 let mut fs: BTreeMap<String, Json> = fields.clone().unwrap_or_default();

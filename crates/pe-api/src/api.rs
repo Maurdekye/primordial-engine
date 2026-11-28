@@ -2721,6 +2721,86 @@ mod tests {
         }
     }
 
+    /// api.md 5.3.1a (My Domain's take-out): each starter object of the home inserts as one change, its whole subtree
+    /// included, placed by its `Transform` write; into the plane too, which has no `Starter` component (the row is
+    /// left out there); and content the domain can't hold, or that isn't one top-level object, is refused `invalid`.
+    #[test]
+    fn content_inserts_as_new_objects_and_what_a_domain_cant_hold_is_refused() {
+        use pe_world::content::{Builder, Content};
+        let starter = pe_world::preset::home::starter();
+        let home = pe_world::preset::home::home_on(
+            pe_core::LineId(Hash([8; 32])),
+            5,
+            BlobStore::default(),
+            Pos::ORIGIN,
+            &Content::default(),
+        )
+        .unwrap();
+        let plane = pe_world::preset::plane_on(pe_core::LineId(Hash([7; 32])), 5, BlobStore::default(), Pos::ORIGIN);
+        let c = caller(&[Scope::Read, Scope::Edit]);
+        let dry = ApplyOpts { mode: Mode::DryRun, ..Default::default() };
+        let reg = home.world.store().registry().clone();
+        for (label, mut w, parent) in [("home", home.world, None), ("plane", plane, Some("/Spawned"))] {
+            let put_op = |content: String, extra: serde_json::Value| {
+                let mut op = json!({"op": "insert", "content": content});
+                match parent {
+                    Some(p) => op["parent"] = json!(p),
+                    None => op["root"] = json!(true),
+                }
+                if let serde_json::Value::Object(m) = extra {
+                    op.as_object_mut().unwrap().extend(m);
+                }
+                tx(json!([op]))
+            };
+            w.set_member(ALICE, perm::EDIT | perm::ADMIN);
+            w.set_frame(CoreFrame(4));
+            let a = Api::new(
+                Src(Mutex::new(w.snapshot(CoreFrame(4)))),
+                Arc::new(EditQueue::new(2, || {})),
+                Arc::new(ChangeLog::new()),
+            );
+            for top in starter.tops() {
+                let one = starter.subtree(top, &reg).unwrap();
+                let put = put_op(
+                    one.to_text(),
+                    json!({"as": "$t", "components": {"Transform": {"position":
+                        {"offset": [0.0, 1.0, -0.5], "relative_to": "world_origin"}}}}),
+                );
+                let o = a.apply(&c, put, &dry).unwrap();
+                assert_eq!((o.status, o.count), (Status::Accepted, one.items.len() as u64), "{label}: {:?}", o.refusal);
+                assert!(o.created.contains_key("$t"), "{label}");
+            }
+            // Two top-level objects in one insert.
+            let two = put_op(starter.to_text(), json!({}));
+            let o = a.apply(&c, two, &dry).unwrap();
+            assert_eq!(o.refusal.map(|r| r.code), Some(RefusalCode::Invalid), "{label}");
+            // Not content at all.
+            let junk = put_op("pe1c:00".into(), json!({}));
+            assert_eq!(a.apply(&c, junk, &dry).unwrap().refusal.map(|r| r.code), Some(RefusalCode::Invalid));
+        }
+        // A folder can't go into the plane: it has no `Folder` component.
+        let mut b = Builder::default();
+        b.top(
+            &[pe_world::edit::Row {
+                component: pe_world::components::ids::FOLDER,
+                instance: 0,
+                bytes: bytemuck::bytes_of(&pe_world::components::Folder::default()).to_vec(),
+            }],
+            "Crate",
+        );
+        let folder = b.finish();
+        let mut w = pe_world::preset::plane_on(pe_core::LineId(Hash([7; 32])), 5, BlobStore::default(), Pos::ORIGIN);
+        w.set_member(ALICE, perm::EDIT | perm::ADMIN);
+        let a = Api::new(
+            Src(Mutex::new(w.snapshot(CoreFrame(0)))),
+            Arc::new(EditQueue::new(2, || {})),
+            Arc::new(ChangeLog::new()),
+        );
+        let put = tx(json!([{"op": "insert", "content": folder.to_text(), "parent": "/Spawned"}]));
+        let o = a.apply(&c, put, &dry).unwrap();
+        assert_eq!(o.refusal.as_ref().map(|r| r.code), Some(RefusalCode::Invalid), "{o:?}");
+    }
+
     /// api.md 4.2 and 5.3.2: an accepted change reports the objects it changed with the versions it left, and those
     /// enter the caller's table, so the caller's next op on the same object, without a fresh read, isn't refused as
     /// stale for the caller's own change (the self-test's step 6: attach a script to the Lamp, then replace its Light).

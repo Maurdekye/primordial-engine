@@ -537,15 +537,8 @@ pub fn inline_of(blobs: &[Vec<u8>]) -> Vec<Vec<u8>> {
     out
 }
 
-/// The `Name` row for `text`, checked against [`NAME_MAX`], with its bytes added once to the change's blobs.
-fn named(
-    snap: &WorldSnapshot,
-    i: usize,
-    op: u32,
-    text: &str,
-    blob_refs: &mut Vec<BlobRef>,
-    blobs: &mut Vec<Vec<u8>>,
-) -> Result<Row, Unmapped> {
+/// A name's rules (api.md 5.1), for a create's name and for every name an insert's content brings.
+fn name_ok(op: u32, text: &str) -> Result<(), Unmapped> {
     if text.len() > NAME_MAX {
         return Err(refused_at(
             op,
@@ -562,6 +555,19 @@ fn named(
             "A name is not empty and has no `/` (paths are made of names).".into(),
         ));
     }
+    Ok(())
+}
+
+/// The `Name` row for `text`, checked against [`NAME_MAX`], with its bytes added once to the change's blobs.
+fn named(
+    snap: &WorldSnapshot,
+    i: usize,
+    op: u32,
+    text: &str,
+    blob_refs: &mut Vec<BlobRef>,
+    blobs: &mut Vec<Vec<u8>>,
+) -> Result<Row, Unmapped> {
+    name_ok(op, text)?;
     let (row, r) = name_row(snap, i, text)?;
     if !blob_refs.contains(&r) {
         blob_refs.push(r);
@@ -870,6 +876,122 @@ pub fn to_world_built(
                     }
                 };
                 for (c, fields) in writes {
+                    for (k, v) in fields {
+                        let key = format!("{c}.{k}");
+                        if on.is_transform(snap, &key).as_deref() == Some("Transform.position") {
+                            let Some(place) = new_place.get(new).copied() else {
+                                return Err(not_yet(i, "a position under a parent made in this change"));
+                            };
+                            ops.extend(set_position(&view, snap, i, me, place, v, &dirty)?);
+                        } else {
+                            ops.push(set_field(snap, &on, i, me, &key, v)?);
+                        }
+                    }
+                }
+                continue;
+            }
+            ROp::Insert { new, size: _, parent, content, components } => {
+                // The bytes this insert's own blobs add, against the change's caps (outcome.rs checks the whole
+                // change later; this says why an insert, which can't be split, is too large).
+                let (mut names_bytes, mut carried) = (0usize, 0usize);
+                // One `Create` per item (api.md 5.3.1a): the top under `parent`, at the parent's origin until a
+                // `Transform` write in `components` places it; the rest under their own parents, as the content keeps
+                // them. Every blob a row references travels inline, so the content needs no store of its own.
+                let under = parent.map_or(Target::Root, target);
+                if let Some(p) = place_under(under) {
+                    new_place.insert(*new, p);
+                }
+                for (k, item) in content.items.iter().enumerate() {
+                    let k = k as u32;
+                    let at = new + k;
+                    let p = match item.parent {
+                        None => under,
+                        Some(q) => Target::New(new + q),
+                    };
+                    let mut rows = Vec::with_capacity(item.rows.len());
+                    for (c, bytes) in &item.rows {
+                        // A starter object's provenance (pe-world's `Starter`) means nothing in a domain without
+                        // it: the row is left out there. Any other component the domain lacks refuses the insert.
+                        if *c == pe_world::components::ids::STARTER && snap.component_desc(*c).is_none() {
+                            continue;
+                        }
+                        let Some(desc) = snap.component_desc(*c) else {
+                            return Err(refused_at(
+                                prev,
+                                RefusalCode::Invalid,
+                                format!(
+                                    "This domain has no component #{:x}, which the content uses; it can't hold this \
+                                     object.",
+                                    c.0
+                                ),
+                            ));
+                        };
+                        let mut bytes = bytes.clone();
+                        if k == 0 && *c == pe_sim::ComponentId::TRANSFORM {
+                            let t: pe_sim::Transform = bytemuck::try_pod_read_unaligned(&bytes).map_err(|_| {
+                                refused_at(
+                                    prev,
+                                    RefusalCode::Invalid,
+                                    "The content's top transform is malformed.".into(),
+                                )
+                            })?;
+                            let t = pe_sim::Transform { chunk: [0; 3], pos: [0.0; 3], ..t };
+                            bytes = bytemuck::bytes_of(&t).to_vec();
+                        }
+                        // A name the content brings keeps the rules a create's name keeps. A name whose blob the
+                        // content doesn't carry is refused below as such.
+                        if *c == pe_world::components::ids::NAME {
+                            let r = pe_world::inline::row_blobs(desc, &bytes).unwrap_or_default();
+                            if let Some(t) = r.first().and_then(|(b, _)| content.blobs.get(&b.hash)) {
+                                name_ok(prev, std::str::from_utf8(t).unwrap_or(""))?;
+                            }
+                        }
+                        for (b, sim) in pe_world::inline::row_blobs(desc, &bytes).unwrap_or_default() {
+                            // The empty blob, like none, is on every machine and travels with nothing.
+                            if b.is_none() || b.len == 0 || blob_refs.contains(&b) {
+                                continue;
+                            }
+                            let Some(data) = content.blobs.get(&b.hash) else {
+                                return Err(refused_at(
+                                    prev,
+                                    RefusalCode::Invalid,
+                                    "The content references a blob it doesn't carry.".into(),
+                                ));
+                            };
+                            if !pe_world::inline::is_carried(&b, sim) {
+                                return Err(not_yet(i, "inserting content with a blob too large to travel in an edit"));
+                            }
+                            if data.len() > pe_world::inline::MAX_INLINE_BLOB {
+                                carried += data.len();
+                            } else {
+                                names_bytes += data.len();
+                            }
+                            blob_refs.push(b);
+                            blobs.push(data.clone());
+                        }
+                        rows_now.insert(((true, u128::from(at)), *c), true);
+                        rows.push(Row { component: *c, instance: 0, bytes });
+                    }
+                    ops.push(Op::Create { new: at, parent: p, index: None, rows });
+                }
+                for (what, n, limit) in [("names", names_bytes, INLINE_MAX), ("meshes or hulls", carried, CARRIED_MAX)]
+                {
+                    if n > limit {
+                        let mut f = refusal(
+                            RefusalCode::TooLarge,
+                            format!(
+                                "This object's subtree carries {n} bytes of {what}, more than the {limit} one change \
+                                 may; it can't be inserted in one change yet."
+                            ),
+                        );
+                        f.op = Some(prev);
+                        f.details = Some(serde_json::json!({ "limit": limit, "bytes": n }));
+                        return Err(Unmapped::Refused(f));
+                    }
+                }
+                let me = Target::New(*new);
+                let on = on_for(me, &tagged);
+                for (c, fields) in components {
                     for (k, v) in fields {
                         let key = format!("{c}.{k}");
                         if on.is_transform(snap, &key).as_deref() == Some("Transform.position") {
@@ -1625,6 +1747,130 @@ mod tests {
             set.iter().any(|d| d.field == "Light.range" && d.before == json!(8.0) && d.after == json!(0.0)),
             "{set:?}"
         );
+    }
+
+    /// api.md 5.3.1a (@api-eng's review): an insert applied for real makes the subtree under its parent, the top
+    /// placed by its position write with its stored rotation kept and a child's rows as the content holds them, and
+    /// its undo removes the whole subtree. Where the top goes is named (`parent` or `root: true`, one of the two); a
+    /// name the content brings keeps a create's rules; and a subtree over a change's caps says it can't be inserted.
+    #[test]
+    fn an_inserted_subtree_applies_and_its_undo_removes_it_whole() {
+        use pe_sim::Component as _;
+        use pe_world::content::Builder;
+        let (s, v) = world_with(|w| w.set_member(ALICE, pe_world::perm::EDIT));
+        let draft = pe_world::Draft {
+            author: ALICE,
+            line: pe_core::LineId(Hash([7; 32])),
+            chain: pe_core::ChainId(Hash([9; 32])),
+            seq: 1,
+        };
+        let row = |c: pe_sim::ComponentId, bytes: &[u8]| pe_world::edit::Row {
+            component: c,
+            instance: 0,
+            bytes: bytes.to_vec(),
+        };
+        let turned = Transform {
+            rot: [0.0, std::f32::consts::FRAC_1_SQRT_2, 0.0, std::f32::consts::FRAC_1_SQRT_2],
+            ..Transform::local([0.0; 3])
+        };
+        let body = Body { kind: body_kind::DYNAMIC, friction: 0.25, grabbable: 1, ..Default::default() };
+        let mut b = Builder::default();
+        let top = b.top(&[row(pe_sim::ComponentId::TRANSFORM, bytemuck::bytes_of(&turned))], "Crate");
+        b.child(
+            top,
+            &[
+                row(pe_sim::ComponentId::TRANSFORM, bytemuck::bytes_of(&Transform::local([0.0, 0.5, 0.0]))),
+                row(Body::ID, bytemuck::bytes_of(&body)),
+            ],
+            "Ball",
+        );
+        let content = b.finish();
+        let at = json!({"relative_to": "parent", "offset": [0.0, 2.0, 0.0]});
+        let r = resolved(
+            &v,
+            json!([{"op": "insert", "as": "$c", "parent": "/Shelf", "content": content.to_text(),
+                "components": {"Transform": {"position": at}}}]),
+        );
+        let e = to_world(&r, Actor::Person, &s, None).map_err(|e| format!("{e:?}")).unwrap();
+        let (o, after) = s.dry_run_state(Frame(10), &draft, &e.tx);
+        let pe_seams::Outcome::Applied { created, inverse: Some(inverse), .. } = o else { panic!("{o:?}") };
+        assert_eq!(created.len(), 2);
+        let (crate_id, ball) = (created[0], created[1]);
+        assert_eq!(after.parent(crate_id), Some(id(40)), "the top is under the shelf");
+        assert_eq!(after.parent(ball), Some(crate_id), "the child under the top");
+        assert_eq!(after.name(crate_id).as_deref(), Some("Crate"));
+        let shelf = after.world_transform(id(40)).unwrap();
+        let placed = after.world_transform(crate_id).unwrap();
+        let up = after.offset_in(crate_id, Some(id(40))).unwrap();
+        assert!(near(up.0, [0.0, 2.0, 0.0]), "{up:?} (shelf {shelf:?}, top {placed:?})");
+        // The shelf is unturned, so the top's world rotation is its stored one.
+        let kept = placed.rot.iter().zip(turned.rot).all(|(a, b)| (a - b).abs() < 1e-6);
+        assert!(kept, "the stored rotation is kept: {:?}", placed.rot);
+        let ball_body = after.fields(ball, "Body").unwrap();
+        assert_eq!(Some(ball_body), s.decode_row_of(Body::ID, bytemuck::bytes_of(&body)), "a child's rows unchanged");
+        let undo = Transaction::decode(&inverse).unwrap();
+        let (o, back) = after.dry_run_state(Frame(11), &pe_world::Draft { seq: 2, ..draft }, &undo);
+        assert!(matches!(o, pe_seams::Outcome::Applied { .. }), "{o:?}");
+        assert!(!back.exists(crate_id) && !back.exists(ball), "the undo removes the whole subtree");
+        assert_eq!(back.all().len(), s.all().len());
+
+        // Where the top goes: neither, or both, is refused before anything else.
+        let text = content.to_text();
+        let refused = |ops: Json| resolve_tx(&v, &tx(ops), &|_| None).err().map(|f| (f.code, f.message));
+        for op in [
+            json!({"op": "insert", "content": text}),
+            json!({"op": "insert", "content": text, "parent": "/Shelf", "root": true}),
+        ] {
+            let (code, msg) = refused(json!([op])).expect("refused");
+            assert_eq!(code, RefusalCode::Invalid);
+            assert!(msg.contains("\"root\": true"), "{msg}");
+        }
+        assert!(refused(json!([{"op": "insert", "content": text, "root": true}])).is_none(), "a root on purpose");
+        let (code, msg) = refused(json!([{"op": "insert", "content": "pe1c:zz", "root": true}])).unwrap();
+        assert_eq!(code, RefusalCode::Invalid);
+        assert!(msg.contains("lower-case hex") && !msg.contains("Malformed"), "words, not Debug: {msg}");
+
+        // A name the content brings keeps a create's rules.
+        for bad in ["", "a/b"] {
+            let mut b = Builder::default();
+            b.top(&[], bad);
+            let ops = json!([{"op": "insert", "parent": "/Shelf", "content": b.finish().to_text()}]);
+            match to_world(&resolved(&v, ops), Actor::Person, &s, None) {
+                Err(Unmapped::Refused(f)) => {
+                    assert_eq!((f.code, f.op), (RefusalCode::Invalid, Some(0)), "{bad:?}");
+                    assert!(f.message.contains("no `/`"), "{}", f.message);
+                }
+                other => panic!("{bad:?}: {other:?}"),
+            }
+        }
+
+        // Over the caps: 60 distinct names are past the change's 1 KiB of names; 4,100 objects are past its edits.
+        let mut b = Builder::default();
+        let top = b.top(&[], "Box of names");
+        for k in 0..60 {
+            b.child(top, &[], &format!("a rather long name, number {k:03}"));
+        }
+        let ops = json!([{"op": "insert", "parent": "/Shelf", "content": b.finish().to_text()}]);
+        match to_world(&resolved(&v, ops), Actor::Person, &s, None) {
+            Err(Unmapped::Refused(f)) => {
+                assert_eq!(f.code, RefusalCode::TooLarge);
+                assert!(
+                    f.message.contains("bytes of names") && f.message.contains("can't be inserted"),
+                    "{}",
+                    f.message
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        let mut b = Builder::default();
+        let top = b.top(&[], "Crate");
+        for _ in 0..4_100 {
+            b.child(top, &[], "Ball");
+        }
+        let ops = json!([{"op": "insert", "parent": "/Shelf", "content": b.finish().to_text()}]);
+        let (code, msg) = refused(ops).expect("refused");
+        assert_eq!(code, RefusalCode::TooLarge);
+        assert!(msg.contains("4101 objects") && msg.contains("can't be inserted"), "{msg}");
     }
 
     /// The M1 recordings' `create`s gave a query's output back (`"material": null`, `"Name": {"text": …}`) and were

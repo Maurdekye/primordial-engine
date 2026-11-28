@@ -464,6 +464,39 @@ A world carries templates as data (the ball-pit template holds a floor, walls, b
 what each holds, so an agent can make "a box" without knowing every component a visible, physical box needs
 [agree: @world-model].
 
+#### 5.3.1a Inserting content (S6 v1.13)
+
+`insert` puts **content** (world-model.md 2.5: objects outside any world, with their rows and blobs) into the domain as
+new objects: how My Domain's "Take out" brings an object into the domain you are in (design domain-eng d1, C8).
+
+- `insert` is accepted from any caller but left out of the MCP tool schema; 6.2 says why and when that changes.
+- `content` is the `pe1c:` text of exactly one top-level object with its subtree; anything else is refused `invalid`.
+  Each of its objects becomes one pe-world `Create` with the content's rows, the top under `parent`, the rest under
+  their own parents, so the outcome's `count` is the subtree's size and `as` names the top.
+- Where the top goes is always named, as a create's `parent` is: exactly one of `parent` (an object) and `"root":
+  true`, which makes the top a new **root**, as My Domain's own objects are. Neither, or both, is refused `invalid`
+  (@api-eng's review: a forgotten `parent` must not quietly make a root). A root's position is then written from
+  `"world_origin"`, an object or an exact `"pos"`, never `"parent"` (4.4).
+- The top starts at its parent's origin, with its stored rotation and scale. `components` are field writes on it, as
+  on a template's copy, so `{"Transform": {"position": …}}` places it; they add no rows (a field of a component the
+  top lacks is refused as for `set`).
+- **Physics:** an insert does not apply physics-on-by-default (@coordinator-opus's ruling, with @fable-reviewer): content
+  keeps its rows exactly, so a take-out round-trips, and an object without a `Body` in the content stays without one
+  (physics off). Content carries no physics-off marker. To turn physics on at take-out, follow the insert with an `add`
+  of a `Body` in the same change, since `components` add no rows. Content built outside a world, such as the starter
+  set, gets its default bodies from its builder.
+- Every name the content brings keeps a create's name rules (5.1: at most 255 bytes, not empty, no `/`), refused
+  `invalid` with the op's index.
+- Every blob a row references travels in the edit (3.4); content with a blob too large for that isn't wired yet. The
+  empty blob, like none, travels with nothing.
+- A row of a component the domain doesn't have refuses the insert `invalid`, naming it (a folder can't go into a
+  domain without folders), except a starter object's `Starter` provenance row, which is left out there.
+- **Its size.** An insert can't be split, since it takes exactly one top, so a subtree over a change's caps is refused
+  `too_large` with a message that says it can't be inserted in one change yet: 1 KiB of names in all (in practice
+  about 50 to 100 named objects), 768 KiB of meshes and hulls, and 4,096 edits (one per object, a few more for the
+  placement), checked before the dry run. Inserting a subtree in parts (a child subtree under a top made by an
+  earlier change) is open (12).
+
 #### 5.3.2 The outcome, and the life of a change
 
 An `Outcome`: `status`, `change` (the transaction id), `frame` (its stamp, once it has one), `final_frame`, `dry_run`
@@ -672,6 +705,11 @@ Tool names use underscores: the Anthropic API accepts only `[a-zA-Z0-9_-]` in to
 - **The tool list is small on purpose**: nine tools against the old design's seventy (file 06, M8). The whole list
   (names, descriptions, argument schemas) stays **under 5,000 tokens**, measured with Claude Code's tokenizer and
   recorded here; a test fails if the serialized list grows past the budget's byte proxy (gnosarium-ux 3.9).
+  - **`insert` (5.3.1a) is left out of the tool schema but accepted** (@coordinator-opus, 11-28): with it the list
+    was 235 bytes past the 20,000-byte proxy, and no tool hands an agent content's `pe1c:` text, so an agent has
+    nothing to insert; My Domain's take-out in pe-app is its caller. pe-mcp's
+    `the_tool_list_stays_within_its_budget` holds the list under 20,000 bytes. When a tool that gives agents content
+    is added, raise the budget and put `insert` in the schema.
 - **The server's `instructions`** are gnosarium-ux's text (api-surface.md 2): a live, shared world; time runs on its
   own; read before you write; changes apply all or nothing and name the version read; look with `view_capture`;
   positions are relative to something; changes are signed and labelled and anyone can revert them. pe-mcp fills in
@@ -1242,6 +1280,9 @@ advice):
   - **S6 v1.12** (M1 redo F5, @iter-bench): `ObjectView.scripts_not_running: Vec<ScriptNotRunning>`, the session
     list's entries for the scripts attached to the object, left out when empty (5.1). With S2 v1.12: the replica's
     `script_notes()` (`ScriptNotes { not_run, faults }`, empty by default) gives pe-app the runner's reasons.
+  - **S6 v1.13** (My Domain's take-out, @domain-eng; @coordinator-opus, C8): `Op::Insert { as, parent, root,
+    content, components }`, new objects from pe-world's content in its `pe1c:` text form (5.3.1a); exactly one of
+    `parent` and `root: true`.
 
 ## 12. Open points, and whose they are
 
@@ -1251,6 +1292,7 @@ world-model.md r8 at 7730167), O11 (captures, @ballpit-viz), O6b (rotations: y-u
 | # | Point | Whose |
 |---|---|---|
 | O8b | pe-seams' optional `serde` feature, or mirrored types in pe-mcp | @engine-architect |
+| O13 | Inserting a subtree too large for one change in parts (a child subtree under a top an earlier change made; 5.3.1a) | @domain-eng |
 
 ## 13. Against `docs/ux/api-surface.md` (75615ce)
 

@@ -1781,7 +1781,8 @@ pub enum Precondition {
     and adding or removing a `Folder` row puts that object in `Footprint::regrouped` as a rename does
     [V `crates/pe-world/tests/folder.rs`]. Only a world whose preset holds folders registers it (the home, 2.5), so
     every other world's registry and root are unchanged; a `Folder` row in such a world is refused as any unknown
-    component's is. The plane keeps its `Templates` name rule.
+    component's is. The plane keeps its `Templates` name rule. `Folder.flags` is reserved: an edit writing anything
+    but 0 is refused, so a flag given a meaning later finds no old world holding junk in it.
   "Double the cube" is a `Copy` too. A copy is copy-on-write in storage (file 04 A1: new ids over the same records)
   [I; an optimisation, invisible in the hash].
 - Field writes name a field by its index in the description, and give its bytes. WorldApi turns names into indices
