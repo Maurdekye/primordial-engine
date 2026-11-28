@@ -2069,7 +2069,8 @@ fn a_holder_s_throw_gives_the_ball_its_velocity_as_the_entry_applies() {
 }
 
 /// What limits a throw is the grip (the user's ruling of 2026-11-26): the change it makes to the held
-/// object's velocity is at most what the holder's strength gives it in a frame, `F dt / m`. A 36 cm ball of 195 g held
+/// object's velocity, measured against the same hold let go, is at most what the holder's strength gives it in a
+/// frame, `F dt / m`. A 36 cm ball of 195 g held
 /// still and thrown at 15 m/s leaves at 110 N / 0.195 kg / 60 Hz, 9.4 m/s, in the throw's direction; an 8 kg ball at
 /// 0.23 m/s. The spin is the throw's, under Box3D's own limit of an eighth of a turn a frame (47.1 rad/s at 60 Hz).
 #[test]
@@ -2081,14 +2082,23 @@ fn a_throw_is_limited_by_the_grip_and_its_spin_by_box3d_alone() {
         let throw = Input::Throw { object: oid(BALL), linear: [12.0, 0.0, 9.0], angular: [0.0, 30.0, 0.0] };
         let (world, entries) = held_then(big, 0.36, true, throw);
         let (v, w, r) = velocity_after(world, entries, 41);
+        // The change the throw makes: against the same hold let go at the same frame. Held by its side (it doesn't
+        // fit in the hand), the heavy ball still swings a little from the lift when the throw comes.
+        let (world, entries) = held_then(big, 0.36, true, Input::Release { object: oid(BALL) });
+        let (v0, _, _) = velocity_after(world, entries, 41);
+        let dv = [0usize, 1, 2].map(|i| v[i] - v0[i]);
         let mass = f64::from(r.physics().mass(oid(BALL)).expect("the ball's mass"));
         let most = (strength / mass / 60.0).min(15.0);
-        let along = (v[0] * 0.8 + v[2] * 0.6, v[0] * 0.6 - v[2] * 0.8);
+        let along = (dv[0] * 0.8 + dv[2] * 0.6, dv[0] * 0.6 - dv[2] * 0.8);
         println!(
-            "RESULT a {label} ball held still, thrown at 15 m/s: leaves at {:.2} m/s (the grip's {most:.2})",
-            along.0
+            "RESULT a {label} ball held, thrown at 15 m/s: its velocity changes by {:.2} m/s along the throw, {:.3}              across (the grip's {most:.2}); released instead it moves at {v0:.2?}",
+            along.0, along.1
         );
-        assert!((along.0 - most).abs() < 0.03 * most + 0.02 && along.1.abs() < 0.02, "{label}: {v:?}");
+        assert!((along.0 - most).abs() < 0.03 * most + 0.02 && along.1.abs() < 0.02, "{label}: {dv:?}");
+        // The whole change, its vertical part included, is the grip's at most: a hold still pulling in the throw's
+        // frame would show here (@design-reviewer's L1).
+        let size = dv.iter().map(|c| c * c).sum::<f64>().sqrt();
+        assert!(size <= most * 1.03 + 0.02, "{label}: the change is at most the grip's {most}: {size} ({dv:?})");
         // The light ball sits still in the hand, so only gravity's frame moves it down; the heavy one still bobs on
         // its spring (110 N against its 78 N weight), and keeps that vertical speed.
         if density < 2.0 {
